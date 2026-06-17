@@ -25,9 +25,18 @@ const matchManager = new MatchManager();
 const playerManager = new PlayerManager();
 const socketManager = new SocketManager({ playerManager });
 const queueManager = new QueueManager();
+
+function isAllowedRailwayOrigin(origin) {
+  try {
+    return new URL(origin).hostname.endsWith('.up.railway.app');
+  } catch {
+    return false;
+  }
+}
+
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || config.ALLOWED_CLIENT_URLS.includes(origin)) {
+    if (!origin || config.ALLOWED_CLIENT_URLS.includes(origin) || isAllowedRailwayOrigin(origin)) {
       callback(null, true);
       return;
     }
