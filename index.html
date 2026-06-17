@@ -22,6 +22,14 @@
         <span>Se esta mensagem nao sair, recarregue a pagina ou reinicie o servidor.</span>
       </main>
     </div>
+    <script>
+      window.setTimeout(function () {
+        if (window.__PIFE_DUELO_BOOTED__) return;
+        var root = document.getElementById('root');
+        if (!root) return;
+        root.innerHTML = '<main class="startup-error"><strong>Pife Duelo nao iniciou</strong><span>O script principal nao carregou. Recarregue a pagina.</span></main>';
+      }, 5000);
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
