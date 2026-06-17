@@ -795,6 +795,39 @@ runTest('seguranca online bloqueia compra fora da vez sem alterar estado', () =>
   assert.equal(afterMatch.players.find((player) => player.id === playerB).hand.length, beforeHand);
 });
 
+runTest('partida online inicia com dois baralhos e descarte inicial', () => {
+  const { match } = createOnlineSecurityMatch();
+  const allCards = getOnlineCards(match);
+  const duplicateLogicalCards = allCards.filter((card) => card.logicalId === '7-hearts');
+
+  assert.equal(allCards.length, 104);
+  assert.equal(match.players[0].hand.length, 9);
+  assert.equal(match.players[1].hand.length, 9);
+  assert.equal(match.discardPile.length, 1);
+  assert.equal(match.deck.length, 85);
+  assert.equal(new Set(allCards.map((card) => card.id)).size, 104);
+  assert.equal(allCards.some((card) => card.isJoker || card.suit === 'joker'), false);
+  assert.equal(duplicateLogicalCards.length, 2);
+});
+
+runTest('timeout online apos compra descarta automaticamente e passa turno', () => {
+  const { manager, match, playerA, playerB } = createOnlineSecurityMatch();
+  const draw = manager.drawFromDeck(match.matchId, playerA);
+  assert.equal(draw.blocked, false);
+
+  const autoPlayed = manager.finishOnlineMatchByTimeout(match.matchId);
+  const logActions = autoPlayed.matchLog.map((entry) => entry.action);
+
+  assert.equal(autoPlayed.status, 'playing');
+  assert.equal(autoPlayed.currentTurnPlayerId, playerB);
+  assert.equal(autoPlayed.players.find((player) => player.id === playerA).hand.length, 9);
+  assert.equal(autoPlayed.discardPile.at(-1).discardedBy, playerA);
+  assert.ok(logActions.includes('timeout_started'));
+  assert.equal(logActions.includes('auto_draw_from_deck'), false);
+  assert.ok(logActions.includes('auto_discard'));
+  assert.ok(logActions.includes('auto_turn_completed'));
+});
+
 runTest('seguranca online bloqueia descarte de carta inexistente', () => {
   const { manager, match, playerA } = createOnlineSecurityMatch();
   const draw = manager.drawFromDeck(match.matchId, playerA);
