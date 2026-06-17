@@ -125,10 +125,20 @@ function formatMatchLogEntry(entry, currentPlayerId) {
       return `${actor} descartou ${cardLabel}`;
     case 'playerKnock':
       return `${actor} bateu`;
+    case 'timeout_started':
+      return `${actor}: tempo esgotado`;
+    case 'auto_draw_from_deck':
+      return `${actor} comprou automaticamente`;
+    case 'auto_discard':
+      return `${actor} descartou ${cardLabel} automaticamente`;
+    case 'auto_turn_player_had_winning_hand':
+      return `${actor} tinha jogo, mas nao bateu no timeout`;
+    case 'auto_turn_completed':
+      return 'Tempo esgotado. Jogada automatica realizada.';
     case 'player_surrender':
       return `${actor} saiu da partida`;
     case 'timeout':
-      return `${actor} perdeu por tempo esgotado`;
+      return `${actor}: tempo esgotado`;
     case 'disconnect_loss':
       return `${actor} perdeu por desconexao`;
     case 'disconnected':

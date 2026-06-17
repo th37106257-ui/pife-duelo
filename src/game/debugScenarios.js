@@ -9,7 +9,14 @@ export const DEBUG_COMMANDS = {
 };
 
 function cardMap() {
-  return new Map(createDeck().map((card) => [card.id, card]));
+  const map = new Map();
+  createDeck().forEach((card) => {
+    map.set(card.id, card);
+    if (card.deckNumber === 1) {
+      map.set(card.logicalId, card);
+    }
+  });
+  return map;
 }
 
 function pickCards(ids, cardsById) {
@@ -20,19 +27,38 @@ function pickCards(ids, cardsById) {
   });
 }
 
+function resolveIds(ids = [], cardsById) {
+  return ids.map((id) => {
+    const card = cardsById.get(id);
+    if (!card) throw new Error(`Carta de debug nao encontrada: ${id}`);
+    return card.id;
+  });
+}
+
 function buildGameFromIds({ playerHand, opponentHand, drawPile, discardPile = [] }) {
   const cardsById = cardMap();
   const customDrawPile = Array.isArray(drawPile);
-  const drawPileIds = customDrawPile ? drawPile : [];
-  const pickedIds = new Set([...playerHand, ...opponentHand, ...drawPileIds, ...discardPile.map((card) => card.id)]);
+  const resolvedPlayerHand = resolveIds(playerHand, cardsById);
+  const resolvedOpponentHand = resolveIds(opponentHand, cardsById);
+  const resolvedDrawPile = customDrawPile ? resolveIds(drawPile, cardsById) : [];
+  const resolvedDiscardPile = discardPile.map((card) => ({
+    id: resolveIds([card.id], cardsById)[0],
+    discardedBy: card.discardedBy,
+  }));
+  const pickedIds = new Set([
+    ...resolvedPlayerHand,
+    ...resolvedOpponentHand,
+    ...resolvedDrawPile,
+    ...resolvedDiscardPile.map((card) => card.id),
+  ]);
 
   const remainingDeck = createDeck().filter((card) => !pickedIds.has(card.id));
 
   return {
-    playerHand: pickCards(playerHand, cardsById),
-    opponentHand: pickCards(opponentHand, cardsById),
-    drawPile: customDrawPile ? pickCards(drawPile, cardsById) : remainingDeck,
-    discardPile: discardPile.map((card) => ({
+    playerHand: pickCards(resolvedPlayerHand, cardsById),
+    opponentHand: pickCards(resolvedOpponentHand, cardsById),
+    drawPile: customDrawPile ? pickCards(resolvedDrawPile, cardsById) : remainingDeck,
+    discardPile: resolvedDiscardPile.map((card) => ({
       ...cardsById.get(card.id),
       discardedBy: card.discardedBy,
     })),

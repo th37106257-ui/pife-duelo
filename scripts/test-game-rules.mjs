@@ -42,7 +42,11 @@ const shouldWriteReport = process.argv.includes('--report') || process.env.WRITE
 const reportPath = new URL('../RELATORIO_TESTES.md', import.meta.url);
 const results = [];
 const deck = createDeck();
-const cards = Object.fromEntries(deck.map((card) => [card.id, card]));
+const cards = Object.fromEntries(deck.flatMap((card) => {
+  const entries = [[card.id, card]];
+  if (card.deckNumber === 1) entries.push([card.logicalId, card]);
+  return entries;
+}));
 
 runTest('economia calcula premios oficiais por mesa', () => {
   assert.deepEqual(calculatePrize(2), {
@@ -106,12 +110,17 @@ function assertStableCardSet(beforeGame, afterGame, label) {
 
 function makeTakeDiscardGame(discardCardId, discardedBy = 'bot') {
   const baseGame = createMatchState({ scenarioKey: 'invalid' });
+  const discardCard = cards[discardCardId];
 
   return {
     ...baseGame,
-    drawPile: baseGame.drawPile.filter((card) => card.id !== discardCardId),
-    discardPile: [{ ...cards[discardCardId], discardedBy }],
+    drawPile: baseGame.drawPile.filter((card) => card.id !== discardCard.id),
+    discardPile: [{ ...discardCard, discardedBy }],
   };
+}
+
+function cardIds(ids) {
+  return ids.map((id) => cards[id].id);
 }
 
 function runTest(name, testFn) {
@@ -191,11 +200,14 @@ function setOnlineHands(manager, matchId, {
   return nextMatch;
 }
 
-runTest('createDeck cria 52 cartas sem coringas', () => {
-  assert.equal(deck.length, 52);
+runTest('createDeck cria 104 cartas em dois baralhos sem coringas', () => {
+  assert.equal(deck.length, 104);
   assertUniqueCards(deck, 'createDeck');
   assert.equal(deck.some((card) => card.isJoker || card.suit === 'joker'), false);
   assert.deepEqual(validateDeck(deck), { valid: true, errors: [] });
+  assert.ok(cards['deck1-7-hearts']);
+  assert.ok(cards['deck2-7-hearts']);
+  assert.notEqual(cards['deck1-7-hearts'].id, cards['deck2-7-hearts'].id);
 
   const invalidDeck = [...deck, cards['A-hearts']];
   assert.equal(validateDeck(invalidDeck).valid, false);
@@ -206,10 +218,10 @@ runTest('distribuicao inicial preserva baralho sem duplicar', () => {
 
   assert.equal(initialGame.playerHand.length, 9);
   assert.equal(initialGame.opponentHand.length, 9);
-  assert.equal(initialGame.drawPile.length, 34);
+  assert.equal(initialGame.drawPile.length, 86);
   assert.equal(initialGame.discardPile.length, 0);
   assertUniqueCards(cardsInGame(initialGame), 'dealInitialHands');
-  assert.equal(cardsInGame(initialGame).length, 52);
+  assert.equal(cardsInGame(initialGame).length, 104);
 });
 
 runTest('recycleDiscardPile recicla descarte mantendo topo visivel', () => {
@@ -222,7 +234,7 @@ runTest('recycleDiscardPile recicla descarte mantendo topo visivel', () => {
   assert.equal(recycled.recycled, true);
   assert.equal(recycled.drawPile.length, 2);
   assert.equal(recycled.discardPile.length, 1);
-  assert.equal(recycled.discardPile[0].id, '3-hearts');
+  assert.equal(recycled.discardPile[0].id, cards['3-hearts'].id);
   assert.equal(recycled.drawPile.some((card) => card.discardedBy), false);
   assertUniqueCards([...recycled.drawPile, ...recycled.discardPile], 'recycleDiscardPile');
 });
@@ -253,7 +265,7 @@ runTest('destaque automatico detecta combinacoes na mao', () => {
   const { validGroups } = detectValidCombinations(hand);
   const highlightedIds = validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort();
 
-  assert.deepEqual(highlightedIds, [
+  assert.deepEqual(highlightedIds, cardIds([
     '5-hearts',
     '6-hearts',
     '7-hearts',
@@ -263,7 +275,7 @@ runTest('destaque automatico detecta combinacoes na mao', () => {
     '9-clubs',
     '10-clubs',
     'J-clubs',
-  ].sort());
+  ]).sort());
   assert.equal(validGroups.length, 3);
 });
 
@@ -305,7 +317,7 @@ runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna 
   assert.deepEqual(detectValidCombinations(separatedSequence).validGroups, []);
   assert.deepEqual(
     detectValidCombinations(unorderedSequence).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
-    [
+    cardIds([
       '5-hearts',
       '6-hearts',
       '7-hearts',
@@ -315,7 +327,7 @@ runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna 
       '9-clubs',
       '10-clubs',
       'J-clubs',
-    ].sort(),
+    ]).sort(),
   );
   assert.deepEqual(detectValidCombinations(separatedSet).validGroups, []);
   assert.deepEqual(detectValidCombinations([
@@ -329,15 +341,17 @@ runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna 
     cards['10-clubs'],
     cards['J-clubs'],
   ]).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(), [
-    '2-diamonds',
-    '2-hearts',
-    '2-spades',
-    '5-hearts',
-    '6-hearts',
-    '7-hearts',
-    '9-clubs',
-    '10-clubs',
-    'J-clubs',
+    ...cardIds([
+      '2-diamonds',
+      '2-hearts',
+      '2-spades',
+      '5-hearts',
+      '6-hearts',
+      '7-hearts',
+      '9-clubs',
+      '10-clubs',
+      'J-clubs',
+    ]),
   ].sort());
 });
 
@@ -505,8 +519,8 @@ runTest('debug de vitoria rapida e derrota rapida sao consistentes', () => {
   const nearBot = createMatchState({ scenarioKey: 'near-win-bot' });
   const botWinning = createMatchState({ scenarioKey: 'DEBUG_BOT_WIN' });
 
-  assert.equal(nearPlayer.drawPile[0].id, 'J-diamonds');
-  assert.equal(nearBot.drawPile[0].id, 'J-diamonds');
+  assert.equal(nearPlayer.drawPile[0].id, cards['J-diamonds'].id);
+  assert.equal(nearBot.drawPile[0].id, cards['J-diamonds'].id);
   assert.equal(findThreeCombinationResult(botWinning.opponentHand).valid, true);
 });
 
@@ -642,7 +656,7 @@ runTest('turno do bot compra, descarta e preserva cartas', () => {
   const botTurn = playBotTurn({ ...createMatchState({ scenarioKey: 'invalid' }), currentTurn: 'bot' });
 
   assert.equal(botPlan.drawSource, 'discard');
-  assert.equal(botPlan.drawnCard.id, '6-hearts');
+  assert.equal(botPlan.drawnCard.id, cards['6-hearts'].id);
   assert.equal(['bot-discard', 'bot-knock', 'wait'].includes(botTurn.action), true);
   assertStableCardSet(game, botPlan.game, 'planBotTurn');
 });
@@ -704,7 +718,9 @@ runTest('multiplayer local valida bater e timeout por ator', () => {
   assert.equal(botKnock.blocked, false);
   assert.equal(botKnock.game.result.winner, 'bot');
   assert.equal(botTimeout.blocked, false);
-  assert.equal(botTimeout.game.result.winner, 'timeout');
+  assert.equal(botTimeout.game.result, null);
+  assert.equal(botTimeout.game.currentTurn, 'player');
+  assert.equal(botTimeout.game.turnStage, 'awaiting-draw');
 });
 
 runTest('bater invalido nao gera vitoria e bater valido nasce no motor', () => {
@@ -719,11 +735,15 @@ runTest('bater invalido nao gera vitoria e bater valido nasce no motor', () => {
   assert.equal(winningKnock.game.result.winner, 'player');
 });
 
-runTest('timeout gera derrota controlada pelo motor', () => {
+runTest('timeout gera jogada automatica sem encerrar a partida', () => {
   const timeoutAction = playerTimeout(createMatchState({ scenarioKey: 'DEBUG_TIMEOUT' }));
 
   assert.equal(timeoutAction.blocked, false);
-  assert.equal(timeoutAction.game.result.winner, 'timeout');
+  assert.equal(timeoutAction.game.result, null);
+  assert.equal(timeoutAction.game.playerHand.length, 9);
+  assert.equal(timeoutAction.game.currentTurn, 'bot');
+  assert.equal(timeoutAction.game.turnStage, 'awaiting-draw');
+  assert.ok(timeoutAction.discardedCard);
 });
 
 runTest('compra que completa jogo libera bater mesmo com carta solta', () => {
@@ -733,7 +753,7 @@ runTest('compra que completa jogo libera bater mesmo com carta solta', () => {
   const knockAction = playerKnock(drawAction.game);
 
   assert.equal(drawAction.blocked, false);
-  assert.equal(drawAction.drawnCard.id, 'J-diamonds');
+  assert.equal(drawAction.drawnCard.id, cards['J-diamonds'].id);
   assert.equal(drawAction.game.playerHand.length, 10);
   assert.equal(drawAction.game.turnStage, 'awaiting-discard');
   assert.equal(knockValidation.valid, true);
@@ -943,11 +963,12 @@ runTest('historico online salva partida finalizada sem duplicar', () => {
   assert.equal('hand' in audit.logs[0].payloadResumo, false);
 });
 
-runTest('historico online registra timeout e abandono com motivo correto', () => {
+runTest('historico online registra jogada automatica por timeout e abandono com motivo correto', () => {
   const timeoutSetup = createOnlineSecurityMatch();
   const timeoutMatch = timeoutSetup.manager.finishOnlineMatchByTimeout(timeoutSetup.match.matchId);
   const timeoutRecord = timeoutSetup.manager.listMatchHistory()
     .find((record) => record.matchId === timeoutSetup.match.matchId);
+  const timeoutLog = timeoutMatch.matchLog.map((entry) => entry.action);
 
   const disconnectSetup = createOnlineSecurityMatch();
   const disconnectMatch = disconnectSetup.manager.finishOnlineMatchByDisconnect(
@@ -957,8 +978,12 @@ runTest('historico online registra timeout e abandono com motivo correto', () =>
   const disconnectRecord = disconnectSetup.manager.listMatchHistory()
     .find((record) => record.matchId === disconnectSetup.match.matchId);
 
-  assert.equal(timeoutMatch.status, 'finished');
-  assert.equal(timeoutRecord.finishReason, 'timeout');
+  assert.equal(timeoutMatch.status, 'playing');
+  assert.equal(timeoutRecord, undefined);
+  assert.ok(timeoutLog.includes('timeout_started'));
+  assert.ok(timeoutLog.includes('auto_draw_from_deck'));
+  assert.ok(timeoutLog.includes('auto_discard'));
+  assert.ok(timeoutLog.includes('auto_turn_completed'));
   assert.equal(disconnectMatch.status, 'finished');
   assert.equal(disconnectRecord.finishReason, 'disconnect');
 });

@@ -1,7 +1,6 @@
 import { createMatchResult } from './MatchResult.js';
 import { createTurnState } from './TurnState.js';
 import { config } from '../config.js';
-import { createId } from '../utils/createId.js';
 import { analyzeHandGroups, getWinningHandAnalysis } from '../../../src/shared/pifeRules.js';
 
 const SUITS = [
@@ -27,16 +26,20 @@ function cloneGame(gameState) {
 }
 
 export function createDeck() {
-  return SUITS.flatMap((suit) =>
-    RANKS.map((rank) => ({
-      id: createId('card'),
-      instanceId: createId('card-instance'),
-      rank,
-      value: RANK_VALUE.get(rank),
-      suit: suit.suit,
-      symbol: suit.symbol,
-      color: suit.color,
-    })),
+  return [1, 2].flatMap((deckNumber) =>
+    SUITS.flatMap((suit) =>
+      RANKS.map((rank) => ({
+        id: `deck${deckNumber}-${rank}-${suit.suit}`,
+        instanceId: `deck${deckNumber}-${rank}-${suit.suit}`,
+        deckNumber,
+        logicalId: `${rank}-${suit.suit}`,
+        rank,
+        value: RANK_VALUE.get(rank),
+        suit: suit.suit,
+        symbol: suit.symbol,
+        color: suit.color,
+      })),
+    ),
   );
 }
 

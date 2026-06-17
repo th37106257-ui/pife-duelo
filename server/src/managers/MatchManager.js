@@ -234,6 +234,24 @@ function buildWinningReveal(hand = []) {
   };
 }
 
+function createLogEntry({ playerId = null, action, payload = {}, accepted = true, reasonIfRejected = null }) {
+  return {
+    timestamp: new Date().toISOString(),
+    playerId,
+    action,
+    payloadResumo: summarizePayload(payload),
+    accepted,
+    reasonIfRejected,
+  };
+}
+
+function chooseAutoDiscard(playerHand = []) {
+  const knockInfo = validateKnock(playerHand);
+  const preservedIds = new Set(knockInfo.combinationIds ?? []);
+  const candidates = playerHand.filter((card) => !preservedIds.has(card.id));
+  return (candidates.length > 0 ? candidates : playerHand).at(-1) ?? null;
+}
+
 export class MatchManager {
   constructor() {
     this.matches = new Map();
@@ -323,7 +341,7 @@ export class MatchManager {
     if (new Set(cardIds).size !== cardIds.length) {
       errors.push('DUPLICATED_CARD');
     }
-    if (cardIds.length !== 52) {
+    if (cardIds.length !== 104) {
       errors.push('INVALID_CARD_TOTAL');
     }
     if (!gameState.players.some((player) => player.id === gameState.currentTurnPlayerId)) {
@@ -416,9 +434,9 @@ export class MatchManager {
 
       const secondsLeft = calculateTurnSecondsLeft(currentMatch);
       if (secondsLeft <= 0) {
-        const finishedGame = this.finishOnlineMatchByTimeout(matchId);
-        if (finishedGame) {
-          this.onMatchTimeout?.(finishedGame);
+        const autoPlayedGame = this.autoPlayTurn(matchId, currentMatch.currentTurnPlayerId);
+        if (autoPlayedGame) {
+          this.onMatchTimeout?.(autoPlayedGame);
         }
         return;
       }
@@ -445,70 +463,165 @@ export class MatchManager {
     if (!match || match.status !== 'playing') return null;
     if (calculateTurnSecondsLeft(match) > 0) return null;
 
-    const finishedGame = this.finishOnlineMatchByTimeout(matchId);
-    if (finishedGame) {
-      this.onMatchTimeout?.(finishedGame);
+    const autoPlayedGame = this.autoPlayTurn(matchId, match.currentTurnPlayerId);
+    if (autoPlayedGame) {
+      this.onMatchTimeout?.(autoPlayedGame);
     }
-    return finishedGame;
+    return autoPlayedGame;
+  }
+
+  autoPlayTurn(matchId, playerId) {
+    const match = this.getOnlineMatch(matchId);
+    if (!match || match.status !== 'playing' || match.currentTurnPlayerId !== playerId) return null;
+
+    const lockKey = this.acquireActionLock(matchId, playerId, 'autoPlayTurn');
+    if (!lockKey) return this.getOnlineMatch(matchId);
+
+    this.clearTurnTimer(matchId);
+
+    try {
+      let game = cloneOnlineGame(match);
+      const player = game.players.find((item) => item.id === playerId);
+      if (!player) return null;
+
+      const logEntries = [
+        createLogEntry({
+          playerId,
+          action: 'timeout_started',
+          payload: { source: 'turn_timeout' },
+          accepted: true,
+        }),
+      ];
+
+      if (!player.hasDrawnThisTurn) {
+        if (player.hand.length !== 9) {
+          const paused = this.pauseInvalidMatch(matchId, [`INVALID_TIMEOUT_HAND_SIZE:${playerId}:${player.hand.length}`]);
+          return paused;
+        }
+
+        const refill = refillDrawPileIfNeeded(game);
+        game = refill.gameState;
+        if (refill.recycled) {
+          logEntries.push(createLogEntry({
+            playerId,
+            action: 'draw_pile_recycled',
+            payload: { source: 'turn_timeout' },
+            accepted: true,
+          }));
+        }
+
+        if (refill.blocked || game.deck.length === 0) {
+          const paused = this.pauseInvalidMatch(matchId, ['AUTO_TURN_EMPTY_DECK']);
+          return paused;
+        }
+
+        const drawnCard = game.deck.shift();
+        player.hand.push(drawnCard);
+        player.hasDrawnThisTurn = true;
+        logEntries.push(createLogEntry({
+          playerId,
+          action: 'auto_draw_from_deck',
+          payload: { source: 'deck', card: drawnCard },
+          accepted: true,
+        }));
+      }
+
+      if (player.hand.length !== 10) {
+        const paused = this.pauseInvalidMatch(matchId, [`INVALID_AUTO_DISCARD_HAND_SIZE:${playerId}:${player.hand.length}`]);
+        return paused;
+      }
+
+      if (validateKnock(player.hand).valid) {
+        logEntries.push(createLogEntry({
+          playerId,
+          action: 'auto_turn_player_had_winning_hand',
+          accepted: true,
+        }));
+      }
+
+      const card = chooseAutoDiscard(player.hand);
+      if (!card) {
+        const paused = this.pauseInvalidMatch(matchId, ['AUTO_DISCARD_CARD_NOT_FOUND']);
+        return paused;
+      }
+
+      const cardIndex = player.hand.findIndex((item) => item.id === card.id || item.instanceId === card.id);
+      if (cardIndex < 0) {
+        const paused = this.pauseInvalidMatch(matchId, ['AUTO_DISCARD_CARD_NOT_IN_HAND']);
+        return paused;
+      }
+
+      const [discardedCard] = player.hand.splice(cardIndex, 1);
+      game.discardPile.push({ ...discardedCard, discardedBy: playerId });
+      player.hasDrawnThisTurn = false;
+
+      const currentIndex = game.players.findIndex((item) => item.id === playerId);
+      const nextPlayer = game.players[(currentIndex + 1) % game.players.length];
+      const turnStartedAt = new Date().toISOString();
+      game.currentTurnPlayerId = nextPlayer.id;
+      game.turnNumber += 1;
+      game.turnStartedAt = turnStartedAt;
+      game.turnSecondsLeft = config.TURN_DURATION_SECONDS;
+      game.players = game.players.map((item) => ({
+        ...item,
+        hasDrawnThisTurn: false,
+      }));
+      game.turn = createTurnState({
+        currentPlayerId: nextPlayer.id,
+        turnStartedAt,
+        turnDurationSeconds: config.TURN_DURATION_SECONDS,
+        turnSecondsLeft: config.TURN_DURATION_SECONDS,
+        canDraw: true,
+        canDiscard: false,
+        canKnock: false,
+      });
+
+      logEntries.push(
+        createLogEntry({
+          playerId,
+          action: 'auto_discard',
+          payload: { card: discardedCard, source: 'turn_timeout' },
+          accepted: true,
+        }),
+        createLogEntry({
+          playerId,
+          action: 'auto_turn_completed',
+          payload: { source: 'turn_timeout' },
+          accepted: true,
+        }),
+      );
+
+      const nextGame = refreshGameCounts({
+        ...game,
+        isResolvingAction: false,
+        lastAction: {
+          type: 'AUTO_TURN_TIMEOUT',
+          message: 'Tempo esgotado. Jogada automatica realizada.',
+          playerId,
+          card: summarizeCard(discardedCard),
+        },
+        matchLog: [...(game.matchLog ?? []), ...logEntries].slice(-300),
+      });
+
+      const integrity = this.validateMatchIntegrity(nextGame);
+      if (!integrity.valid) {
+        return this.pauseInvalidMatch(matchId, integrity.errors);
+      }
+
+      this.matches.set(matchId, nextGame);
+      return this.resetTurnTimer(matchId) ?? nextGame;
+    } finally {
+      this.releaseActionLock(lockKey);
+      const latest = this.matches.get(matchId);
+      if (latest?.isResolvingAction) {
+        this.matches.set(matchId, { ...latest, isResolvingAction: false });
+      }
+    }
   }
 
   finishOnlineMatchByTimeout(matchId) {
     const match = this.getOnlineMatch(matchId);
-    if (!match || match.status !== 'playing') return null;
-
-    const loserId = match.currentTurnPlayerId;
-    const winner = match.players.find((player) => player.id !== loserId);
-    if (!winner) return null;
-
-    this.clearTurnTimer(matchId);
-    match.players.forEach((player) => this.clearDisconnectTimer(player.id));
-    const timeoutMatch = finishMatchState(match, 'timeout', winner.id);
-    const economicResult = this.createEconomicResult({
-      gameState: timeoutMatch,
-      winnerId: winner.id,
-      loserId,
-      finishReason: 'timeout',
-      finishedAt: timeoutMatch.finishedAt,
-    });
-    const finishedGame = refreshGameCounts({
-      ...timeoutMatch,
-      currentTurnPlayerId: loserId,
-      isResolvingAction: false,
-      turnSecondsLeft: 0,
-      economicResult,
-      result: {
-        ...timeoutMatch.result,
-        winnerId: winner.id,
-        loserId,
-        reason: 'timeout',
-        turnsPlayed: match.turnNumber,
-        economy: match.economy,
-        economicResult,
-      },
-      matchLog: [
-        ...(match.matchLog ?? []),
-        {
-          timestamp: new Date().toISOString(),
-          playerId: loserId,
-          action: 'timeout',
-          payloadResumo: {},
-          accepted: true,
-          reasonIfRejected: null,
-        },
-      ].slice(-300),
-      turn: {
-        ...match.turn,
-        turnSecondsLeft: 0,
-        canDraw: false,
-        canDiscard: false,
-        canKnock: false,
-      },
-    });
-    this.matches.set(matchId, finishedGame);
-    this.matchResults.set(matchId, economicResult);
-    this.createMatchHistory(finishedGame);
-
-    return finishedGame;
+    return this.autoPlayTurn(matchId, match?.currentTurnPlayerId);
   }
 
   finishOnlineMatchByDisconnect(matchId, loserId) {
@@ -1049,9 +1162,11 @@ export class MatchManager {
     const timeoutGameState = this.expireTurnIfNeeded(gameState.matchId);
     if (timeoutGameState) {
       return actionRejected(
-        REJECTION.MATCH_ALREADY_FINISHED,
+        timeoutGameState.status === 'playing' ? REJECTION.NOT_YOUR_TURN : REJECTION.MATCH_ALREADY_FINISHED,
         action,
-        'Tempo esgotado. A partida foi encerrada.',
+        timeoutGameState.status === 'playing'
+          ? 'Tempo esgotado. Jogada automatica realizada.'
+          : 'Partida encerrada por timeout.',
         { gameState: timeoutGameState },
       );
     }

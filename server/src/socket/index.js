@@ -70,22 +70,13 @@ export function setupSocketServer(httpServer, {
       sendTurnTimerUpdate(gameState);
     },
     onTimeout: (gameState) => {
-      logInfo('MATCH_TIMEOUT', {
+      logInfo('AUTO_TURN_TIMEOUT', {
         matchId: gameState.matchId,
         roomId: gameState.roomId,
-        winnerId: gameState.result?.winnerId ?? null,
-        loserId: gameState.result?.loserId ?? null,
-        reason: 'timeout',
-      });
-      logInfo('MATCH_FINISHED', {
-        matchId: gameState.matchId,
-        roomId: gameState.roomId,
-        winnerId: gameState.result?.winnerId ?? null,
-        loserId: gameState.result?.loserId ?? null,
-        reason: 'timeout',
+        currentPlayerId: gameState.currentTurnPlayerId,
+        reason: 'turn_timeout_auto_play',
       });
       sendClientGameState(gameState);
-      sendClientGameState(gameState, 'matchFinished');
     },
     onDisconnectTimeout: (gameState) => {
       logInfo('MATCH_FINISHED', {

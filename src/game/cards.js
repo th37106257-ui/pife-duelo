@@ -27,18 +27,22 @@ function stripDiscardMeta(card) {
 }
 
 export function createDeck() {
-  const cards = SUITS.flatMap((suit) =>
-    RANKS.map((rank) => ({
-      id: `${rank.label}-${suit.id}`,
-      instanceId: `${rank.label}-${suit.id}`,
-      rank: rank.label,
-      value: rank.value,
-      suit: suit.id,
-      suitLabel: suit.label,
-      symbol: suit.symbol,
-      color: suit.color,
-      isJoker: false,
-    })),
+  const cards = [1, 2].flatMap((deckNumber) =>
+    SUITS.flatMap((suit) =>
+      RANKS.map((rank) => ({
+        id: `deck${deckNumber}-${rank.label}-${suit.id}`,
+        instanceId: `deck${deckNumber}-${rank.label}-${suit.id}`,
+        deckNumber,
+        logicalId: `${rank.label}-${suit.id}`,
+        rank: rank.label,
+        value: rank.value,
+        suit: suit.id,
+        suitLabel: suit.label,
+        symbol: suit.symbol,
+        color: suit.color,
+        isJoker: false,
+      })),
+    ),
   );
 
   return cards;
@@ -49,16 +53,18 @@ export function validateDeck(deck = createDeck()) {
   const suitById = new Map(SUITS.map((suit) => [suit.id, suit]));
   const rankByLabel = new Map(RANKS.map((rank) => [rank.label, rank]));
   const expectedCards = new Set(
-    SUITS.flatMap((suit) => RANKS.map((rank) => `${rank.label}-${suit.id}`)),
+    [1, 2].flatMap((deckNumber) =>
+      SUITS.flatMap((suit) => RANKS.map((rank) => `deck${deckNumber}-${rank.label}-${suit.id}`)),
+    ),
   );
   const seenIds = new Set();
-  const seenLogicalCards = new Set();
+  const logicalCardCounts = new Map();
   if (!Array.isArray(deck)) {
     return { valid: false, errors: ['O baralho precisa ser uma lista de cartas.'] };
   }
 
-  if (deck.length !== 52) {
-    errors.push(`Baralho deve ter 52 cartas, mas tem ${deck.length}.`);
+  if (deck.length !== 104) {
+    errors.push(`Baralho deve ter 104 cartas, mas tem ${deck.length}.`);
   }
 
   deck.forEach((card, index) => {
@@ -83,6 +89,8 @@ export function validateDeck(deck = createDeck()) {
     const suit = suitById.get(card.suit);
     const rank = rankByLabel.get(card.rank);
     const logicalId = `${card.rank}-${card.suit}`;
+    const expectedDeckNumber = Number(card.deckNumber);
+    const expectedId = `deck${expectedDeckNumber}-${logicalId}`;
 
     if (!suit) {
       errors.push(`Naipe invalido em ${card.id ?? index}: ${card.suit}.`);
@@ -98,19 +106,24 @@ export function validateDeck(deck = createDeck()) {
       errors.push(`Valor incorreto em ${logicalId}.`);
     }
 
-    if (suit && rank && card.id !== logicalId) {
-      errors.push(`Id incorreto em ${card.id}; esperado ${logicalId}.`);
+    if (![1, 2].includes(expectedDeckNumber)) {
+      errors.push(`Numero de baralho invalido em ${card.id ?? index}: ${card.deckNumber}.`);
     }
 
-    if (seenLogicalCards.has(logicalId)) {
-      errors.push(`Carta repetida incorretamente: ${logicalId}.`);
-    } else {
-      seenLogicalCards.add(logicalId);
+    if (suit && rank && [1, 2].includes(expectedDeckNumber) && card.id !== expectedId) {
+      errors.push(`Id incorreto em ${card.id}; esperado ${expectedId}.`);
     }
+
+    logicalCardCounts.set(logicalId, (logicalCardCounts.get(logicalId) ?? 0) + 1);
   });
 
   expectedCards.forEach((cardId) => {
-    if (!seenLogicalCards.has(cardId)) errors.push(`Carta faltando: ${cardId}.`);
+    if (!seenIds.has(cardId)) errors.push(`Carta faltando: ${cardId}.`);
+  });
+
+  SUITS.flatMap((suit) => RANKS.map((rank) => `${rank.label}-${suit.id}`)).forEach((logicalId) => {
+    const count = logicalCardCounts.get(logicalId) ?? 0;
+    if (count !== 2) errors.push(`Carta logica ${logicalId} deve aparecer 2 vezes, mas aparece ${count}.`);
   });
 
   return { valid: errors.length === 0, errors };

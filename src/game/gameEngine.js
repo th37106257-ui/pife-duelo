@@ -399,17 +399,27 @@ export function timeoutForActor(game, actor = TURNS.PLAYER) {
   const guard = guardAction(game, actor, null, { currentTurn: actor });
   if (guard.blocked) return guard;
 
-  const state = guard.game;
-  const actorLabel = getActorLabel(actor);
-  const result = {
-    type: 'loss',
-    winner: 'timeout',
-    message: `O tempo acabou. ${actorLabel} perdeu automaticamente.`,
-  };
+  let state = guard.game;
+  const handKey = getActorHandKey(actor);
 
-  return allowed(`${actor}-timeout`, { ...state, result }, {
-    previousGame: state,
-    result,
+  if (state.turnStage === TURN_STAGES.DRAW) {
+    const drawAction = drawFromStockForActor(state, actor, { handMode: 'auto' });
+    if (drawAction.blocked) return drawAction;
+    state = drawAction.game;
+  }
+
+  const winningBeforeAutoDiscard = getKnockResultForActor(state, actor).valid;
+  const discardedCard = chooseBotDiscard(state[handKey]);
+  if (!discardedCard) return blocked('missing-auto-discard-card', state);
+
+  const discardAction = discardFromHandForActor(state, actor, discardedCard.id, { handMode: 'auto' });
+  if (discardAction.blocked) return discardAction;
+
+  return allowed(`${actor}-timeout-auto-turn`, discardAction.game, {
+    previousGame: guard.game,
+    discardedCard,
+    winningBeforeAutoDiscard,
+    message: 'Tempo esgotado. Jogada automatica realizada.',
   });
 }
 
