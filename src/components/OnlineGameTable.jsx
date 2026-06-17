@@ -84,21 +84,21 @@ function buildOnlineFlight(card, from, to, kind = 'discard') {
     mid: {
       x: (from.x + to.x) / 2,
       y: kind === 'discard'
-        ? (from.y + to.y) / 2 - 10
+        ? (from.y + to.y) / 2 - 6
         : Math.min(from.y, to.y) - 28,
     },
     fromRotate: 0,
-    midRotate: kind === 'discard' ? 0.6 : 3,
-    toRotate: kind === 'discard' ? 1.4 : 0,
+    midRotate: kind === 'discard' ? 0 : 3,
+    toRotate: kind === 'discard' ? 0.8 : 0,
     fromScale: 1,
-    midScale: kind === 'discard' ? 0.97 : 1.04,
+    midScale: kind === 'discard' ? 1 : 1.04,
     toScale: kind === 'discard'
-      ? Math.max(0.64, Math.min(0.92, to.width / Math.max(from.width, 1)))
+      ? 1
       : Math.max(0.54, Math.min(1, to.width / Math.max(from.width, 1))),
     finalScale: kind === 'discard'
       ? Math.max(0.64, Math.min(0.92, to.width / Math.max(from.width, 1)))
       : Math.max(0.54, Math.min(1, to.width / Math.max(from.width, 1))),
-    duration: kind === 'discard' ? 0.26 : 0.2,
+    duration: kind === 'discard' ? 0.28 : 0.2,
   };
 }
 
@@ -372,13 +372,13 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     setDepartingCardId(cardId);
     if (flight) setOnlineFlight(flight);
     playSoundEffect('discard');
-    applyHandUpdate((currentHand) => currentHand.filter((item) => item.id !== cardId));
+    pendingServerHandRef.current = hand.filter((item) => item.id !== cardId);
     discardCardOnline({ ...actionPayload, cardId });
     setSelectedCardId(null);
     setDragDiscardState({ active: false, over: false });
 
-    actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 290);
-  }, [actionPayload, applyHandUpdate, canDiscard, finishOnlineAnimation, hand]);
+    actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 320);
+  }, [actionPayload, canDiscard, finishOnlineAnimation, hand]);
 
   const handleKnock = useCallback(() => {
     if (!onlineGameState.isYourTurn) {

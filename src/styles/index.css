@@ -1268,9 +1268,19 @@ button {
 .card-flight-discard .playing-card,
 .card-flight-draw-discard .playing-card {
   box-shadow:
-    0 10px 16px rgba(0, 0, 0, 0.3),
+    0 8px 12px rgba(0, 0, 0, 0.24),
     inset 0 0 0 1px rgba(255, 255, 255, 0.48),
     inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.card-flight-discard {
+  will-change: transform;
+}
+
+.card-flight-discard .playing-card {
+  filter: none;
+  opacity: 1;
+  contain: paint;
 }
 
 .center-marker {
@@ -1405,6 +1415,61 @@ button {
   font-weight: 700;
   letter-spacing: 0.18em;
   text-transform: uppercase;
+}
+
+.discard-card-view {
+  position: relative;
+  display: block;
+  width: var(--pile-card-w, clamp(42px, 12vw, 54px));
+  height: var(--pile-card-h, clamp(60px, 17vw, 78px));
+  overflow: hidden;
+  border-radius: clamp(7px, 1.8vw, 10px);
+  border: 1px solid rgba(17, 24, 39, 0.16);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 250, 0.98), rgba(232, 229, 216, 0.98));
+  box-shadow:
+    0 7px 12px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: #111827;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+}
+
+.discard-card-red {
+  color: #b91c1c;
+}
+
+.discard-card-black {
+  color: #111827;
+}
+
+.discard-card-corner {
+  position: absolute;
+  top: 7%;
+  left: 10%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  line-height: 0.92;
+  text-shadow: none;
+}
+
+.discard-card-corner strong {
+  font-size: clamp(18px, 5vw, 27px);
+  font-weight: 800;
+}
+
+.discard-card-corner span {
+  font-size: clamp(17px, 4.8vw, 25px);
+}
+
+.discard-card-symbol {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translate3d(-50%, -50%, 0);
+  font-size: clamp(34px, 10vw, 52px);
+  line-height: 1;
 }
 
 .pile-chip {
@@ -2582,7 +2647,7 @@ button {
   transform: translate3d(0, 0, 0);
   transform-style: preserve-3d;
   box-shadow:
-    0 12px 16px rgba(0, 0, 0, 0.28),
+    0 8px 12px rgba(0, 0, 0, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
@@ -2591,7 +2656,7 @@ button {
   opacity: 1;
   transition: none;
   box-shadow:
-    0 10px 16px rgba(0, 0, 0, 0.3),
+    0 7px 10px rgba(0, 0, 0, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 

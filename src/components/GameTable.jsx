@@ -35,7 +35,7 @@ import { playSoundEffect } from '../services/soundEffects.js';
 
 const TURN_SECONDS = 60;
 const TOAST_DURATION = 1600;
-const DISCARD_ANIMATION_MS = 200;
+const DISCARD_ANIMATION_MS = 280;
 const BEAT_CONFIRM_MS = 300;
 const FLIGHT_COMMIT_MS = 220;
 const FLIGHT_CLEAR_MS = 320;
@@ -324,7 +324,7 @@ export default function GameTable() {
   }, []);
 
   const makeFlight = useCallback(({ kind, card, faceDown = false, from, to, fromRotate = 0, toRotate = 0 }) => {
-    const lift = kind === 'discard' ? 8 : 54;
+    const lift = kind === 'discard' ? 6 : 54;
 
     return {
       id: `${kind}-${card.id}-${Date.now()}`,
@@ -339,12 +339,12 @@ export default function GameTable() {
       },
       fromRotate,
       midRotate: kind === 'discard' ? 0 : 5,
-      toRotate,
+      toRotate: kind === 'discard' ? Math.max(-0.8, Math.min(0.8, toRotate)) : toRotate,
       fromScale: 1,
       midScale: kind === 'discard' ? 1 : 1.08,
       toScale: kind === 'discard' ? 1 : Math.max(0.54, Math.min(1.22, to.width / Math.max(from.width, 1))),
       finalScale: Math.max(0.54, Math.min(1.22, to.width / Math.max(from.width, 1))),
-      duration: kind === 'discard' ? 0.2 : 0.3,
+      duration: kind === 'discard' ? 0.28 : 0.3,
     };
   }, []);
 

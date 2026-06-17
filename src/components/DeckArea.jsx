@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { memo } from 'react';
 import Card from './Card.jsx';
+import DiscardCardView from './DiscardCardView.jsx';
 
 const backCard = { id: 'deck-back' };
 
@@ -83,24 +84,24 @@ function DeckArea({
                   key={topDiscard.instanceId ?? topDiscard.id}
                   initial={
                     isOnlineStableDiscard
-                      ? { opacity: 1, y: 0, x: 0, rotate: 3, scale: 1 }
+                      ? { opacity: 1, y: 0, x: 0, rotate: 0, scale: 1 }
                       : lastAction === 'player-discard'
-                      ? { opacity: 0, y: 92, x: 12, rotate: -4, scale: 0.86 }
-                      : { opacity: 0, y: -48, x: -10, rotate: 4, scale: 0.88 }
+                      ? { opacity: 0, y: 10, x: 0, rotate: 0, scale: 0.98 }
+                      : { opacity: 0, y: -18, x: 0, rotate: 0, scale: 0.98 }
                   }
-                  animate={{ opacity: 1, y: 0, x: 0, rotate: 3, scale: 1 }}
+                  animate={{ opacity: 1, y: 0, x: 0, rotate: 0, scale: 1 }}
                   exit={
                     lastAction === 'player-take-discard'
-                      ? { opacity: 0, x: -36, y: 104, rotate: -3, scale: 0.86 }
+                      ? { opacity: 0, x: -16, y: 36, rotate: 0, scale: 0.98 }
                       : { opacity: 0, scale: 0.85 }
                   }
                   transition={
                     isOnlineStableDiscard
                       ? { duration: 0.01 }
-                      : { type: 'spring', stiffness: 230, damping: 30, mass: 0.9 }
+                      : { duration: 0.18, ease: [0.22, 1, 0.36, 1] }
                   }
                 >
-                  <Card card={topDiscard} size="pile" interactive={false} />
+                  <DiscardCardView card={topDiscard} />
                 </motion.div>
               ) : (
                 <span className="empty-discard">{isDragOver ? 'soltar' : canDropDiscard ? 'jogar' : 'vazio'}</span>
