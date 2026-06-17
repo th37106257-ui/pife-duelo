@@ -27,7 +27,8 @@ export async function connectSocket() {
     if (!socket) {
       socket = io(getSocketUrl(), {
         autoConnect: false,
-        transports: ['websocket', 'polling'],
+        transports: ['polling', 'websocket'],
+        upgrade: true,
       });
 
       socket.on('connect', () => {
@@ -47,7 +48,7 @@ export async function connectSocket() {
       const timeoutId = window.setTimeout(() => {
         socketConnectPromise = null;
         reject(new Error('Tempo limite ao conectar com o servidor online.'));
-      }, 8000);
+      }, 15000);
 
       const cleanup = () => {
         window.clearTimeout(timeoutId);
