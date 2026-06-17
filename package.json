@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --configLoader runner",
-    "build": "vite build --configLoader runner",
-    "start": "node scripts/serve-dist.mjs",
+    "build": "npm install --prefix server && vite build --configLoader runner",
+    "start": "node server/src/index.js",
     "preview": "vite preview --host 0.0.0.0",
     "share": "vite preview --host 0.0.0.0 --port 5173",
     "test": "node scripts/test-game-rules.mjs",

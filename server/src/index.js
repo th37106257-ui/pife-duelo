@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { RoomManager } from './managers/RoomManager.js';
 import { MatchManager } from './managers/MatchManager.js';
@@ -14,6 +17,8 @@ import { logError, logInfo, logWarn } from './utils/logger.js';
 import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js';
 
 const app = express();
+const here = dirname(fileURLToPath(import.meta.url));
+const distPath = resolve(here, '../../dist');
 const roomManager = new RoomManager();
 const matchManager = new MatchManager();
 const playerManager = new PlayerManager();
@@ -414,6 +419,26 @@ app.get('/api/matches/:matchId', (request, response) => {
 
   response.json({ match });
 });
+
+if (existsSync(distPath)) {
+  app.use(express.static(distPath, {
+    index: false,
+    maxAge: config.NODE_ENV === 'production' ? '1h' : 0,
+  }));
+
+  app.get('*', (request, response, next) => {
+    if (
+      request.path.startsWith('/api/') ||
+      request.path === '/health' ||
+      request.path.startsWith('/socket.io/')
+    ) {
+      next();
+      return;
+    }
+
+    response.sendFile(resolve(distPath, 'index.html'));
+  });
+}
 
 app.use((request, response) => {
   logWarn('ROUTE_NOT_FOUND', { method: request.method, path: request.path });

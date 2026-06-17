@@ -5,12 +5,45 @@ Este projeto esta em formato monorepo simples:
 - Frontend React/Vite na raiz do repositorio.
 - Backend Express + Socket.io na pasta `server/`.
 
-Para Railway, use **dois servicos separados no mesmo projeto Railway**:
+## Modo recomendado atual: um servico unico no Railway
+
+O projeto tambem esta preparado para rodar **frontend + backend no mesmo servico Railway**.
+Esse e o modo mais simples para a versao atual:
+
+- o build gera o frontend em `dist/`;
+- o start sobe o servidor Node/Socket.io;
+- o mesmo servidor entrega o React, `/health`, `/api` e `/socket.io`.
+
+Configuracao do servico unico:
+
+- Root Directory: `/`
+- Build Command: `npm install && npm run build`
+- Start Command: `npm start`
+
+Variaveis de ambiente:
+
+```env
+NODE_ENV=production
+CLIENT_URL=https://URL-DO-SERVICO-RAILWAY
+ALLOWED_CLIENT_URLS=https://URL-DO-SERVICO-RAILWAY
+ADMIN_PASSWORD=crie_uma_senha_forte
+DISCONNECT_GRACE_SECONDS=60
+```
+
+Observacoes:
+
+- Nao cadastre `PORT` manualmente. O Railway injeta `PORT` automaticamente.
+- `VITE_SOCKET_URL` pode ficar vazio neste modo, porque o socket usa o mesmo dominio do frontend.
+- Depois do deploy, `/health` deve retornar JSON e `/socket.io/?EIO=4&transport=polling` deve retornar uma resposta tecnica do Socket.io, nao HTML.
+
+## Modo alternativo: dois servicos separados
+
+Se quiser separar infraestrutura depois, use **dois servicos separados no mesmo projeto Railway**:
 
 1. `pife-duelo-server`
 2. `pife-duelo-web`
 
-Isso evita misturar build do Vite com o processo do Socket.io e deixa `VITE_SOCKET_URL` configuravel.
+Isso separa o build do Vite do processo do Socket.io e deixa `VITE_SOCKET_URL` configuravel.
 
 ## 1. Subir no GitHub
 
