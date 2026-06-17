@@ -1,0 +1,531 @@
+import { Server } from 'socket.io';
+import { config } from '../config.js';
+import { buildClientGameState } from '../game/clientState.js';
+import { logInfo } from '../utils/logger.js';
+
+export function setupSocketServer(httpServer, {
+  roomManager,
+  matchManager,
+  playerManager,
+  socketManager,
+  queueManager,
+  corsOptions,
+} = {}) {
+  const io = new Server(httpServer, {
+    cors: corsOptions ?? {
+      origin: config.ALLOWED_CLIENT_URLS,
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
+    transports: ['websocket', 'polling'],
+  });
+  const sendClientGameState = (gameState, eventName = 'gameStateUpdated') => {
+    gameState.players.forEach((player) => {
+      const targetSocket = socketManager.getSocket(player.socketId);
+      if (!targetSocket) return;
+
+      const payload = buildClientGameState(gameState, player.id);
+      targetSocket.emit(eventName, payload);
+      logInfo('CLIENT_STATE_SENT', {
+        eventName,
+        matchId: gameState.matchId,
+        roomId: gameState.roomId,
+        playerId: player.id,
+        handCount: payload.you?.hand?.length ?? 0,
+        opponentHandCount: payload.opponent?.handCount ?? 0,
+      });
+    });
+  };
+
+  const sendTurnTimerUpdate = (gameState) => {
+    gameState.players.forEach((player) => {
+      const targetSocket = socketManager.getSocket(player.socketId);
+      if (!targetSocket) return;
+
+      targetSocket.emit('turnTimerUpdate', {
+        matchId: gameState.matchId,
+        roomId: gameState.roomId,
+        currentPlayerId: gameState.currentTurnPlayerId,
+        timeLeft: gameState.turnSecondsLeft ?? gameState.turn?.turnSecondsLeft ?? config.TURN_DURATION_SECONDS,
+      });
+    });
+  };
+
+  const rejectAction = (socket, rejection) => {
+    logInfo('ACTION_REJECTED', {
+      socketId: socket.id,
+      reason: rejection.reason,
+      action: rejection.action,
+    });
+    socket.emit('actionRejected', {
+      reason: rejection.reason,
+      message: rejection.message,
+      action: rejection.action,
+      debugReason: rejection.debugReason,
+    });
+  };
+
+  matchManager.setTurnTimerHandlers({
+    onTick: (gameState) => {
+      sendTurnTimerUpdate(gameState);
+    },
+    onTimeout: (gameState) => {
+      logInfo('MATCH_TIMEOUT', {
+        matchId: gameState.matchId,
+        roomId: gameState.roomId,
+        winnerId: gameState.result?.winnerId ?? null,
+        loserId: gameState.result?.loserId ?? null,
+        reason: 'timeout',
+      });
+      logInfo('MATCH_FINISHED', {
+        matchId: gameState.matchId,
+        roomId: gameState.roomId,
+        winnerId: gameState.result?.winnerId ?? null,
+        loserId: gameState.result?.loserId ?? null,
+        reason: 'timeout',
+      });
+      sendClientGameState(gameState);
+      sendClientGameState(gameState, 'matchFinished');
+    },
+    onDisconnectTimeout: (gameState) => {
+      logInfo('MATCH_FINISHED', {
+        matchId: gameState.matchId,
+        roomId: gameState.roomId,
+        winnerId: gameState.result?.winnerId ?? null,
+        loserId: gameState.result?.loserId ?? null,
+        reason: 'disconnect',
+      });
+      sendClientGameState(gameState);
+      sendClientGameState(gameState, 'matchFinished');
+    },
+  });
+
+  const emitMatchFound = (entries) => {
+    const [first, second] = entries;
+    const roomPlayers = [
+      {
+        id: first.playerId,
+        playerId: first.playerId,
+        socketId: first.socketId,
+        name: first.playerName,
+        playerName: first.playerName,
+        position: 'bottom',
+      },
+      {
+        id: second.playerId,
+        playerId: second.playerId,
+        socketId: second.socketId,
+        name: second.playerName,
+        playerName: second.playerName,
+        position: 'top',
+      },
+    ];
+    const room = roomManager.createRoom({
+      roomType: config.ROOM_MODE,
+      tableValue: first.tableValue,
+      status: 'matched',
+      players: roomPlayers,
+      maxPlayers: 2,
+      matchId: null,
+    });
+
+    logInfo('ROOM_CREATED', {
+      roomId: room.roomId,
+      tableValue: room.tableValue,
+      status: room.status,
+      playerCount: room.players.length,
+    });
+    logInfo('MATCH_FOUND', {
+      roomId: room.roomId,
+      tableValue: room.tableValue,
+      players: entries.map((entry) => entry.playerId),
+    });
+
+    entries.forEach((entry, index) => {
+      const opponent = entries[index === 0 ? 1 : 0];
+      const targetSocket = socketManager.getSocket(entry.socketId);
+      targetSocket?.emit('matchFound', {
+        roomId: room.roomId,
+        roomType: room.roomType,
+        tableValue: room.tableValue,
+        players: [
+          { playerId: entry.playerId, playerName: entry.playerName, position: 'bottom' },
+          { playerId: opponent.playerId, playerName: opponent.playerName, position: 'top' },
+        ],
+        message: 'Adversario encontrado!',
+      });
+    });
+
+    const onlineMatch = matchManager.createOnlineMatch(room.roomId, room.players, room.tableValue);
+    roomManager.updateRoom(room.roomId, {
+      status: 'playing',
+      matchId: onlineMatch.matchId,
+    });
+
+    logInfo('ONLINE_MATCH_CREATED', {
+      matchId: onlineMatch.matchId,
+      roomId: room.roomId,
+      players: onlineMatch.players.map((item) => item.id),
+      deckCount: onlineMatch.deckCount,
+    });
+    logInfo('MATCH_STARTED', {
+      matchId: onlineMatch.matchId,
+      roomId: room.roomId,
+      currentTurnPlayerId: onlineMatch.currentTurnPlayerId,
+    });
+    sendClientGameState(onlineMatch, 'matchStarted');
+
+    return room;
+  };
+
+  queueManager.setTimeoutHandler((entry) => {
+    const targetSocket = socketManager.getSocket(entry.socketId);
+    logInfo('QUEUE_TIMEOUT', {
+      playerId: entry.playerId,
+      socketId: entry.socketId,
+      tableValue: entry.tableValue,
+    });
+    targetSocket?.emit('queueTimeout', {
+      message: 'Nenhum adversario encontrado. Tente novamente.',
+      canTryAgain: true,
+    });
+  });
+
+  io.on('connection', (socket) => {
+    const player = playerManager.createPlayer({
+      name: 'Visitante',
+      socketId: socket.id,
+    });
+
+    socketManager.registerSocket(socket, player);
+    logInfo('SOCKET_CONNECTED', { socketId: socket.id, playerId: player.id });
+    logInfo('PLAYER_CONNECTED', { socketId: socket.id, playerId: player.id });
+
+    socket.emit('connection:success', {
+      playerId: player.id,
+      socketId: socket.id,
+      connected: true,
+    });
+
+    const getActivePlayerId = () => socketManager.getPlayerBySocket(socket.id)?.id ?? player.id;
+
+    socket.on('ping', (payload = {}) => {
+      logInfo('PING_RECEIVED', { socketId: socket.id, playerId: player.id });
+      socket.emit('pong', {
+        ok: true,
+        receivedAt: new Date().toISOString(),
+        payload,
+      });
+      logInfo('PONG_SENT', { socketId: socket.id, playerId: player.id });
+    });
+
+    socket.on('joinQueue', (payload = {}) => {
+      const playerName = String(payload.playerName || '').trim().slice(0, 32) || 'Jogador';
+      const tableValue = Number(payload.tableValue);
+
+      if (!queueManager.isValidTableValue(tableValue)) {
+        logInfo('MATCHMAKING_ERROR', {
+          socketId: socket.id,
+          playerId: player.id,
+          reason: 'invalid-table-value',
+          tableValue: payload.tableValue,
+        });
+        socket.emit('matchmakingError', {
+          reason: 'invalid-table-value',
+          message: 'Mesa invalida.',
+        });
+        return;
+      }
+
+      const queuedPlayer = playerManager.updatePlayer(player.id, {
+        name: playerName,
+        socketId: socket.id,
+        isConnected: true,
+        isReady: true,
+      });
+
+      const queueResult = queueManager.joinQueue({
+        playerId: queuedPlayer.id,
+        socketId: socket.id,
+        playerName,
+        tableValue,
+      });
+
+      if (queueResult.blocked) {
+        logInfo('MATCHMAKING_ERROR', {
+          socketId: socket.id,
+          playerId: player.id,
+          reason: queueResult.reason,
+          tableValue,
+        });
+        socket.emit('matchmakingError', {
+          reason: queueResult.reason,
+          message: 'Voce ja esta na fila ou a entrada nao e valida.',
+        });
+        return;
+      }
+
+      logInfo('QUEUE_JOINED', {
+        socketId: socket.id,
+        playerId: player.id,
+        playerName,
+        tableValue,
+        queuePosition: queueResult.queuePosition,
+      });
+      socket.emit('queueJoined', {
+        playerId: player.id,
+        tableValue,
+        queuePosition: queueResult.queuePosition,
+        waitingSince: queueResult.entry.joinedAt,
+      });
+
+      const matchEntries = queueManager.findMatch(tableValue);
+      if (matchEntries) {
+        emitMatchFound(matchEntries);
+      }
+    });
+
+    socket.on('leaveQueue', () => {
+      const leaveResult = queueManager.leaveQueue(player.id);
+      const updatedPlayer = playerManager.updatePlayer(player.id, { isReady: false });
+
+      logInfo('QUEUE_LEFT', {
+        socketId: socket.id,
+        playerId: player.id,
+        removed: leaveResult.removed,
+        tableValue: leaveResult.entry?.tableValue,
+      });
+      socket.emit('queueLeft', {
+        playerId: player.id,
+        removed: leaveResult.removed,
+        playerName: updatedPlayer?.name ?? player.name,
+      });
+    });
+
+    socket.on('requestQueueStatus', (payload = {}) => {
+      socket.emit('queueStatus', queueManager.getQueueStatus(payload.tableValue));
+    });
+
+    socket.on('requestServerStatus', () => {
+      socket.emit('serverStatus', {
+        onlinePlayers: socketManager.onlineCount(),
+        activeRooms: roomManager.listRooms().length,
+        activeMatches: matchManager.listMatches().length,
+        queuedPlayers: queueManager.getQueueSize(),
+        uptime: Math.round(process.uptime()),
+      });
+    });
+
+    socket.on('getMatchHistory', () => {
+      socket.emit('matchHistory', {
+        history: matchManager.listMatchHistory(),
+      });
+    });
+
+    socket.on('getMatchAudit', (payload = {}) => {
+      const audit = matchManager.getMatchAudit(payload.matchId);
+      if (!audit) {
+        socket.emit('matchAudit', {
+          matchId: payload.matchId,
+          error: 'match-history-not-found',
+        });
+        return;
+      }
+
+      socket.emit('matchAudit', { audit });
+    });
+
+    socket.on('resumeOnlineMatch', (payload = {}) => {
+      const savedPlayerId = String(payload.playerId || '');
+      const savedMatchId = String(payload.matchId || '');
+      const match = matchManager.reconnectOnlinePlayer(savedMatchId, savedPlayerId, socket.id);
+
+      if (!match || (payload.roomId && match.roomId !== payload.roomId)) {
+        rejectAction(socket, {
+          reason: 'MATCH_NOT_FOUND',
+          message: 'Partida ativa nao encontrada.',
+          action: 'resumeOnlineMatch',
+        });
+        return;
+      }
+
+      socketManager.setPlayerForSocket(socket.id, savedPlayerId);
+      playerManager.updatePlayer(savedPlayerId, {
+        socketId: socket.id,
+        isConnected: true,
+      });
+      matchManager.setOnlinePlayerConnection(savedPlayerId, true, socket.id);
+      socket.emit('gameStateUpdated', buildClientGameState(match, savedPlayerId));
+      logInfo('CLIENT_STATE_SENT', {
+        eventName: 'resumeOnlineMatch',
+        matchId: match.matchId,
+        roomId: match.roomId,
+        playerId: savedPlayerId,
+      });
+    });
+
+    socket.on('requestGameState', (payload = {}) => {
+      const match = matchManager.expireTurnIfNeeded(payload.matchId) ?? matchManager.getOnlineMatch(payload.matchId);
+      const viewerPlayerId = match?.players.some((item) => item.id === payload.playerId)
+        ? payload.playerId
+        : player.id;
+
+      if (!match || !match.players.some((item) => item.id === viewerPlayerId)) {
+        rejectAction(socket, {
+          reason: 'MATCH_NOT_FOUND',
+          message: 'Partida nao encontrada.',
+          action: 'requestGameState',
+        });
+        return;
+      }
+
+      socket.emit('gameStateUpdated', buildClientGameState(match, viewerPlayerId));
+      logInfo('CLIENT_STATE_SENT', {
+        eventName: 'gameStateUpdated',
+        matchId: match.matchId,
+        roomId: match.roomId,
+        playerId: viewerPlayerId,
+      });
+    });
+
+    socket.on('playerDrawFromDeck', (payload = {}) => {
+      const activePlayerId = getActivePlayerId();
+      const result = matchManager.drawFromDeck(payload.matchId, activePlayerId);
+      if (result.blocked) {
+        rejectAction(socket, result);
+        if (result.gameState) sendClientGameState(result.gameState);
+        return;
+      }
+
+      logInfo('PLAYER_DRAW_FROM_DECK', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        playerId: activePlayerId,
+        deckCount: result.gameState.deckCount,
+      });
+      sendClientGameState(result.gameState);
+    });
+
+    socket.on('playerDrawFromDiscard', (payload = {}) => {
+      const activePlayerId = getActivePlayerId();
+      const result = matchManager.drawFromDiscard(payload.matchId, activePlayerId);
+      if (result.blocked) {
+        rejectAction(socket, result);
+        return;
+      }
+
+      logInfo('PLAYER_DRAW_FROM_DISCARD', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        playerId: activePlayerId,
+        topDiscardCard: result.gameState.topDiscardCard?.id ?? null,
+      });
+      sendClientGameState(result.gameState);
+    });
+
+    socket.on('playerDiscardCard', (payload = {}) => {
+      const activePlayerId = getActivePlayerId();
+      const result = matchManager.discardOnlineCard(payload.matchId, activePlayerId, payload.cardId);
+      if (result.blocked) {
+        rejectAction(socket, result);
+        return;
+      }
+
+      logInfo('PLAYER_DISCARDED_CARD', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        playerId: activePlayerId,
+        cardId: result.card.id,
+      });
+      logInfo('TURN_CHANGED', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        currentTurnPlayerId: result.gameState.currentTurnPlayerId,
+        turnNumber: result.gameState.turnNumber,
+      });
+      sendClientGameState(result.gameState);
+    });
+
+    socket.on('player:reorderHand', (payload = {}) => {
+      const result = matchManager.reorderOnlineHand(payload.matchId, getActivePlayerId(), payload.handOrder);
+      if (result.blocked) {
+        rejectAction(socket, result);
+        return;
+      }
+    });
+
+    const handlePlayerKnock = (payload = {}) => {
+      const activePlayerId = getActivePlayerId();
+      const result = matchManager.knockOnline(payload.matchId, activePlayerId);
+      if (result.blocked) {
+        rejectAction(socket, result);
+        return;
+      }
+
+      logInfo('PLAYER_KNOCKED', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        playerId: activePlayerId,
+      });
+      logInfo('MATCH_FINISHED', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        winnerId: activePlayerId,
+        reason: 'knock',
+      });
+      sendClientGameState(result.gameState);
+      sendClientGameState(result.gameState, 'matchFinished');
+    };
+
+    socket.on('playerKnock', handlePlayerKnock);
+    socket.on('player:knock', handlePlayerKnock);
+
+    socket.on('playerSurrender', (payload = {}) => {
+      const activePlayerId = getActivePlayerId();
+      const result = matchManager.surrenderOnlineMatch(payload.matchId, activePlayerId);
+      if (result.blocked) {
+        rejectAction(socket, result);
+        return;
+      }
+
+      logInfo('MATCH_FINISHED', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        winnerId: result.gameState.result?.winnerId ?? null,
+        loserId: activePlayerId,
+        reason: 'surrender',
+      });
+      sendClientGameState(result.gameState);
+      sendClientGameState(result.gameState, 'matchFinished');
+    });
+
+    socket.on('disconnect', (reason) => {
+      const activePlayerId = getActivePlayerId();
+      const leaveResult = queueManager.leaveQueueBySocket(socket.id);
+      if (leaveResult.removed) {
+        logInfo('QUEUE_LEFT', {
+          socketId: socket.id,
+          playerId: activePlayerId,
+          removed: true,
+          reason: 'disconnect',
+          tableValue: leaveResult.entry.tableValue,
+        });
+      }
+      playerManager.setPlayerConnected(activePlayerId, false);
+      matchManager.handleOnlineDisconnect(activePlayerId);
+      socketManager.removeSocket(socket.id);
+
+      logInfo('SOCKET_DISCONNECTED', { socketId: socket.id, playerId: activePlayerId, reason });
+      logInfo('PLAYER_DISCONNECTED', { socketId: socket.id, playerId: activePlayerId, reason });
+    });
+  });
+
+  logInfo('SOCKET_SERVER_READY', {
+    phase: '4.13',
+    roomMode: config.ROOM_MODE,
+  });
+
+  return io;
+}
+
+export default setupSocketServer;

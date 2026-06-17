@@ -1,0 +1,34 @@
+{
+  "name": "pife-duelo-v1",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --configLoader runner",
+    "build": "vite build --configLoader runner",
+    "start": "node scripts/serve-dist.mjs",
+    "preview": "vite preview --host 0.0.0.0",
+    "share": "vite preview --host 0.0.0.0 --port 5173",
+    "test": "node scripts/test-game-rules.mjs",
+    "test:report": "node scripts/test-game-rules.mjs --report",
+    "DEBUG_WIN_HAND": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_WIN_HAND",
+    "DEBUG_BOT_WIN": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_BOT_WIN",
+    "DEBUG_RECYCLE": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_RECYCLE",
+    "DEBUG_TIMEOUT": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_TIMEOUT",
+    "DEBUG_INVALID_HAND": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_INVALID_HAND",
+    "MULTIPLAYER_LOCAL": "vite --host 0.0.0.0 --configLoader runner --open /?mode=local-2p"
+  },
+  "dependencies": {
+    "framer-motion": "^12.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "vite": "^7.0.0"
+  }
+}

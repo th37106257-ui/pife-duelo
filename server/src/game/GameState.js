@@ -1,0 +1,58 @@
+import { createId } from '../utils/createId.js';
+import { createTurnState } from './TurnState.js';
+
+export function createGameState({
+  matchId = createId('match'),
+  roomId,
+  status = 'waiting',
+  mode = 'local',
+  tableValue = null,
+  economy = null,
+  paymentStatus = null,
+  players = [],
+  deck = [],
+  discardPile = [],
+  deckCount = deck.length,
+  topDiscardCard = discardPile[discardPile.length - 1] ?? null,
+  currentTurnPlayerId = players[0]?.id ?? null,
+  turnNumber = 1,
+  turnStartedAt = null,
+  turnDurationSeconds,
+  turnSecondsLeft = turnDurationSeconds,
+  isResolvingAction = false,
+  turn = createTurnState({ currentPlayerId: currentTurnPlayerId }),
+  result = null,
+  matchLog = [],
+  createdAt = new Date().toISOString(),
+  startedAt = null,
+  finishedAt = null,
+} = {}) {
+  return {
+    matchId,
+    roomId,
+    status,
+    mode,
+    tableValue,
+    economy,
+    paymentStatus,
+    players,
+    deck,
+    deckCount,
+    discardPile,
+    topDiscardCard,
+    currentTurnPlayerId,
+    turnNumber,
+    turnStartedAt,
+    turnDurationSeconds,
+    turnSecondsLeft,
+    isResolvingAction,
+    turn,
+    result,
+    matchLog,
+    createdAt,
+    startedAt,
+    finishedAt,
+  };
+}
+
+export default createGameState;
