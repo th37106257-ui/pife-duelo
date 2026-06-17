@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
@@ -19,6 +19,7 @@ import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js'
 const app = express();
 const here = dirname(fileURLToPath(import.meta.url));
 const distPath = resolve(here, '../../dist');
+const indexPath = resolve(distPath, 'index.html');
 const roomManager = new RoomManager();
 const matchManager = new MatchManager();
 const playerManager = new PlayerManager();
@@ -426,6 +427,21 @@ if (existsSync(distPath)) {
     maxAge: config.NODE_ENV === 'production' ? '1h' : 0,
   }));
 
+  const renderClientHtml = () => {
+    const html = readFileSync(indexPath, 'utf8');
+    const scriptMatch = html.match(/\s*<script type="module"[^>]*src="([^"]+)"[^>]*><\/script>/);
+    if (!scriptMatch) return html;
+
+    const scriptSrc = scriptMatch[1];
+    return html
+      .replace(scriptMatch[0], '')
+      .replace(/\s+crossorigin/g, '')
+      .replace(
+        '</body>',
+        `    <script type="module" src="${scriptSrc}"></script>\n  </body>`,
+      );
+  };
+
   app.get('*', (request, response, next) => {
     if (
       request.path.startsWith('/api/') ||
@@ -436,7 +452,10 @@ if (existsSync(distPath)) {
       return;
     }
 
-    response.sendFile(resolve(distPath, 'index.html'));
+    response
+      .type('html')
+      .set('Cache-Control', 'no-store')
+      .send(renderClientHtml());
   });
 }
 
