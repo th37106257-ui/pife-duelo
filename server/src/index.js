@@ -438,7 +438,7 @@ if (existsSync(distPath)) {
       .replace(/\s+crossorigin/g, '')
       .replace(
         '</body>',
-        `    <script type="module" src="${scriptSrc}"></script>\n  </body>`,
+        `    <script defer src="${scriptSrc}"></script>\n  </body>`,
       );
   };
 
