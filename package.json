@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --configLoader runner",
-    "build": "npm install --prefix server && vite build --configLoader runner",
+    "build": "npm install --prefix server && node scripts/build-production.mjs",
     "start": "node server/src/index.js",
     "preview": "vite preview --host 0.0.0.0",
     "share": "vite preview --host 0.0.0.0 --port 5173",
