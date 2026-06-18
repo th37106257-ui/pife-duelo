@@ -19,7 +19,25 @@ export function setupSocketServer(httpServer, {
       credentials: true,
     },
     transports: ['websocket', 'polling'],
+    allowUpgrades: true,
+    pingInterval: 25000,
+    pingTimeout: 20000,
   });
+  const buildTimeSync = (gameState) => ({
+    matchId: gameState.matchId,
+    serverNow: Date.now(),
+    turnStartedAt: Date.parse(gameState.turnStartedAt),
+    turnDurationMs: Number(gameState.turnDurationSeconds ?? config.TURN_DURATION_SECONDS) * 1000,
+    currentPlayerId: gameState.currentTurnPlayerId,
+  });
+
+  const sendTimeSync = (gameState) => {
+    const payload = buildTimeSync(gameState);
+    gameState.players.forEach((player) => {
+      socketManager.getSocket(player.socketId)?.emit('time_sync', payload);
+    });
+  };
+
   const sendClientGameState = (gameState, eventName = 'gameStateUpdated') => {
     gameState.players.forEach((player) => {
       const targetSocket = socketManager.getSocket(player.socketId);
@@ -27,6 +45,7 @@ export function setupSocketServer(httpServer, {
 
       const payload = buildClientGameState(gameState, player.id);
       targetSocket.emit(eventName, payload);
+      targetSocket.emit('time_sync', buildTimeSync(gameState));
       logInfo('CLIENT_STATE_SENT', {
         eventName,
         matchId: gameState.matchId,
@@ -34,20 +53,6 @@ export function setupSocketServer(httpServer, {
         playerId: player.id,
         handCount: payload.you?.hand?.length ?? 0,
         opponentHandCount: payload.opponent?.handCount ?? 0,
-      });
-    });
-  };
-
-  const sendTurnTimerUpdate = (gameState) => {
-    gameState.players.forEach((player) => {
-      const targetSocket = socketManager.getSocket(player.socketId);
-      if (!targetSocket) return;
-
-      targetSocket.emit('turnTimerUpdate', {
-        matchId: gameState.matchId,
-        roomId: gameState.roomId,
-        currentPlayerId: gameState.currentTurnPlayerId,
-        timeLeft: gameState.turnSecondsLeft ?? gameState.turn?.turnSecondsLeft ?? config.TURN_DURATION_SECONDS,
       });
     });
   };
@@ -83,7 +88,10 @@ export function setupSocketServer(httpServer, {
 
   matchManager.setTurnTimerHandlers({
     onTick: (gameState) => {
-      sendTurnTimerUpdate(gameState);
+      const secondsLeft = gameState.turnSecondsLeft ?? gameState.turn?.turnSecondsLeft;
+      if (secondsLeft === config.TURN_DURATION_SECONDS || secondsLeft % 5 === 0) {
+        sendTimeSync(gameState);
+      }
     },
     onTimeout: (gameState) => {
       logInfo('AUTO_TURN_TIMEOUT', {
@@ -102,7 +110,6 @@ export function setupSocketServer(httpServer, {
         loserId: gameState.result?.loserId ?? null,
         reason: 'disconnect',
       });
-      sendClientGameState(gameState);
       sendClientGameState(gameState, 'matchFinished');
     },
   });
@@ -213,6 +220,18 @@ export function setupSocketServer(httpServer, {
     });
 
     socketManager.registerSocket(socket, player);
+    logInfo('SOCKET_TRANSPORT_CONNECTED', {
+      socketId: socket.id,
+      playerId: player.id,
+      transport: socket.conn.transport.name,
+    });
+    socket.conn.on('upgrade', (transport) => {
+      logInfo('SOCKET_TRANSPORT_UPGRADED', {
+        socketId: socket.id,
+        playerId: getActivePlayerId(),
+        transport: transport.name,
+      });
+    });
     logInfo('SOCKET_CONNECTED', { socketId: socket.id, playerId: player.id });
     logInfo('PLAYER_CONNECTED', { socketId: socket.id, playerId: player.id });
 
@@ -225,9 +244,10 @@ export function setupSocketServer(httpServer, {
 
     const getActivePlayerId = () => socketManager.getPlayerBySocket(socket.id)?.id ?? player.id;
     const onSafe = (eventName, handler) => {
-      socket.on(eventName, (payload = {}) => {
+      socket.on(eventName, (payload = {}, acknowledgement) => {
+        const ack = typeof acknowledgement === 'function' ? acknowledgement : null;
         try {
-          const result = handler(payload);
+          const result = handler(payload, ack);
           Promise.resolve(result).catch((error) => {
             logError('SOCKET_HANDLER_ERROR', {
               source: 'socket',
@@ -238,6 +258,7 @@ export function setupSocketServer(httpServer, {
               message: error?.message ?? String(error),
               stack: error?.stack,
             });
+            ack?.({ ok: false, actionId: payload?.actionId ?? null, reason: 'SERVER_ERROR', serverNow: Date.now() });
             socket.emit('actionRejected', { reason: 'SERVER_ERROR', action: eventName, message: 'Erro interno ao processar acao.' });
           });
         } catch (error) {
@@ -250,8 +271,18 @@ export function setupSocketServer(httpServer, {
             message: error?.message ?? String(error),
             stack: error?.stack,
           });
+          ack?.({ ok: false, actionId: payload?.actionId ?? null, reason: 'SERVER_ERROR', serverNow: Date.now() });
           socket.emit('actionRejected', { reason: 'SERVER_ERROR', action: eventName, message: 'Erro interno ao processar acao.' });
         }
+      });
+    };
+
+    const acknowledgeAction = (ack, payload, result = {}) => {
+      ack?.({
+        ok: !result.blocked,
+        actionId: payload?.actionId ?? null,
+        reason: result.reason ?? null,
+        serverNow: Date.now(),
       });
     };
 
@@ -263,6 +294,14 @@ export function setupSocketServer(httpServer, {
         payload,
       });
       logInfo('PONG_SENT', { socketId: socket.id, playerId: player.id });
+    });
+
+    socket.on('ping_game', (payload = {}, ack) => {
+      ack?.({
+        clientSentAt: Number(payload.clientSentAt) || null,
+        serverNow: Date.now(),
+        transport: socket.conn.transport.name,
+      });
     });
 
     socket.on('client_error_report', (payload = {}) => {
@@ -412,6 +451,7 @@ export function setupSocketServer(httpServer, {
       });
       matchManager.setOnlinePlayerConnection(savedPlayerId, true, socket.id);
       socket.emit('gameStateUpdated', buildClientGameState(match, savedPlayerId));
+      socket.emit('time_sync', buildTimeSync(match));
       logInfo('PLAYER_RECONNECTED', {
         socketId: socket.id,
         playerId: savedPlayerId,
@@ -442,6 +482,7 @@ export function setupSocketServer(httpServer, {
       }
 
       socket.emit('gameStateUpdated', buildClientGameState(match, viewerPlayerId));
+      socket.emit('time_sync', buildTimeSync(match));
       logInfo('CLIENT_STATE_SENT', {
         eventName: 'gameStateUpdated',
         matchId: match.matchId,
@@ -450,10 +491,11 @@ export function setupSocketServer(httpServer, {
       });
     });
 
-    onSafe('playerDrawFromDeck', (payload = {}) => {
+    onSafe('playerDrawFromDeck', (payload = {}, ack) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.drawFromDeck(payload.matchId, activePlayerId);
       if (result.blocked) {
+        acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
         if (result.gameState) sendClientGameState(result.gameState);
         return;
@@ -465,13 +507,15 @@ export function setupSocketServer(httpServer, {
         playerId: activePlayerId,
         deckCount: result.gameState.deckCount,
       });
+      acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState);
     });
 
-    onSafe('playerDrawFromDiscard', (payload = {}) => {
+    onSafe('playerDrawFromDiscard', (payload = {}, ack) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.drawFromDiscard(payload.matchId, activePlayerId);
       if (result.blocked) {
+        acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
         return;
       }
@@ -482,13 +526,15 @@ export function setupSocketServer(httpServer, {
         playerId: activePlayerId,
         topDiscardCard: result.gameState.topDiscardCard?.id ?? null,
       });
+      acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState);
     });
 
-    onSafe('playerDiscardCard', (payload = {}) => {
+    onSafe('playerDiscardCard', (payload = {}, ack) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.discardOnlineCard(payload.matchId, activePlayerId, payload.cardId);
       if (result.blocked) {
+        acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
         return;
       }
@@ -505,21 +551,25 @@ export function setupSocketServer(httpServer, {
         currentTurnPlayerId: result.gameState.currentTurnPlayerId,
         turnNumber: result.gameState.turnNumber,
       });
+      acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState);
     });
 
-    socket.on('player:reorderHand', (payload = {}) => {
+    onSafe('player:reorderHand', (payload = {}, ack) => {
       const result = matchManager.reorderOnlineHand(payload.matchId, getActivePlayerId(), payload.handOrder);
       if (result.blocked) {
+        acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
         return;
       }
+      acknowledgeAction(ack, payload, result);
     });
 
-    const handlePlayerKnock = (payload = {}) => {
+    const handlePlayerKnock = (payload = {}, ack) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.knockOnline(payload.matchId, activePlayerId);
       if (result.blocked) {
+        acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
         return;
       }
@@ -535,17 +585,18 @@ export function setupSocketServer(httpServer, {
         winnerId: activePlayerId,
         reason: 'knock',
       });
-      sendClientGameState(result.gameState);
+      acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState, 'matchFinished');
     };
 
     onSafe('playerKnock', handlePlayerKnock);
     onSafe('player:knock', handlePlayerKnock);
 
-    socket.on('playerSurrender', (payload = {}) => {
+    onSafe('playerSurrender', (payload = {}, ack) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.surrenderOnlineMatch(payload.matchId, activePlayerId);
       if (result.blocked) {
+        acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
         return;
       }
@@ -557,7 +608,7 @@ export function setupSocketServer(httpServer, {
         loserId: activePlayerId,
         reason: 'surrender',
       });
-      sendClientGameState(result.gameState);
+      acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState, 'matchFinished');
     });
 

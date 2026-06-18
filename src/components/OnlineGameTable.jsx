@@ -7,7 +7,8 @@ import EndGameReveal from './EndGameReveal.jsx';
 import GameModal from './GameModal.jsx';
 import OpponentHand from './OpponentHand.jsx';
 import PlayerHand from './PlayerHand.jsx';
-import Timer from './Timer.jsx';
+import OnlineSyncedTimer from './OnlineSyncedTimer.jsx';
+import NetworkDebugBadge from './NetworkDebugBadge.jsx';
 import {
   discardCardOnline,
   drawFromDeckOnline,
@@ -181,6 +182,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const [incomingCardId, setIncomingCardId] = useState(null);
   const [incomingSource, setIncomingSource] = useState(null);
   const [isAnimatingAction, setIsAnimatingAction] = useState(false);
+  const [isActionPending, setIsActionPending] = useState(false);
   const [menuMode, setMenuMode] = useState(null);
   const [visualTopDiscardCard, setVisualTopDiscardCard] = useState(() => onlineGameState.topDiscardCard);
   const [localActionError, setLocalActionError] = useState('');
@@ -188,6 +190,8 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const pendingTopDiscardRef = useRef(undefined);
   const actionAnimationTimeoutRef = useRef(null);
   const incomingTimeoutRef = useRef(null);
+  const actionErrorTimeoutRef = useRef(null);
+  const pendingActionRef = useRef(false);
   const previousTurnRef = useRef(Boolean(onlineGameState.isYourTurn));
   const alertTurnRef = useRef(null);
   const resultSoundRef = useRef(null);
@@ -195,14 +199,14 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const serverHandSignature = serverHand.map((card) => card.id).join('|');
   const hand = onlineVisualHand;
   const handSignature = hand.map((card) => card.id).join('|');
-  const handValidation = useMemo(() => validatePifeHand(hand), [handSignature, hand]);
+  const handValidation = useMemo(() => validatePifeHand(hand), [handSignature]);
   const topDiscardCard = onlineGameState.topDiscardCard;
   const displayTopDiscardCard = visualTopDiscardCard;
   const displayedActionError = localActionError || actionError;
   const hasDrawn = Boolean(onlineGameState.hasDrawnThisTurn);
   const isPlaying = onlineGameState.status === 'playing';
-  const canAct = onlineGameState.isYourTurn && isPlaying && !handDragging && !isAnimatingAction && !onlineGameState.isResolvingAction;
-  const canResolveDrop = onlineGameState.isYourTurn && isPlaying && !isAnimatingAction && !onlineGameState.isResolvingAction;
+  const canAct = onlineGameState.isYourTurn && isPlaying && !handDragging && !isAnimatingAction && !isActionPending && !onlineGameState.isResolvingAction;
+  const canResolveDrop = onlineGameState.isYourTurn && isPlaying && !isAnimatingAction && !isActionPending && !onlineGameState.isResolvingAction;
   const canDraw = canAct && !hasDrawn && (onlineGameState.deckCount > 0 || onlineGameState.canRecycleDrawPile);
   const canTakeDiscard = canAct && !hasDrawn && Boolean(topDiscardCard);
   const canDiscard = canResolveDrop && hasDrawn && hand.length >= 10;
@@ -210,7 +214,6 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const result = buildOnlineResult(onlineGameState);
   const showKnockReveal = onlineGameState.result?.reason === 'knock';
   const turnDurationSeconds = onlineGameState.turnDurationSeconds ?? 60;
-  const secondsLeft = Math.max(0, onlineGameState.turnSecondsLeft ?? turnDurationSeconds);
   const playerTurnStatus = onlineGameState.isYourTurn ? 'Sua vez' : 'Aguarde';
   const opponentTurnStatus = onlineGameState.isYourTurn ? 'Aguarde' : 'Adversario';
   const playerStatusTone = onlineGameState.isYourTurn ? 'player' : 'muted';
@@ -218,11 +221,30 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const turnLabel = onlineGameState.isYourTurn ? 'Sua vez' : 'Vez do adversario';
   const economy = onlineGameState.economy;
 
-  const actionPayload = {
+  const actionPayload = useMemo(() => ({
     roomId: onlineGameState.roomId,
     matchId: onlineGameState.matchId,
     playerId: onlineGameState.playerId,
-  };
+  }), [onlineGameState.matchId, onlineGameState.playerId, onlineGameState.roomId]);
+
+  const submitAction = useCallback(async (action) => {
+    if (pendingActionRef.current) return false;
+    pendingActionRef.current = true;
+    setIsActionPending(true);
+    setLocalActionError('');
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      setLocalActionError(error.message || 'O servidor nao respondeu.');
+      if (actionErrorTimeoutRef.current) window.clearTimeout(actionErrorTimeoutRef.current);
+      actionErrorTimeoutRef.current = window.setTimeout(() => setLocalActionError(''), 1800);
+      return false;
+    } finally {
+      pendingActionRef.current = false;
+      setIsActionPending(false);
+    }
+  }, []);
 
   const applyHandUpdate = useCallback((newHandOrUpdater) => {
     setOnlineVisualHand((currentHand) => {
@@ -319,9 +341,8 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     previousTurnRef.current = isYourTurn;
   }, [isPlaying, onlineGameState.isYourTurn, onlineGameState.turnNumber]);
 
-  useEffect(() => {
-    if (!onlineGameState.isYourTurn || !isPlaying || secondsLeft > 10 || secondsLeft <= 0) return;
-
+  const handleTimerSecondChange = useCallback((seconds) => {
+    if (!onlineGameState.isYourTurn || !isPlaying || seconds > 10 || seconds <= 0) return;
     const alertKey = `${onlineGameState.matchId}-${onlineGameState.turnNumber}-${onlineGameState.currentTurnPlayerId}`;
     if (alertTurnRef.current === alertKey) return;
 
@@ -333,7 +354,6 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     onlineGameState.isYourTurn,
     onlineGameState.matchId,
     onlineGameState.turnNumber,
-    secondsLeft,
   ]);
 
   useEffect(() => {
@@ -353,6 +373,9 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     if (incomingTimeoutRef.current) {
       window.clearTimeout(incomingTimeoutRef.current);
     }
+    if (actionErrorTimeoutRef.current) {
+      window.clearTimeout(actionErrorTimeoutRef.current);
+    }
   }, []);
 
   const isPointInsideDiscard = useCallback((point) => {
@@ -369,7 +392,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   }, []);
 
   const handleDiscard = useCallback((cardId, originPoint = null) => {
-    if (!canDiscard || !cardId) return;
+    if (!canDiscard || !cardId || pendingActionRef.current) return;
     const card = hand.find((item) => item.id === cardId);
     const cardBox = getElementCenter(tableRef.current?.querySelector(`[data-card-id="${cardId}"]`));
     const from = originPoint && cardBox
@@ -383,12 +406,12 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     if (flight) setOnlineFlight(flight);
     playSoundEffect('discard');
     pendingServerHandRef.current = hand.filter((item) => item.id !== cardId);
-    discardCardOnline({ ...actionPayload, cardId });
+    submitAction(() => discardCardOnline({ ...actionPayload, cardId }));
     setSelectedCardId(null);
     setDragDiscardState({ active: false, over: false });
 
     actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 320);
-  }, [actionPayload, canDiscard, finishOnlineAnimation, hand]);
+  }, [actionPayload, canDiscard, finishOnlineAnimation, hand, submitAction]);
 
   const handleKnock = useCallback(() => {
     if (!onlineGameState.isYourTurn) {
@@ -409,10 +432,10 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
       return;
     }
 
-    knockOnline({
+    submitAction(() => knockOnline({
       ...actionPayload,
       clientHandOrder: hand.map((card) => card.id),
-    });
+    }));
     playSoundEffect('beat');
   }, [
     actionPayload,
@@ -422,6 +445,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     isPlaying,
     onlineGameState.isResolvingAction,
     onlineGameState.isYourTurn,
+    submitAction,
   ]);
 
   const handleDiscardDragEnd = useCallback((cardId, point) => {
@@ -445,22 +469,22 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   }, []);
 
   const handleDrawDeck = useCallback(() => {
-    if (!canDraw) return;
+    if (!canDraw || pendingActionRef.current) return;
     setIsAnimatingAction(true);
     setIncomingSource('deck');
     playSoundEffect('draw');
-    drawFromDeckOnline(actionPayload);
+    submitAction(() => drawFromDeckOnline(actionPayload));
     actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 190);
-  }, [actionPayload, canDraw, finishOnlineAnimation]);
+  }, [actionPayload, canDraw, finishOnlineAnimation, submitAction]);
 
   const handleDrawDiscard = useCallback(() => {
-    if (!canTakeDiscard) return;
+    if (!canTakeDiscard || pendingActionRef.current) return;
     setIsAnimatingAction(true);
     setIncomingSource('discard');
     playSoundEffect('draw');
-    drawFromDiscardOnline(actionPayload);
+    submitAction(() => drawFromDiscardOnline(actionPayload));
     actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 190);
-  }, [actionPayload, canTakeDiscard, finishOnlineAnimation]);
+  }, [actionPayload, canTakeDiscard, finishOnlineAnimation, submitAction]);
 
   const handleReorderCard = useCallback((cardId, targetIndex) => {
     applyHandUpdate((currentHand) => {
@@ -474,18 +498,19 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
       reorderHandOnline({
         ...actionPayload,
         handOrder: nextHand.map((card) => card.id),
-      });
+      }).catch(() => setLocalActionError('Nao foi possivel salvar a ordem da mao.'));
       return nextHand;
     });
   }, [actionPayload, applyHandUpdate]);
 
-  const handleConfirmLeaveMatch = useCallback(() => {
-    surrenderOnlineMatch(actionPayload);
+  const handleConfirmLeaveMatch = useCallback(async () => {
+    const accepted = await submitAction(() => surrenderOnlineMatch(actionPayload));
+    if (!accepted) return;
     setMenuMode(null);
     window.setTimeout(() => {
       onLeaveOnline?.();
     }, 220);
-  }, [actionPayload, onLeaveOnline]);
+  }, [actionPayload, onLeaveOnline, submitAction]);
 
   return (
     <main className="game-shell online-game-shell">
@@ -621,11 +646,13 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
           />
 
           <section className="center-zone" aria-label="Centro da mesa">
-            <Timer
-              seconds={secondsLeft}
-              maxSeconds={turnDurationSeconds}
-              variant="table"
+            <OnlineSyncedTimer
+              matchId={onlineGameState.matchId}
+              serverNow={onlineGameState.serverNow}
+              turnStartedAt={onlineGameState.turnStartedAt}
+              turnDurationMs={onlineGameState.turnDurationMs ?? turnDurationSeconds * 1000}
               label={turnLabel}
+              onSecondChange={handleTimerSecondChange}
             />
             <DeckArea
               drawCount={onlineGameState.deckCount ?? 0}
@@ -650,10 +677,11 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
           <BeatButton
             canBeat={canBeat}
             onBeat={handleKnock}
-            isAnimating={onlineGameState.isResolvingAction}
+            isAnimating={onlineGameState.isResolvingAction || isActionPending}
           />
 
           {displayedActionError ? <span className="online-action-error">{displayedActionError}</span> : null}
+          <NetworkDebugBadge />
 
           <section className="bottom-zone" aria-label="Area do jogador">
             <PlayerHand

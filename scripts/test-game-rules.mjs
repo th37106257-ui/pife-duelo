@@ -37,6 +37,7 @@ import {
 } from '../src/game/rules.js';
 import { MatchManager } from '../server/src/managers/MatchManager.js';
 import { buildClientGameState } from '../server/src/game/clientState.js';
+import { getRemainingSeconds, normalizeTimeSync } from '../src/game/serverClock.js';
 
 const shouldWriteReport = process.argv.includes('--report') || process.env.WRITE_TEST_REPORT === '1';
 const reportPath = new URL('../RELATORIO_TESTES.md', import.meta.url);
@@ -47,6 +48,19 @@ const cards = Object.fromEntries(deck.flatMap((card) => {
   if (card.deckNumber === 1) entries.push([card.logicalId, card]);
   return entries;
 }));
+
+runTest('relogio do servidor independe do horario local do cliente', () => {
+  const payload = {
+    matchId: 'match-clock',
+    serverNow: 100000,
+    turnStartedAt: 90000,
+    turnDurationMs: 60000,
+  };
+  const clientA = normalizeTimeSync(payload, 500000);
+  const clientB = normalizeTimeSync(payload, 9000000);
+  assert.equal(getRemainingSeconds(clientA, 505000), 45);
+  assert.equal(getRemainingSeconds(clientB, 9005000), 45);
+});
 
 runTest('economia calcula premios oficiais por mesa', () => {
   assert.deepEqual(calculatePrize(2), {
@@ -1074,6 +1088,12 @@ runTest('historico da partida atual envia apenas acoes publicas ao cliente', () 
   assert.equal(discardEntry.payload.card.rank, drawnCard.rank);
   assert.equal('hand' in discardEntry.payload, false);
   assert.equal(JSON.stringify(payload.matchLog).includes('deck'), true);
+  assert.ok(payload.matchLog.length <= 2);
+  assert.equal('hand' in payload.opponent, false);
+  assert.equal('turnSecondsLeft' in payload, false);
+  assert.equal(typeof payload.serverNow, 'number');
+  assert.equal(payload.turnDurationMs, 60000);
+  assert.ok(JSON.stringify(payload).length < 10000);
 });
 
 const passed = results.filter((result) => result.status === 'PASS').length;

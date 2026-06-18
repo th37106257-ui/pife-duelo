@@ -28,6 +28,7 @@ export function buildClientGameState(gameState, viewerPlayerId) {
   const topDiscardCard = gameState.discardPile[gameState.discardPile.length - 1] ?? null;
 
   return {
+    serverNow: Date.now(),
     matchId: gameState.matchId,
     roomId: gameState.roomId,
     status: gameState.status,
@@ -64,12 +65,12 @@ export function buildClientGameState(gameState, viewerPlayerId) {
     isYourTurn: gameState.currentTurnPlayerId === viewerPlayerId,
     turnNumber: gameState.turnNumber,
     turnStartedAt: gameState.turnStartedAt,
+    turnDurationMs: Number(gameState.turnDurationSeconds ?? 60) * 1000,
     turnDurationSeconds: gameState.turnDurationSeconds,
-    turnSecondsLeft: gameState.turnSecondsLeft,
     isResolvingAction: gameState.isResolvingAction,
     result: gameState.result,
     economicResult: gameState.economicResult ?? gameState.result?.economicResult ?? null,
-    matchLog: (gameState.matchLog ?? []).map(sanitizePublicLogEntry),
+    matchLog: (gameState.matchLog ?? []).slice(-2).map(sanitizePublicLogEntry),
     winnerId: gameState.result?.winnerId ?? null,
     loserId: gameState.result?.loserId ?? null,
     reason: gameState.result?.reason ?? null,

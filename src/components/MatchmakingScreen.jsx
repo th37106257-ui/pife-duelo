@@ -98,9 +98,10 @@ export default function MatchmakingScreen() {
     topDiscardCard: payload.topDiscardCard,
     isYourTurn: payload.isYourTurn,
     turnNumber: payload.turnNumber,
+    serverNow: payload.serverNow,
     turnStartedAt: payload.turnStartedAt,
+    turnDurationMs: payload.turnDurationMs,
     turnDurationSeconds: payload.turnDurationSeconds,
-    turnSecondsLeft: payload.turnSecondsLeft,
     currentTurnPlayerId: payload.currentTurnPlayerId,
     isResolvingAction: payload.isResolvingAction,
     status: payload.status,
@@ -231,21 +232,6 @@ export default function MatchmakingScreen() {
           setOnlineGameState(null);
           setStatus('idle');
         }
-      },
-      onTurnTimerUpdate: (payload) => {
-        setOnlineGameState((current) => {
-          if (!current || current.matchId !== payload.matchId) return current;
-
-          const nextState = {
-            ...current,
-            currentTurnPlayerId: payload.currentPlayerId,
-            isYourTurn: current.playerId === payload.currentPlayerId,
-            turnSecondsLeft: payload.timeLeft,
-          };
-          onlineGameStateRef.current = nextState;
-          rememberOnlineState(nextState);
-          return nextState;
-        });
       },
     });
 
