@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { createId } from '../utils/createId.js';
 import { calculatePrize } from '../../../src/shared/economy.js';
 import { createMatchHistory, getMatchAudit, listMatchHistory } from '../matchHistory.js';
+import { logError } from '../utils/logger.js';
 
 const REJECTION = {
   NOT_YOUR_TURN: 'NOT_YOUR_TURN',
@@ -380,6 +381,12 @@ export class MatchManager {
       accepted: false,
       reasonIfRejected: errors.join('|'),
     });
+    logError('MATCH_INTEGRITY_ERROR', {
+      matchId,
+      roomId: match.roomId,
+      message: 'Estado invalido detectado pelo servidor.',
+      errors,
+    });
     const errorMatch = this.getOnlineMatch(matchId);
     createMatchHistory({
       ...errorMatch,
@@ -407,6 +414,10 @@ export class MatchManager {
       clearInterval(timer);
       this.turnTimers.delete(matchId);
     }
+  }
+
+  hasActiveTurnTimer(matchId) {
+    return this.turnTimers.has(matchId);
   }
 
   resetTurnTimer(matchId) {

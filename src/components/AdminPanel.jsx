@@ -56,6 +56,8 @@ export default function AdminPanel() {
   const [selectedAudit, setSelectedAudit] = useState(null);
   const [filters, setFilters] = useState({ table: '', player: '', reason: '', date: '', matchId: '' });
   const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [monitorFilters, setMonitorFilters] = useState({ level: '', source: '', query: '' });
 
   const loadDashboard = async (currentPassword = password) => {
     setIsLoading(true);
@@ -97,6 +99,25 @@ export default function AdminPanel() {
     });
   }, [snapshot, filters]);
 
+  const filteredMonitoringLogs = useMemo(() => {
+    const monitoring = snapshot?.monitoring ?? {};
+    const logs = [
+      ...(monitoring.serverErrors ?? []),
+      ...(monitoring.clientErrors ?? []),
+      ...(monitoring.events ?? []),
+    ];
+    const unique = [...new Map(logs.map((entry) => [entry.id, entry])).values()];
+    return unique
+      .filter((entry) => !monitorFilters.level || entry.level === monitorFilters.level)
+      .filter((entry) => !monitorFilters.source || entry.source === monitorFilters.source)
+      .filter((entry) => {
+        if (!monitorFilters.query) return true;
+        const haystack = `${entry.message} ${entry.matchId} ${entry.playerId} ${entry.event}`.toLowerCase();
+        return haystack.includes(monitorFilters.query.toLowerCase());
+      })
+      .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
+  }, [snapshot, monitorFilters]);
+
   const handleLogin = async (event) => {
     event.preventDefault();
     setErrorMessage('');
@@ -127,6 +148,24 @@ export default function AdminPanel() {
       await loadDashboard();
     } catch (error) {
       setErrorMessage(error.message || 'Acao admin falhou.');
+    }
+  };
+
+  const copyMonitoringReport = async () => {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      metrics: snapshot?.metrics ?? {},
+      stuckMatches: snapshot?.monitoring?.stuckMatches ?? [],
+      errors: {
+        server: snapshot?.monitoring?.serverErrors ?? [],
+        client: snapshot?.monitoring?.clientErrors ?? [],
+      },
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      setErrorMessage('Relatorio copiado.');
+    } catch {
+      setErrorMessage('Nao foi possivel copiar o relatorio.');
     }
   };
 
@@ -169,6 +208,11 @@ export default function AdminPanel() {
 
         {errorMessage ? <p className="admin-error">{errorMessage}</p> : null}
 
+        <nav className="admin-tabs" aria-label="Secoes do painel">
+          <button type="button" className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Visao geral</button>
+          <button type="button" className={activeTab === 'monitoring' ? 'active' : ''} onClick={() => setActiveTab('monitoring')}>Erros / Monitoramento</button>
+        </nav>
+
         <section className="admin-metrics">
           <article><span>Jogadores online</span><strong>{dashboard.onlinePlayers ?? 0}</strong></article>
           <article><span>Partidas ativas</span><strong>{dashboard.activeMatches ?? 0}</strong></article>
@@ -177,6 +221,63 @@ export default function AdminPanel() {
           <article><span>Taxa hoje</span><strong>{formatMoney(dashboard.platformFeeToday ?? 0)}</strong></article>
           <article><span>Travadas</span><strong>{dashboard.stuckMatches ?? 0}</strong></article>
         </section>
+
+        {activeTab === 'monitoring' ? (
+          <>
+            <section className="admin-metrics admin-monitor-metrics">
+              <article><span>Iniciadas hoje</span><strong>{snapshot?.metrics?.startedMatchesToday ?? 0}</strong></article>
+              <article><span>Reconexoes</span><strong>{snapshot?.metrics?.reconnectCountToday ?? 0}</strong></article>
+              <article><span>Desconexoes</span><strong>{snapshot?.metrics?.disconnectCountToday ?? 0}</strong></article>
+              <article><span>Timeouts automaticos</span><strong>{snapshot?.metrics?.autoTimeoutTurnsToday ?? 0}</strong></article>
+              <article><span>Erros de integridade</span><strong>{snapshot?.metrics?.integrityErrorsToday ?? 0}</strong></article>
+              <article><span>Fila media</span><strong>{formatDuration(snapshot?.metrics?.averageQueueTimeSeconds ?? 0)}</strong></article>
+              <article><span>Partida media</span><strong>{formatDuration(snapshot?.metrics?.averageMatchDurationSeconds ?? 0)}</strong></article>
+            </section>
+
+            <section className="admin-section">
+              <div className="admin-section-heading">
+                <h2>Erros / Monitoramento</h2>
+                <button type="button" onClick={copyMonitoringReport}>Copiar relatorio</button>
+              </div>
+              <div className="admin-filters">
+                <select value={monitorFilters.level} onChange={(event) => setMonitorFilters({ ...monitorFilters, level: event.target.value })}>
+                  <option value="">Nivel</option><option value="error">Error</option><option value="warn">Warn</option><option value="info">Info</option>
+                </select>
+                <select value={monitorFilters.source} onChange={(event) => setMonitorFilters({ ...monitorFilters, source: event.target.value })}>
+                  <option value="">Origem</option><option value="server">Server</option><option value="socket">Socket</option><option value="match">Match</option><option value="queue">Queue</option><option value="admin">Admin</option><option value="frontend">Frontend</option>
+                </select>
+                <input placeholder="Match, jogador ou mensagem" value={monitorFilters.query} onChange={(event) => setMonitorFilters({ ...monitorFilters, query: event.target.value })} />
+              </div>
+              <div className="admin-log-list admin-monitor-list">
+                {filteredMonitoringLogs.slice(0, 200).map((entry) => (
+                  <div key={entry.id} className={`monitor-log monitor-${entry.level}`}>
+                    <strong>{entry.level.toUpperCase()} · {entry.source}</strong>
+                    <span>{entry.message}</span>
+                    <small>{entry.matchId || entry.playerId || entry.event || '-'} · {formatDate(entry.timestamp)}</small>
+                  </div>
+                ))}
+                {filteredMonitoringLogs.length === 0 ? <p className="admin-empty">Nenhum registro para estes filtros.</p> : null}
+              </div>
+            </section>
+
+            <section className="admin-section">
+              <h2>Partidas suspeitas</h2>
+              <div className="admin-card-list">
+                {(snapshot?.monitoring?.stuckMatches ?? []).map((match) => (
+                  <article key={match.matchId} className="admin-match-card monitor-warning">
+                    <strong>#{getShortId(match.matchId)}</strong>
+                    <span>{match.player1?.name ?? '-'} x {match.player2?.name ?? '-'}</span>
+                    <span>{(match.stuckReasons ?? []).join(', ')}</span>
+                  </article>
+                ))}
+                {(snapshot?.monitoring?.stuckMatches ?? []).length === 0 ? <p className="admin-empty">Nenhuma partida suspeita.</p> : null}
+              </div>
+            </section>
+          </>
+        ) : null}
+
+        {activeTab === 'overview' ? (
+          <>
 
         <section className="admin-section">
           <h2>Partidas em andamento</h2>
@@ -323,6 +424,8 @@ export default function AdminPanel() {
             ))}
           </div>
         </section>
+          </>
+        ) : null}
       </section>
     </main>
   );

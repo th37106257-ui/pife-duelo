@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import { reportClientError } from './errorReporter.js';
 
 let socket = null;
 let socketConnectPromise = null;
@@ -30,6 +31,7 @@ export async function connectSocket() {
         transports: ['polling', 'websocket'],
         upgrade: true,
       });
+      window.__PIFE_DUELO_SOCKET__ = socket;
 
       socket.on('connect', () => {
         console.log('[SOCKET_CONNECTED]', { socketId: socket.id });
@@ -41,6 +43,13 @@ export async function connectSocket() {
 
       socket.on('disconnect', (reason) => {
         console.log('[SOCKET_DISCONNECTED]', { socketId: socket.id, reason });
+        if (reason !== 'io client disconnect') {
+          reportClientError(new Error(`Socket desconectado: ${reason}`), 'socket-disconnect', { level: 'warn' });
+        }
+      });
+
+      socket.on('connect_error', (error) => {
+        reportClientError(error, 'socket-connect');
       });
     }
 
@@ -65,7 +74,9 @@ export async function connectSocket() {
       const onConnectError = (error) => {
         cleanup();
         socketConnectPromise = null;
-        reject(new Error(error?.message || 'Nao foi possivel conectar ao servidor online.'));
+        const connectionError = new Error(error?.message || 'Nao foi possivel conectar ao servidor online.');
+        reportClientError(connectionError, 'socket-connect');
+        reject(connectionError);
       };
 
       socket.once('connect', onConnect);
@@ -83,5 +94,6 @@ export function disconnectSocket() {
   socket.disconnect();
   socket.removeAllListeners();
   socket = null;
+  window.__PIFE_DUELO_SOCKET__ = null;
   socketConnectPromise = null;
 }

@@ -15,6 +15,12 @@ import { buildClientGameState } from './game/clientState.js';
 import { listAdminLogs, recordAdminLog } from './adminStore.js';
 import { logError, logInfo, logWarn } from './utils/logger.js';
 import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js';
+import {
+  getDailyObservabilityMetrics,
+  getErrorCountSince,
+  listObservabilityLogs,
+  recordClientError,
+} from './observabilityStore.js';
 
 const app = express();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +31,7 @@ const matchManager = new MatchManager();
 const playerManager = new PlayerManager();
 const socketManager = new SocketManager({ playerManager });
 const queueManager = new QueueManager();
+const reportedStuckMatches = new Set();
 
 function isAllowedRailwayOrigin(origin) {
   try {
@@ -63,6 +70,10 @@ function requireAdmin(request, response) {
     reason: 'invalid-password',
     result: 'denied',
   });
+  logWarn('ADMIN_AUTH_FAILED', {
+    path: request.path,
+    message: 'Tentativa de acesso admin rejeitada.',
+  });
   response.status(401).json({ error: 'admin-unauthorized' });
   return false;
 }
@@ -81,10 +92,44 @@ function getMatchDurationSeconds(match) {
   return Math.max(0, Math.round((finished - started) / 1000));
 }
 
+function getMatchStuckStatus(match) {
+  const reasons = [];
+  const players = match?.players ?? [];
+  const lastLogAt = Date.parse(match?.matchLog?.at(-1)?.timestamp ?? match?.turnStartedAt ?? match?.startedAt);
+  const idleSeconds = Number.isFinite(lastLogAt) ? Math.floor((Date.now() - lastLogAt) / 1000) : 0;
+  const threshold = Math.max(90, Number(match?.turnDurationSeconds || config.TURN_DURATION_SECONDS) + 30);
+
+  if (!players.length) reasons.push('active_without_players');
+  if (players.length > 0 && players.every((player) => !player.isConnected)) reasons.push('all_players_disconnected');
+  if (match?.status === 'playing' && idleSeconds > threshold) reasons.push('no_recent_action');
+  if (match?.status === 'playing' && !matchManager.hasActiveTurnTimer(match.matchId)) reasons.push('turn_timer_missing');
+  if (match?.blockReason || (match?.integrityErrors?.length ?? 0) > 0) reasons.push('invalid_state');
+
+  return { stuckWarning: reasons.length > 0, reasons, idleSeconds };
+}
+
+function getProductionMetrics() {
+  const history = matchManager.listMatchHistory({ limit: 1000 });
+  const todayHistory = history.filter((record) => isToday(record.finishedAt ?? record.createdAt));
+  const daily = getDailyObservabilityMetrics();
+  const durations = todayHistory.map((record) => Number(record.durationSeconds || 0)).filter((value) => value > 0);
+  return {
+    ...daily,
+    finishedMatchesToday: Math.max(daily.finishedMatchesToday, todayHistory.length),
+    activeMatches: matchManager.listMatches().filter((match) => match.status !== 'finished').length,
+    onlinePlayers: socketManager.onlineCount(),
+    averageMatchDurationSeconds: durations.length
+      ? Math.round(durations.reduce((total, value) => total + value, 0) / durations.length)
+      : 0,
+  };
+}
+
 function getActiveAdminMatches() {
   return matchManager.listMatches()
     .filter((match) => match.mode === 'online_1v1' && match.status !== 'finished')
-    .map((match) => ({
+    .map((match) => {
+      const stuck = getMatchStuckStatus(match);
+      return ({
       matchId: match.matchId,
       roomId: match.roomId,
       tableValue: match.tableValue,
@@ -112,7 +157,11 @@ function getActiveAdminMatches() {
       durationSeconds: getMatchDurationSeconds(match),
       blockReason: match.blockReason ?? null,
       integrityErrors: match.integrityErrors ?? [],
-    }));
+      stuckWarning: stuck.stuckWarning,
+      stuckReasons: stuck.reasons,
+      idleSeconds: stuck.idleSeconds,
+    });
+    });
 }
 
 function getOnlinePlayersForAdmin() {
@@ -158,22 +207,37 @@ function emitMatchToPlayers(gameState, eventName = 'matchFinished') {
 }
 
 app.get('/health', (request, response) => {
+  const metrics = getProductionMetrics();
+  const memory = process.memoryUsage();
   response.json({
     status: 'ok',
     uptime: process.uptime(),
-    activeMatches: matchManager.listMatches().filter((match) => match.status !== 'finished').length,
-    onlinePlayers: socketManager.onlineCount(),
+    onlinePlayers: metrics.onlinePlayers,
+    activeMatches: metrics.activeMatches,
+    waitingPlayers: queueManager.getQueueSize(),
     queuedPlayers: queueManager.getQueueSize(),
+    finishedMatchesToday: metrics.finishedMatchesToday,
+    errorCountLastHour: getErrorCountSince(Date.now() - 60 * 60 * 1000),
+    memoryUsage: {
+      rssMb: Math.round(memory.rss / 1024 / 1024),
+      heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+      heapTotalMb: Math.round(memory.heapTotal / 1024 / 1024),
+    },
     service: 'pife-duelo-server',
-    phase: '4.13',
+    phase: '4.15',
   });
+});
+
+app.post('/api/client-errors', (request, response) => {
+  recordClientError(request.body ?? {});
+  response.status(202).json({ accepted: true });
 });
 
 app.get('/api/status', (request, response) => {
   response.json({
     ok: true,
     service: 'pife-duelo-server',
-    phase: '4.13',
+    phase: '4.15',
     environment: config.NODE_ENV,
     roomMode: config.ROOM_MODE,
     maxPlayersPerRoom: config.MAX_PLAYERS_PER_ROOM,
@@ -238,8 +302,11 @@ app.get('/api/admin/dashboard', (request, response) => {
     match.status === 'paused' ||
     match.status === 'error' ||
     match.blockReason ||
-    match.integrityErrors.length > 0,
+    match.integrityErrors.length > 0 ||
+    match.stuckWarning,
   );
+  const observability = listObservabilityLogs({ limit: 200 });
+  const metrics = getProductionMetrics();
 
   response.json({
     dashboard: {
@@ -250,7 +317,25 @@ app.get('/api/admin/dashboard', (request, response) => {
       platformFeeToday: todayHistory.reduce((total, record) => total + Number(record.platformFeeAmount || 0), 0),
       stuckMatches: errorMatches.length,
     },
+    metrics,
+    monitoring: {
+      serverErrors: observability.server,
+      clientErrors: observability.client,
+      events: observability.events,
+      stuckMatches: errorMatches,
+    },
     adminLogs: listAdminLogs({ limit: 30 }),
+  });
+});
+
+app.get('/api/admin/monitoring', (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  const activeMatches = getActiveAdminMatches();
+  response.json({
+    metrics: getProductionMetrics(),
+    logs: listObservabilityLogs({ limit: request.query.limit }),
+    stuckMatches: activeMatches.filter((match) => match.stuckWarning),
+    generatedAt: new Date().toISOString(),
   });
 });
 
@@ -304,6 +389,12 @@ app.post('/api/admin/matches/:matchId/end', (request, response) => {
     return;
   }
 
+  logInfo('ADMIN_MATCH_CLOSED', {
+    matchId: request.params.matchId,
+    roomId: result.gameState?.roomId,
+    reason,
+  });
+
   emitMatchToPlayers(result.gameState);
   response.json({ match: result.gameState });
 });
@@ -325,6 +416,13 @@ app.post('/api/admin/matches/:matchId/force-winner', (request, response) => {
     response.status(400).json({ error: result.reason, message: result.message });
     return;
   }
+
+  logInfo('ADMIN_FORCE_WINNER', {
+    matchId: request.params.matchId,
+    roomId: result.gameState?.roomId,
+    winnerId,
+    reason,
+  });
 
   emitMatchToPlayers(result.gameState);
   response.json({ match: result.gameState });
@@ -474,7 +572,12 @@ app.use((request, response) => {
 });
 
 app.use((error, request, response, next) => {
-  logError('SERVER_ERROR', { message: error.message });
+  logError('SERVER_ERROR', {
+    message: error.message,
+    stack: error.stack,
+    method: request.method,
+    path: request.path,
+  });
   response.status(500).json({ error: 'server-error' });
 });
 
@@ -488,6 +591,29 @@ const io = setupSocketServer(server, {
   corsOptions,
 });
 
+const stuckMatchMonitor = setInterval(() => {
+  matchManager.listMatches()
+    .forEach((match) => {
+      if (match.status === 'finished') {
+        reportedStuckMatches.delete(match.matchId);
+        return;
+      }
+      const status = getMatchStuckStatus(match);
+      if (status.stuckWarning && !reportedStuckMatches.has(match.matchId)) {
+        reportedStuckMatches.add(match.matchId);
+        logWarn('STUCK_MATCH_DETECTED', {
+          matchId: match.matchId,
+          roomId: match.roomId,
+          message: 'Partida suspeita detectada pelo monitor.',
+          reasons: status.reasons,
+          idleSeconds: status.idleSeconds,
+        });
+      }
+      if (!status.stuckWarning) reportedStuckMatches.delete(match.matchId);
+    });
+}, 30000);
+stuckMatchMonitor.unref?.();
+
 server.listen(config.PORT, () => {
   if (!config.ADMIN_PASSWORD) {
     logWarn('ADMIN_PASSWORD_NOT_CONFIGURED', {
@@ -499,7 +625,14 @@ server.listen(config.PORT, () => {
     port: config.PORT,
     environment: config.NODE_ENV,
     clientUrls: config.ALLOWED_CLIENT_URLS,
-    phase: '4.13',
+    phase: '4.15',
+  });
+});
+
+process.on('unhandledRejection', (error) => {
+  logError('UNHANDLED_REJECTION', {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : null,
   });
 });
 

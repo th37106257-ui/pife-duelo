@@ -1,7 +1,8 @@
 import { Server } from 'socket.io';
 import { config } from '../config.js';
 import { buildClientGameState } from '../game/clientState.js';
-import { logInfo } from '../utils/logger.js';
+import { logError, logInfo, logWarn } from '../utils/logger.js';
+import { recordClientError } from '../observabilityStore.js';
 
 export function setupSocketServer(httpServer, {
   roomManager,
@@ -52,8 +53,11 @@ export function setupSocketServer(httpServer, {
   };
 
   const rejectAction = (socket, rejection) => {
-    logInfo('ACTION_REJECTED', {
+    logWarn('ACTION_REJECTED', {
       socketId: socket.id,
+      playerId: socketManager.getPlayerBySocket(socket.id)?.id ?? null,
+      matchId: rejection.gameState?.matchId ?? null,
+      roomId: rejection.gameState?.roomId ?? null,
       reason: rejection.reason,
       action: rejection.action,
     });
@@ -89,6 +93,14 @@ export function setupSocketServer(httpServer, {
       sendClientGameState(gameState);
       sendClientGameState(gameState, 'matchFinished');
     },
+  });
+
+  io.engine.on('connection_error', (error) => {
+    logError('SOCKET_CONNECTION_ERROR', {
+      message: error.message,
+      code: error.code,
+      context: error.context,
+    });
   });
 
   const emitMatchFound = (entries) => {
@@ -199,6 +211,36 @@ export function setupSocketServer(httpServer, {
     });
 
     const getActivePlayerId = () => socketManager.getPlayerBySocket(socket.id)?.id ?? player.id;
+    const onSafe = (eventName, handler) => {
+      socket.on(eventName, (payload = {}) => {
+        try {
+          const result = handler(payload);
+          Promise.resolve(result).catch((error) => {
+            logError('SOCKET_HANDLER_ERROR', {
+              source: 'socket',
+              eventName,
+              socketId: socket.id,
+              playerId: getActivePlayerId(),
+              matchId: payload?.matchId ?? null,
+              message: error?.message ?? String(error),
+              stack: error?.stack,
+            });
+            socket.emit('actionRejected', { reason: 'SERVER_ERROR', action: eventName, message: 'Erro interno ao processar acao.' });
+          });
+        } catch (error) {
+          logError('SOCKET_HANDLER_ERROR', {
+            source: 'socket',
+            eventName,
+            socketId: socket.id,
+            playerId: getActivePlayerId(),
+            matchId: payload?.matchId ?? null,
+            message: error?.message ?? String(error),
+            stack: error?.stack,
+          });
+          socket.emit('actionRejected', { reason: 'SERVER_ERROR', action: eventName, message: 'Erro interno ao processar acao.' });
+        }
+      });
+    };
 
     socket.on('ping', (payload = {}) => {
       logInfo('PING_RECEIVED', { socketId: socket.id, playerId: player.id });
@@ -210,7 +252,23 @@ export function setupSocketServer(httpServer, {
       logInfo('PONG_SENT', { socketId: socket.id, playerId: player.id });
     });
 
-    socket.on('joinQueue', (payload = {}) => {
+    socket.on('client_error_report', (payload = {}) => {
+      recordClientError({
+        ...payload,
+        playerId: payload.playerId ?? getActivePlayerId(),
+      });
+    });
+
+    socket.on('error', (error) => {
+      logError('SOCKET_ERROR', {
+        socketId: socket.id,
+        playerId: getActivePlayerId(),
+        message: error?.message ?? String(error),
+        stack: error?.stack,
+      });
+    });
+
+    onSafe('joinQueue', (payload = {}) => {
       const playerName = String(payload.playerName || '').trim().slice(0, 32) || 'Jogador';
       const tableValue = Number(payload.tableValue);
 
@@ -326,7 +384,7 @@ export function setupSocketServer(httpServer, {
       socket.emit('matchAudit', { audit });
     });
 
-    socket.on('resumeOnlineMatch', (payload = {}) => {
+    onSafe('resumeOnlineMatch', (payload = {}) => {
       const savedPlayerId = String(payload.playerId || '');
       const savedMatchId = String(payload.matchId || '');
       const match = matchManager.reconnectOnlinePlayer(savedMatchId, savedPlayerId, socket.id);
@@ -347,6 +405,12 @@ export function setupSocketServer(httpServer, {
       });
       matchManager.setOnlinePlayerConnection(savedPlayerId, true, socket.id);
       socket.emit('gameStateUpdated', buildClientGameState(match, savedPlayerId));
+      logInfo('PLAYER_RECONNECTED', {
+        socketId: socket.id,
+        playerId: savedPlayerId,
+        matchId: match.matchId,
+        roomId: match.roomId,
+      });
       logInfo('CLIENT_STATE_SENT', {
         eventName: 'resumeOnlineMatch',
         matchId: match.matchId,
@@ -379,7 +443,7 @@ export function setupSocketServer(httpServer, {
       });
     });
 
-    socket.on('playerDrawFromDeck', (payload = {}) => {
+    onSafe('playerDrawFromDeck', (payload = {}) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.drawFromDeck(payload.matchId, activePlayerId);
       if (result.blocked) {
@@ -397,7 +461,7 @@ export function setupSocketServer(httpServer, {
       sendClientGameState(result.gameState);
     });
 
-    socket.on('playerDrawFromDiscard', (payload = {}) => {
+    onSafe('playerDrawFromDiscard', (payload = {}) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.drawFromDiscard(payload.matchId, activePlayerId);
       if (result.blocked) {
@@ -414,7 +478,7 @@ export function setupSocketServer(httpServer, {
       sendClientGameState(result.gameState);
     });
 
-    socket.on('playerDiscardCard', (payload = {}) => {
+    onSafe('playerDiscardCard', (payload = {}) => {
       const activePlayerId = getActivePlayerId();
       const result = matchManager.discardOnlineCard(payload.matchId, activePlayerId, payload.cardId);
       if (result.blocked) {
@@ -468,8 +532,8 @@ export function setupSocketServer(httpServer, {
       sendClientGameState(result.gameState, 'matchFinished');
     };
 
-    socket.on('playerKnock', handlePlayerKnock);
-    socket.on('player:knock', handlePlayerKnock);
+    onSafe('playerKnock', handlePlayerKnock);
+    onSafe('player:knock', handlePlayerKnock);
 
     socket.on('playerSurrender', (payload = {}) => {
       const activePlayerId = getActivePlayerId();
@@ -512,7 +576,7 @@ export function setupSocketServer(httpServer, {
   });
 
   logInfo('SOCKET_SERVER_READY', {
-    phase: '4.13',
+    phase: '4.15',
     roomMode: config.ROOM_MODE,
   });
 

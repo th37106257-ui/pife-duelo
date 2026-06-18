@@ -1,8 +1,19 @@
+import { recordServerLog } from '../observabilityStore.js';
+
 function log(level, event, data = {}) {
   const payload = {
     timestamp: new Date().toISOString(),
     ...data,
   };
+
+  const storedLevel = level === 'log' ? 'info' : level;
+  recordServerLog({
+    level: storedLevel,
+    event,
+    message: data.message ?? event,
+    stack: data.stack,
+    ...data,
+  });
 
   console[level](`[PIFE_SERVER][${event}]`, payload);
 }

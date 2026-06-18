@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import './styles/index.css';
+import { installClientErrorReporting, reportClientError } from './services/errorReporter.js';
 
 function showStartupError(error) {
   const root = document.getElementById('root');
@@ -16,6 +17,7 @@ function showStartupError(error) {
 }
 
 window.__PIFE_DUELO_BOOTED__ = true;
+installClientErrorReporting();
 window.addEventListener('error', (event) => {
   showStartupError(event.error || new Error(event.message));
 });
@@ -31,6 +33,10 @@ class StartupBoundary extends React.Component {
 
   static getDerivedStateFromError(error) {
     return { error };
+  }
+
+  componentDidCatch(error, info) {
+    reportClientError(error, 'react-render', { componentStack: info?.componentStack });
   }
 
   render() {

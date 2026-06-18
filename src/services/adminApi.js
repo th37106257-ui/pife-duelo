@@ -15,7 +15,9 @@ async function requestAdmin(path, { password, method = 'GET', body = null } = {}
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.message || payload.error || 'Acao admin rejeitada.');
+    const error = new Error(payload.message || payload.error || 'Acao admin rejeitada.');
+    if (response.status >= 500 || response.status === 0) reportClientError(error, 'admin-request');
+    throw error;
   }
 
   return response.json();
@@ -39,6 +41,8 @@ export async function getAdminSnapshot(password) {
 
   return {
     dashboard: dashboard.dashboard,
+    metrics: dashboard.metrics ?? {},
+    monitoring: dashboard.monitoring ?? {},
     adminLogs: dashboard.adminLogs ?? [],
     activeMatches: activeMatches.matches ?? [],
     players: players.players ?? [],
@@ -73,3 +77,4 @@ export function adminRemoveRoom(password, roomId, { reason, confirmActiveMatch =
     body: { reason, confirmActiveMatch },
   });
 }
+import { reportClientError } from './errorReporter.js';
