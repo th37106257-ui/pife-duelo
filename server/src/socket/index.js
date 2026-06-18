@@ -52,6 +52,18 @@ export function setupSocketServer(httpServer, {
     });
   };
 
+  const buildServerStatus = () => ({
+    onlinePlayers: socketManager.onlineCount(),
+    activeRooms: roomManager.listRooms().length,
+    activeMatches: matchManager.listMatches().filter((match) => match.status !== 'finished').length,
+    queuedPlayers: queueManager.getQueueSize(),
+    uptime: Math.round(process.uptime()),
+  });
+
+  const broadcastServerStatus = () => {
+    io.emit('serverStatus', buildServerStatus());
+  };
+
   const rejectAction = (socket, rejection) => {
     logWarn('ACTION_REJECTED', {
       socketId: socket.id,
@@ -209,6 +221,7 @@ export function setupSocketServer(httpServer, {
       socketId: socket.id,
       connected: true,
     });
+    broadcastServerStatus();
 
     const getActivePlayerId = () => socketManager.getPlayerBySocket(socket.id)?.id ?? player.id;
     const onSafe = (eventName, handler) => {
@@ -356,13 +369,7 @@ export function setupSocketServer(httpServer, {
     });
 
     socket.on('requestServerStatus', () => {
-      socket.emit('serverStatus', {
-        onlinePlayers: socketManager.onlineCount(),
-        activeRooms: roomManager.listRooms().length,
-        activeMatches: matchManager.listMatches().length,
-        queuedPlayers: queueManager.getQueueSize(),
-        uptime: Math.round(process.uptime()),
-      });
+      socket.emit('serverStatus', buildServerStatus());
     });
 
     socket.on('getMatchHistory', () => {
@@ -569,6 +576,7 @@ export function setupSocketServer(httpServer, {
       playerManager.setPlayerConnected(activePlayerId, false);
       matchManager.handleOnlineDisconnect(activePlayerId);
       socketManager.removeSocket(socket.id);
+      broadcastServerStatus();
 
       logInfo('SOCKET_DISCONNECTED', { socketId: socket.id, playerId: activePlayerId, reason });
       logInfo('PLAYER_DISCONNECTED', { socketId: socket.id, playerId: activePlayerId, reason });

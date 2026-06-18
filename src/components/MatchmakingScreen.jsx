@@ -53,6 +53,7 @@ export default function MatchmakingScreen() {
   const [actionError, setActionError] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [onlinePlayers, setOnlinePlayers] = useState(null);
   const waitingSinceRef = useRef(null);
   const activeSessionRef = useRef(readStoredMatchSession());
   const onlineGameStateRef = useRef(null);
@@ -147,6 +148,7 @@ export default function MatchmakingScreen() {
     socket.off('queueLeft');
     socket.off('queueTimeout');
     socket.off('queueStatus');
+    socket.off('serverStatus');
     socket.off('matchFound');
     stopOnlineListeners();
     socket.off('matchmakingError');
@@ -157,6 +159,11 @@ export default function MatchmakingScreen() {
 
     socket.on('connection:success', (payload) => {
       setPlayerId(payload.playerId);
+      socket.emit('requestServerStatus');
+    });
+
+    socket.on('serverStatus', (payload) => {
+      setOnlinePlayers(Math.max(0, Number(payload.onlinePlayers) || 0));
     });
 
     socket.on('queueJoined', (payload) => {
@@ -287,15 +294,41 @@ export default function MatchmakingScreen() {
   useEffect(() => {
     if (bootstrappedRef.current) return undefined;
     bootstrappedRef.current = true;
-    restoreActiveMatch();
+    let cancelled = false;
+
+    const bootstrapLobby = async () => {
+      const restored = await restoreActiveMatch();
+      if (cancelled || restored) return;
+
+      try {
+        const socket = await connectSocket();
+        if (cancelled) return;
+        attachListeners(socket);
+        socket.emit('requestServerStatus');
+      } catch {
+        setOnlinePlayers(null);
+      }
+    };
+
+    bootstrapLobby();
 
     return () => {
+      cancelled = true;
       if (activeSessionRef.current) return;
 
       getSocket()?.emit('leaveQueue');
       stopOnlineListeners();
       disconnectSocket();
     };
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const socket = getSocket();
+      if (socket?.connected) socket.emit('requestServerStatus');
+    }, 10000);
+
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -417,6 +450,12 @@ export default function MatchmakingScreen() {
                 onChange={(event) => setPlayerName(event.target.value)}
               />
             </label>
+            <div className="matchmaking-presence" aria-live="polite">
+              <span aria-hidden="true" />
+              {onlinePlayers == null
+                ? 'Conectando ao servidor...'
+                : `${onlinePlayers} ${onlinePlayers === 1 ? 'jogador online' : 'jogadores online'}`}
+            </div>
 
             <div className="matchmaking-tables" aria-label="Mesa">
               {TABLE_OPTIONS.map((option) => (
@@ -427,23 +466,24 @@ export default function MatchmakingScreen() {
                   onClick={() => setTableValue(option.tableValue)}
                 >
                   <strong>Mesa {formatMoney(option.tableValue)}</strong>
-                  <span>Entrada: {formatMoney(option.playerEntry)}</span>
-                  <span>Premio: {formatMoney(option.winnerPrize)}</span>
-                  <small>Taxa: {option.platformFeePercent}%</small>
+                  <span>Voc&ecirc; paga: {formatMoney(option.playerEntry)}</span>
+                  <span>Voc&ecirc; recebe: {formatMoney(option.winnerPrize)}</span>
                 </button>
               ))}
             </div>
 
             <div className="matchmaking-actions">
-              <button type="button" onClick={handlePlayOnline} disabled={status === 'connecting'}>
+              <button className="matchmaking-primary-action" type="button" onClick={handlePlayOnline} disabled={status === 'connecting'}>
                 {status === 'connecting' ? 'Conectando...' : 'Jogar'}
               </button>
-              <button type="button" onClick={handleLocalPlay}>
-                Jogar local/teste
-              </button>
-              <button type="button" onClick={() => setShowHistory(true)}>
-                Historico
-              </button>
+              <div className="matchmaking-secondary-actions">
+                <button className="matchmaking-test-action" type="button" onClick={handleLocalPlay}>
+                  Modo teste
+                </button>
+                <button className="matchmaking-history-action" type="button" onClick={() => setShowHistory(true)}>
+                  Historico
+                </button>
+              </div>
             </div>
           </>
         ) : null}

@@ -48,6 +48,22 @@ try {
 
   const socket = io(baseUrl, { transports: ['polling', 'websocket'] });
   await waitForSocketEvent(socket, 'connect');
+  const initialStatusPromise = waitForSocketEvent(socket, 'serverStatus');
+  socket.emit('requestServerStatus');
+  const initialStatus = await initialStatusPromise;
+  assert.equal(initialStatus.onlinePlayers, 1);
+
+  const secondPlayerStatusPromise = waitForSocketEvent(socket, 'serverStatus');
+  const secondSocket = io(baseUrl, { transports: ['polling', 'websocket'] });
+  await waitForSocketEvent(secondSocket, 'connect');
+  const secondPlayerStatus = await secondPlayerStatusPromise;
+  assert.equal(secondPlayerStatus.onlinePlayers, 2);
+
+  const disconnectStatusPromise = waitForSocketEvent(socket, 'serverStatus');
+  secondSocket.disconnect();
+  const disconnectStatus = await disconnectStatusPromise;
+  assert.equal(disconnectStatus.onlinePlayers, 1);
+
   socket.emit('client_error_report', { message: 'erro frontend de integracao', source: 'integration-test' });
   const rejectionPromise = waitForSocketEvent(socket, 'actionRejected');
   socket.emit('playerDrawFromDeck', { matchId: 'match-inexistente' });
@@ -64,7 +80,7 @@ try {
   assert.equal(admin.monitoring.serverErrors.some((entry) => entry.event === 'ACTION_REJECTED'), true);
   assert.equal(typeof admin.metrics.onlinePlayers, 'number');
   socket.disconnect();
-  console.log('PASS integracao health, socket, frontend error e admin monitoring');
+  console.log('PASS integracao health, status online, socket, frontend error e admin monitoring');
 } finally {
   server.kill();
 }
