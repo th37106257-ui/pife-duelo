@@ -99,14 +99,15 @@ export async function connectSocket() {
 
     return new Promise((resolve, reject) => {
       const timeoutId = window.setTimeout(() => {
+        cleanup();
+        socket.disconnect();
         socketConnectPromise = null;
-        reject(new Error('Tempo limite ao conectar com o servidor online.'));
-      }, 15000);
+        reject(new Error('Nao foi possivel conectar. Verifique sua internet e tente novamente.'));
+      }, 20000);
 
       const cleanup = () => {
         window.clearTimeout(timeoutId);
         socket.off('connect', onConnect);
-        socket.off('connect_error', onConnectError);
       };
 
       const onConnect = () => {
@@ -115,16 +116,7 @@ export async function connectSocket() {
         resolve(socket);
       };
 
-      const onConnectError = (error) => {
-        cleanup();
-        socketConnectPromise = null;
-        const connectionError = new Error(error?.message || 'Nao foi possivel conectar ao servidor online.');
-        reportClientError(connectionError, 'socket-connect');
-        reject(connectionError);
-      };
-
       socket.once('connect', onConnect);
-      socket.once('connect_error', onConnectError);
       socket.connect();
     });
   })();
