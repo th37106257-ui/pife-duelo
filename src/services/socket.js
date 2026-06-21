@@ -57,6 +57,7 @@ export async function connectSocket() {
       socket = io(getSocketUrl(), {
         autoConnect: false,
         transports: ['polling', 'websocket'],
+        tryAllTransports: true,
         upgrade: true,
         reconnection: true,
         reconnectionAttempts: Infinity,
