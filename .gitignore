@@ -10,3 +10,4 @@ server-dev.*.log
 vite-dev.*.log
 screenshots/
 backups/
+server/data/payments*.json

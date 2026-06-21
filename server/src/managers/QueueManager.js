@@ -38,6 +38,7 @@ export class QueueManager {
       socketId: player.socketId,
       playerName: player.playerName,
       tableValue,
+      paymentId: player.paymentId ?? null,
       joinedAt: new Date().toISOString(),
     };
     const queue = this.queues.get(tableValue);

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  adminConfirmPayment,
   adminEndMatch,
   adminForceWinner,
+  adminRejectPayment,
   adminRemoveRoom,
   getAdminMatchAudit,
   getAdminSnapshot,
@@ -278,6 +280,48 @@ export default function AdminPanel() {
 
         {activeTab === 'overview' ? (
           <>
+
+        <section className="admin-section">
+          <h2>Pagamentos pendentes</h2>
+          <div className="admin-card-list">
+            {(snapshot?.pendingPayments ?? []).map((payment) => (
+              <article key={payment.paymentId} className="admin-match-card">
+                <strong>#{payment.paymentId}</strong>
+                <span>Mesa: {formatMoney(payment.selectedTable)} · Valor: {formatMoney(payment.amount)}</span>
+                <span>Telefone: {payment.phone}</span>
+                <span>Comprovante: {payment.receiptReceived ? 'recebido' : 'ainda nao recebido'}</span>
+                <span>Criado em: {formatDate(payment.createdAt)}</span>
+                <div className="admin-actions">
+                  <button
+                    type="button"
+                    disabled={!payment.receiptReceived}
+                    onClick={() => runCriticalAction(
+                      `Confirmar manualmente o pagamento #${payment.paymentId}?`,
+                      () => adminConfirmPayment(password, payment.paymentId),
+                    )}
+                  >
+                    Confirmar pagamento
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      const reason = window.prompt('Motivo da rejeicao:');
+                      if (!reason?.trim()) return;
+                      runCriticalAction(
+                        `Rejeitar o pagamento #${payment.paymentId}?`,
+                        () => adminRejectPayment(password, payment.paymentId, reason.trim()),
+                      );
+                    }}
+                  >
+                    Rejeitar
+                  </button>
+                </div>
+              </article>
+            ))}
+            {(snapshot?.pendingPayments ?? []).length === 0 ? <p className="admin-empty">Nenhum pagamento pendente.</p> : null}
+          </div>
+        </section>
 
         <section className="admin-section">
           <h2>Partidas em andamento</h2>

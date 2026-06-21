@@ -10,6 +10,8 @@ export function setupSocketServer(httpServer, {
   playerManager,
   socketManager,
   queueManager,
+  paymentService = null,
+  paymentGateEnabled = false,
   corsOptions,
 } = {}) {
   const io = new Server(httpServer, {
@@ -23,6 +25,23 @@ export function setupSocketServer(httpServer, {
     pingInterval: 25000,
     pingTimeout: 20000,
   });
+  if (paymentGateEnabled) {
+    io.use((socket, next) => {
+      const payment = paymentService?.validateAccessToken(socket.handshake.auth?.paymentToken);
+      if (!payment) {
+        const error = new Error('PAYMENT_REQUIRED');
+        error.data = { code: 'PAYMENT_REQUIRED' };
+        next(error);
+        return;
+      }
+      socket.paymentAccess = {
+        paymentId: payment.paymentId,
+        selectedTable: payment.selectedTable,
+        linkedMatchId: payment.linkedMatchId ?? null,
+      };
+      next();
+    });
+  }
   const buildTimeSync = (gameState) => ({
     matchId: gameState.matchId,
     serverNow: Date.now(),
@@ -62,6 +81,7 @@ export function setupSocketServer(httpServer, {
     activeRooms: roomManager.listRooms().length,
     activeMatches: matchManager.listMatches().filter((match) => match.status !== 'finished').length,
     queuedPlayers: queueManager.getQueueSize(),
+    paymentGateEnabled,
     uptime: Math.round(process.uptime()),
   });
 
@@ -124,6 +144,20 @@ export function setupSocketServer(httpServer, {
 
   const emitMatchFound = (entries) => {
     const [first, second] = entries;
+    if (paymentGateEnabled) {
+      entries.forEach((entry) => {
+        const payment = paymentService.getPayment(entry.paymentId);
+        if (
+          !payment
+          || payment.status !== 'confirmed'
+          || payment.accessUsedAt
+          || payment.accessReservedBy !== entry.socketId
+          || Number(payment.selectedTable) !== Number(entry.tableValue)
+        ) {
+          throw new Error('PAYMENT_ACCESS_INVALID_FOR_MATCH');
+        }
+      });
+    }
     const roomPlayers = [
       {
         id: first.playerId,
@@ -163,22 +197,23 @@ export function setupSocketServer(httpServer, {
       players: entries.map((entry) => entry.playerId),
     });
 
-    entries.forEach((entry, index) => {
-      const opponent = entries[index === 0 ? 1 : 0];
-      const targetSocket = socketManager.getSocket(entry.socketId);
-      targetSocket?.emit('matchFound', {
-        roomId: room.roomId,
-        roomType: room.roomType,
-        tableValue: room.tableValue,
-        players: [
-          { playerId: entry.playerId, playerName: entry.playerName, position: 'bottom' },
-          { playerId: opponent.playerId, playerName: opponent.playerName, position: 'top' },
-        ],
-        message: 'Adversario encontrado!',
-      });
-    });
-
     const onlineMatch = matchManager.createOnlineMatch(room.roomId, room.players, room.tableValue);
+
+    if (paymentGateEnabled) {
+      entries.forEach((entry) => {
+        paymentService.consumeAccess({
+          paymentId: entry.paymentId,
+          socketId: entry.socketId,
+          matchId: onlineMatch.matchId,
+        });
+      });
+      logInfo('PAYMENT_ACCESS_CONSUMED', {
+        matchId: onlineMatch.matchId,
+        roomId: room.roomId,
+        paymentIds: entries.map((entry) => entry.paymentId),
+      });
+    }
+
     roomManager.updateRoom(room.roomId, {
       status: 'playing',
       matchId: onlineMatch.matchId,
@@ -195,12 +230,33 @@ export function setupSocketServer(httpServer, {
       roomId: room.roomId,
       currentTurnPlayerId: onlineMatch.currentTurnPlayerId,
     });
+    entries.forEach((entry, index) => {
+      const opponent = entries[index === 0 ? 1 : 0];
+      const targetSocket = socketManager.getSocket(entry.socketId);
+      targetSocket?.emit('matchFound', {
+        roomId: room.roomId,
+        roomType: room.roomType,
+        tableValue: room.tableValue,
+        players: [
+          { playerId: entry.playerId, playerName: entry.playerName, position: 'bottom' },
+          { playerId: opponent.playerId, playerName: opponent.playerName, position: 'top' },
+        ],
+        message: 'Adversario encontrado!',
+      });
+    });
     sendClientGameState(onlineMatch, 'matchStarted');
 
     return room;
   };
 
   queueManager.setTimeoutHandler((entry) => {
+    if (paymentGateEnabled && entry.paymentId) {
+      paymentService.releaseAccessReservation({
+        paymentId: entry.paymentId,
+        socketId: entry.socketId,
+        reason: 'queue_timeout',
+      });
+    }
     const targetSocket = socketManager.getSocket(entry.socketId);
     logInfo('QUEUE_TIMEOUT', {
       playerId: entry.playerId,
@@ -239,6 +295,10 @@ export function setupSocketServer(httpServer, {
       playerId: player.id,
       socketId: socket.id,
       connected: true,
+      paymentAccess: socket.paymentAccess ? {
+        paymentId: socket.paymentAccess.paymentId,
+        selectedTable: socket.paymentAccess.selectedTable,
+      } : null,
     });
     broadcastServerStatus();
 
@@ -345,6 +405,39 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
+      if (paymentGateEnabled) {
+        if (!socket.paymentAccess) {
+          socket.emit('matchmakingError', {
+            reason: 'payment-required',
+            message: 'Pagamento confirmado necessario para entrar na fila.',
+          });
+          ack?.({ ok: false, reason: 'payment-required', message: 'Pagamento confirmado necessario.', serverNow: Date.now() });
+          return;
+        }
+        try {
+          paymentService.reserveAccess({
+            paymentId: socket.paymentAccess.paymentId,
+            socketId: socket.id,
+            selectedTable: tableValue,
+          });
+        } catch (error) {
+          logWarn('PAYMENT_ACCESS_RESERVATION_REJECTED', {
+            socketId: socket.id,
+            paymentId: socket.paymentAccess.paymentId,
+            tableValue,
+            reason: error.message,
+          });
+          socket.emit('matchmakingError', {
+            reason: error.message,
+            message: error.message === 'PAYMENT_TABLE_MISMATCH'
+              ? 'Use a mesma mesa confirmada no pagamento.'
+              : 'Este acesso de pagamento nao esta disponivel.',
+          });
+          ack?.({ ok: false, reason: error.message, message: 'Acesso de pagamento indisponivel.', serverNow: Date.now() });
+          return;
+        }
+      }
+
       const queuedPlayer = playerManager.updatePlayer(player.id, {
         name: playerName,
         socketId: socket.id,
@@ -357,9 +450,17 @@ export function setupSocketServer(httpServer, {
         socketId: socket.id,
         playerName,
         tableValue,
+        paymentId: socket.paymentAccess?.paymentId ?? null,
       });
 
       if (queueResult.blocked) {
+        if (paymentGateEnabled && socket.paymentAccess) {
+          paymentService.releaseAccessReservation({
+            paymentId: socket.paymentAccess.paymentId,
+            socketId: socket.id,
+            reason: queueResult.reason,
+          });
+        }
         logInfo('MATCHMAKING_ERROR', {
           socketId: socket.id,
           playerId: player.id,
@@ -408,6 +509,13 @@ export function setupSocketServer(httpServer, {
 
     socket.on('leaveQueue', () => {
       const leaveResult = queueManager.leaveQueue(player.id);
+      if (paymentGateEnabled && leaveResult.entry?.paymentId) {
+        paymentService.releaseAccessReservation({
+          paymentId: leaveResult.entry.paymentId,
+          socketId: socket.id,
+          reason: 'queue_left',
+        });
+      }
       const updatedPlayer = playerManager.updatePlayer(player.id, { isReady: false });
 
       logInfo('QUEUE_LEFT', {
@@ -636,6 +744,13 @@ export function setupSocketServer(httpServer, {
       const activePlayerId = getActivePlayerId();
       const leaveResult = queueManager.leaveQueueBySocket(socket.id);
       if (leaveResult.removed) {
+        if (paymentGateEnabled && leaveResult.entry.paymentId) {
+          paymentService.releaseAccessReservation({
+            paymentId: leaveResult.entry.paymentId,
+            socketId: socket.id,
+            reason: 'disconnect',
+          });
+        }
         logInfo('QUEUE_LEFT', {
           socketId: socket.id,
           playerId: activePlayerId,

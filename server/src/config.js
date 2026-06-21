@@ -15,6 +15,8 @@ const allowedClientUrls = [
 ]
   .map((origin) => String(origin || '').trim())
   .filter(Boolean);
+const parseList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+const parseBoolean = (value) => String(value || '').toLowerCase() === 'true';
 
 export const config = {
   PORT: Number(process.env.PORT || 3000),
@@ -27,6 +29,20 @@ export const config = {
   QUEUE_TIMEOUT_SECONDS: 120,
   DISCONNECT_GRACE_SECONDS: Number(process.env.DISCONNECT_GRACE_SECONDS || 60),
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
+  ADMIN_WHATSAPP_NUMBERS: parseList(process.env.ADMIN_WHATSAPP_NUMBERS),
+  WHATSAPP_PAYMENTS_ENABLED: parseBoolean(process.env.WHATSAPP_PAYMENTS_ENABLED),
+  PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
+  PAYMENT_STORE_PATH: process.env.PAYMENT_STORE_PATH || '',
+  PAYMENT_ACCESS_SECRET: process.env.PAYMENT_ACCESS_SECRET || '',
+  PAYMENT_EXPIRY_MINUTES: Number(process.env.PAYMENT_EXPIRY_MINUTES || 60),
+  PAYMENT_ACCESS_TTL_MINUTES: Number(process.env.PAYMENT_ACCESS_TTL_MINUTES || 180),
+  PUBLIC_GAME_URL: process.env.PUBLIC_GAME_URL || frontendUrl,
+  EVOLUTION_API_URL: process.env.EVOLUTION_API_URL || '',
+  EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY || '',
+  EVOLUTION_INSTANCE_NAME: process.env.EVOLUTION_INSTANCE_NAME || '',
+  EVOLUTION_WEBHOOK_SECRET: process.env.EVOLUTION_WEBHOOK_SECRET || '',
+  PIX_KEY: process.env.PIX_KEY || '',
+  PIX_RECEIVER: process.env.PIX_RECEIVER || '',
   ROOM_MODE: 'duel_1v1',
 };
 

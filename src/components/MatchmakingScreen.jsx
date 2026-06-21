@@ -66,6 +66,7 @@ function joinQueueWithConfirmation(socket, payload) {
 export default function MatchmakingScreen() {
   const [playerName, setPlayerName] = useState('Jogador');
   const [tableValue, setTableValue] = useState(2);
+  const [lockedTableValue, setLockedTableValue] = useState(null);
   const [status, setStatus] = useState('idle');
   const [playerId, setPlayerId] = useState(null);
   const [queueInfo, setQueueInfo] = useState(null);
@@ -180,6 +181,11 @@ export default function MatchmakingScreen() {
 
     const onConnectionSuccess = (payload) => {
       setPlayerId(payload.playerId);
+      if (payload.paymentAccess?.selectedTable) {
+        const paidTable = Number(payload.paymentAccess.selectedTable);
+        setTableValue(paidTable);
+        setLockedTableValue(paidTable);
+      }
       socket.emit('requestServerStatus');
     };
 
@@ -406,13 +412,20 @@ export default function MatchmakingScreen() {
       if (socket.connectionSuccess?.playerId) {
         setPlayerId(socket.connectionSuccess.playerId);
       }
+      if (socket.connectionSuccess?.paymentAccess?.selectedTable) {
+        const paidTable = Number(socket.connectionSuccess.paymentAccess.selectedTable);
+        setTableValue(paidTable);
+        setLockedTableValue(paidTable);
+      }
+      const confirmedTableValue = Number(socket.connectionSuccess?.paymentAccess?.selectedTable) || null;
+      const queueTableValue = confirmedTableValue ?? tableValue;
       const queuePayload = {
         playerName,
-        tableValue,
+        tableValue: queueTableValue,
       };
       console.info('[socket] join_match enviado:', queuePayload);
       await joinQueueWithConfirmation(socket, queuePayload);
-      socket.emit('requestQueueStatus', { tableValue });
+      socket.emit('requestQueueStatus', { tableValue: queueTableValue });
     } catch (error) {
       setErrorMessage(error.message || 'Nao foi possivel conectar ao servidor.');
       setStatus('idle');
@@ -509,6 +522,7 @@ export default function MatchmakingScreen() {
                   type="button"
                   className={tableValue === option.tableValue ? 'is-selected' : ''}
                   onClick={() => setTableValue(option.tableValue)}
+                  disabled={lockedTableValue !== null}
                 >
                   <strong>Mesa {formatMoney(option.tableValue)}</strong>
                   <span>Voc&ecirc; paga: {formatMoney(option.playerEntry)}</span>
@@ -516,6 +530,9 @@ export default function MatchmakingScreen() {
                 </button>
               ))}
             </div>
+            {lockedTableValue !== null ? (
+              <small className="matchmaking-payment-lock">Mesa confirmada pelo pagamento: {formatMoney(lockedTableValue)}</small>
+            ) : null}
 
             <div className="matchmaking-actions">
               <button

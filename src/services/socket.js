@@ -64,8 +64,18 @@ function startGameLatencyMonitor() {
   gamePingInterval = window.setInterval(updateGameLatency, 10000);
 }
 
+function getPaymentAccessToken() {
+  if (typeof window === 'undefined') return '';
+  return new URLSearchParams(window.location.search).get('access')?.trim() || '';
+}
+
+function isPaymentAccessError(error) {
+  return error?.data?.code === 'PAYMENT_REQUIRED' || error?.message === 'PAYMENT_REQUIRED';
+}
+
 function createSocket() {
   const socketUrl = getServerUrl();
+  const paymentToken = getPaymentAccessToken();
   console.info('[socket] URL usada para conectar:', socketUrl);
 
   const nextSocket = io(socketUrl, {
@@ -78,6 +88,7 @@ function createSocket() {
     reconnectionDelay: 800,
     reconnectionDelayMax: 4000,
     timeout: 10000,
+    auth: paymentToken ? { paymentToken } : {},
   });
 
   nextSocket.gameTelemetry = {
@@ -106,10 +117,13 @@ function createSocket() {
 
   nextSocket.on('connect_error', (error) => {
     console.error('[socket] erro de conexao:', error?.message, error);
+    const paymentDenied = isPaymentAccessError(error);
     publishConnectionState({
-      status: 'reconnecting',
+      status: paymentDenied ? 'error' : 'reconnecting',
       connected: false,
-      message: 'Reconectando ao servidor...',
+      message: paymentDenied
+        ? 'Pagamento confirmado necessario. Use o link recebido no WhatsApp.'
+        : 'Reconectando ao servidor...',
       url: socketUrl,
       reason: error?.message ?? 'connect_error',
     });
@@ -175,6 +189,7 @@ export async function connectSocket() {
     const cleanup = () => {
       window.clearTimeout(timeoutId);
       socket.off('connection:success', onServerConfirmed);
+      socket.off('connect_error', onConnectError);
       socket.io.off('reconnect_failed', onReconnectFailed);
     };
 
@@ -202,11 +217,18 @@ export async function connectSocket() {
       fail('Servidor indisponivel. Tente conectar novamente.');
     };
 
+    const onConnectError = (error) => {
+      if (isPaymentAccessError(error)) {
+        fail('Pagamento confirmado necessario. Use o link recebido no WhatsApp.');
+      }
+    };
+
     const timeoutId = window.setTimeout(() => {
       fail('O servidor nao confirmou a conexao. Tente novamente.');
     }, CONNECTION_TIMEOUT_MS);
 
     socket.once('connection:success', onServerConfirmed);
+    socket.on('connect_error', onConnectError);
     socket.io.once('reconnect_failed', onReconnectFailed);
     socket.connect();
   });

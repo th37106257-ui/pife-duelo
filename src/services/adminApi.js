@@ -30,11 +30,12 @@ export function loginAdmin(password) {
 }
 
 export async function getAdminSnapshot(password) {
-  const [dashboard, activeMatches, players, history] = await Promise.all([
+  const [dashboard, activeMatches, players, history, payments] = await Promise.all([
     requestAdmin('/api/admin/dashboard', { password }),
     requestAdmin('/api/admin/active-matches', { password }),
     requestAdmin('/api/admin/online-players', { password }),
     requestAdmin('/api/admin/match-history', { password }),
+    requestAdmin('/api/admin/payments?status=pending', { password }),
   ]);
 
   return {
@@ -45,7 +46,24 @@ export async function getAdminSnapshot(password) {
     activeMatches: activeMatches.matches ?? [],
     players: players.players ?? [],
     history: history.history ?? [],
+    pendingPayments: payments.payments ?? [],
   };
+}
+
+export function adminConfirmPayment(password, paymentId) {
+  return requestAdmin(`/api/admin/payments/${paymentId}/confirm`, {
+    password,
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function adminRejectPayment(password, paymentId, reason) {
+  return requestAdmin(`/api/admin/payments/${paymentId}/reject`, {
+    password,
+    method: 'POST',
+    body: { reason },
+  });
 }
 
 export function getAdminMatchAudit(password, matchId) {

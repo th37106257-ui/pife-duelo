@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +16,10 @@ import { buildClientGameState } from './game/clientState.js';
 import { listAdminLogs, recordAdminLog } from './adminStore.js';
 import { logError, logInfo, logWarn } from './utils/logger.js';
 import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js';
+import { PaymentStore } from './payments/PaymentStore.js';
+import { PaymentService } from './payments/PaymentService.js';
+import { EvolutionClient } from './payments/EvolutionClient.js';
+import { WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
 import {
   getDailyObservabilityMetrics,
   getErrorCountSince,
@@ -23,6 +28,7 @@ import {
 } from './observabilityStore.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const here = dirname(fileURLToPath(import.meta.url));
 const distPath = resolve(here, '../../dist');
 const indexPath = resolve(distPath, 'index.html');
@@ -32,6 +38,72 @@ const playerManager = new PlayerManager();
 const socketManager = new SocketManager({ playerManager });
 const queueManager = new QueueManager();
 const reportedStuckMatches = new Set();
+const paymentStore = new PaymentStore({ filePath: config.PAYMENT_STORE_PATH || null });
+const paymentService = new PaymentService({
+  store: paymentStore,
+  adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
+  accessSecret: config.PAYMENT_ACCESS_SECRET,
+  publicGameUrl: config.PUBLIC_GAME_URL,
+  paymentExpiryMinutes: config.PAYMENT_EXPIRY_MINUTES,
+  accessTtlMinutes: config.PAYMENT_ACCESS_TTL_MINUTES,
+});
+const evolutionClient = new EvolutionClient({
+  baseUrl: config.EVOLUTION_API_URL,
+  apiKey: config.EVOLUTION_API_KEY,
+  instanceName: config.EVOLUTION_INSTANCE_NAME,
+});
+const whatsappPaymentBot = new WhatsAppPaymentBot({
+  paymentService,
+  evolutionClient,
+  pixKey: config.PIX_KEY,
+  pixReceiver: config.PIX_RECEIVER,
+  adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
+});
+const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
+  && config.PAYMENT_GATE_ENABLED
+  && getPaymentConfigurationErrors().length === 0;
+
+function getPaymentConfigurationErrors() {
+  const required = {
+    PAYMENT_STORE_PATH: config.PAYMENT_STORE_PATH,
+    PAYMENT_ACCESS_SECRET: config.PAYMENT_ACCESS_SECRET,
+    PUBLIC_GAME_URL: config.PUBLIC_GAME_URL,
+    ADMIN_WHATSAPP_NUMBERS: config.ADMIN_WHATSAPP_NUMBERS.length,
+    EVOLUTION_API_URL: config.EVOLUTION_API_URL,
+    EVOLUTION_API_KEY: config.EVOLUTION_API_KEY,
+    EVOLUTION_INSTANCE_NAME: config.EVOLUTION_INSTANCE_NAME,
+    EVOLUTION_WEBHOOK_SECRET: config.EVOLUTION_WEBHOOK_SECRET,
+    PIX_KEY: config.PIX_KEY,
+    PIX_RECEIVER: config.PIX_RECEIVER,
+  };
+  return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+}
+
+function secureEquals(left, right) {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function getWebhookSecret(request) {
+  const authorization = String(request.get('authorization') || '');
+  return request.get('x-evolution-webhook-secret')
+    || (authorization.startsWith('Bearer ') ? authorization.slice(7) : '');
+}
+
+function requirePaymentsReady(response) {
+  if (!paymentSystemEnabled) {
+    response.status(503).json({ error: 'whatsapp-payments-disabled' });
+    return false;
+  }
+  const configurationErrors = getPaymentConfigurationErrors();
+  if (configurationErrors.length) {
+    logError('WHATSAPP_PAYMENT_CONFIGURATION_ERROR', { missing: configurationErrors });
+    response.status(503).json({ error: 'whatsapp-payments-not-configured' });
+    return false;
+  }
+  return true;
+}
 
 function isAllowedRailwayOrigin(origin) {
   try {
@@ -55,6 +127,10 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use((request, response, next) => {
+  response.set('Referrer-Policy', 'no-referrer');
+  next();
+});
 
 function isAdminRequest(request) {
   const password = request.get('x-admin-password') ?? request.body?.password ?? request.query?.password;
@@ -76,6 +152,28 @@ function requireAdmin(request, response) {
   });
   response.status(401).json({ error: 'admin-unauthorized' });
   return false;
+}
+
+async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
+  if (!evolutionClient.isConfigured()) throw new Error('EVOLUTION_API_NOT_CONFIGURED');
+  const currentPayment = paymentService.getPayment(paymentId);
+  const deliveryRetry = currentPayment?.status === 'confirmed' && !currentPayment.linkSentAt;
+  const result = deliveryRetry
+    ? paymentService.retryAccessLinkDelivery({ paymentId, adminPhone, source: `${source}-delivery-retry` })
+    : paymentService.confirmPayment({ paymentId, adminPhone, source });
+  try {
+    await evolutionClient.sendText(result.payment.phone, [
+      '✅ Pagamento confirmado!',
+      'Sua partida está pronta:',
+      result.accessLink,
+    ].join('\n'));
+    paymentService.markLinkDelivery(result.payment.paymentId, { sent: true });
+    return { payment: paymentService.getPayment(result.payment.paymentId), notificationSent: true, deliveryRetry };
+  } catch (error) {
+    paymentService.markLinkDelivery(result.payment.paymentId, { sent: false, error: error.message });
+    error.paymentId = result.payment.paymentId;
+    throw error;
+  }
 }
 
 function isToday(value) {
@@ -217,6 +315,10 @@ app.get('/health', (request, response) => {
     onlinePlayers: metrics.onlinePlayers,
     activeMatches: metrics.activeMatches,
     waitingPlayers: queueManager.getQueueSize(),
+    payments: {
+      enabled: paymentSystemEnabled,
+      configured: getPaymentConfigurationErrors().length === 0,
+    },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,
     errorCountLastHour: getErrorCountSince(Date.now() - 60 * 60 * 1000),
@@ -249,6 +351,128 @@ app.get('/api/status', (request, response) => {
     matches: matchManager.listMatches().length,
     queuedPlayers: queueManager.getQueueSize(),
   });
+});
+
+app.post('/api/webhooks/evolution', async (request, response) => {
+  const originIp = request.ip || request.get('x-forwarded-for') || null;
+  if (!requirePaymentsReady(response)) return;
+  if (!secureEquals(getWebhookSecret(request), config.EVOLUTION_WEBHOOK_SECRET)) {
+    logWarn('EVOLUTION_WEBHOOK_UNAUTHORIZED', { originIp });
+    response.status(401).json({ error: 'webhook-unauthorized' });
+    return;
+  }
+  if (request.body?.instance && request.body.instance !== config.EVOLUTION_INSTANCE_NAME) {
+    logWarn('EVOLUTION_WEBHOOK_INSTANCE_REJECTED', { originIp, instance: request.body.instance });
+    response.status(403).json({ error: 'webhook-instance-rejected' });
+    return;
+  }
+
+  try {
+    const result = await whatsappPaymentBot.handleWebhook(request.body ?? {}, { originIp });
+    logInfo('EVOLUTION_WEBHOOK_PROCESSED', {
+      originIp,
+      event: request.body?.event ?? null,
+      resultType: result.type ?? result.reason ?? 'ignored',
+      paymentId: result.paymentId ?? null,
+    });
+    response.json({ accepted: true });
+  } catch (error) {
+    logError('EVOLUTION_WEBHOOK_ERROR', { originIp, message: error.message });
+    response.status(500).json({ error: 'webhook-processing-failed' });
+  }
+});
+
+app.get('/api/payment-access/validate', (request, response) => {
+  if (!paymentSystemEnabled) {
+    response.json({ ok: true, paymentGateEnabled: false });
+    return;
+  }
+  const payment = paymentService.validateAccessToken(request.query?.token);
+  if (!payment) {
+    response.status(403).json({ ok: false, error: 'payment-access-denied' });
+    return;
+  }
+  response.json({
+    ok: true,
+    paymentGateEnabled: true,
+    paymentId: payment.paymentId,
+    selectedTable: payment.selectedTable,
+  });
+});
+
+app.get('/api/admin/payments', (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  const status = request.query?.status;
+  if (status && !paymentService.assertValidStatus(status)) {
+    response.status(400).json({ error: 'invalid-payment-status' });
+    return;
+  }
+  response.json({ payments: paymentService.listPayments({ status: status || null }) });
+});
+
+app.post('/api/admin/payments/:paymentId/confirm', async (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  if (!requirePaymentsReady(response)) return;
+  const adminPhone = config.ADMIN_WHATSAPP_NUMBERS[0];
+  try {
+    const result = await confirmAndDeliverPayment(request.params.paymentId, { adminPhone, source: 'admin-panel' });
+    recordAdminLog({
+      adminAction: result.deliveryRetry ? 'payment_link_resent' : 'payment_confirmed',
+      targetId: request.params.paymentId,
+      result: 'ok',
+    });
+    logInfo('PAYMENT_CONFIRMED', {
+      paymentId: request.params.paymentId,
+      confirmedBy: adminPhone,
+      source: 'admin-panel',
+      deliveryRetry: result.deliveryRetry,
+    });
+    response.json(result);
+  } catch (error) {
+    recordAdminLog({
+      adminAction: 'payment_confirm_failed',
+      targetId: request.params.paymentId,
+      reason: error.message,
+      result: 'blocked',
+    });
+    logWarn('PAYMENT_CONFIRM_REJECTED', { paymentId: request.params.paymentId, reason: error.message });
+    response.status(error.paymentId ? 502 : 400).json({
+      error: error.paymentId ? 'access-link-delivery-failed' : error.message,
+      paymentId: error.paymentId ?? request.params.paymentId,
+    });
+  }
+});
+
+app.post('/api/admin/payments/:paymentId/reject', async (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  if (!requirePaymentsReady(response)) return;
+  const adminPhone = config.ADMIN_WHATSAPP_NUMBERS[0];
+  try {
+    const payment = paymentService.rejectPayment({
+      paymentId: request.params.paymentId,
+      adminPhone,
+      reason: request.body?.reason,
+      source: 'admin-panel',
+    });
+    let notificationSent = false;
+    try {
+      await evolutionClient.sendText(payment.phone, `❌ O pagamento #${payment.paymentId} não foi aprovado. Motivo: ${payment.rejectionReason}`);
+      notificationSent = true;
+    } catch (error) {
+      logWarn('PAYMENT_REJECTION_NOTIFICATION_FAILED', { paymentId: payment.paymentId, message: error.message });
+    }
+    recordAdminLog({ adminAction: 'payment_rejected', targetId: payment.paymentId, reason: payment.rejectionReason, result: 'ok' });
+    logInfo('PAYMENT_REJECTED', { paymentId: payment.paymentId, rejectedBy: adminPhone, source: 'admin-panel' });
+    response.json({ payment, notificationSent });
+  } catch (error) {
+    recordAdminLog({
+      adminAction: 'payment_reject_failed',
+      targetId: request.params.paymentId,
+      reason: error.message,
+      result: 'blocked',
+    });
+    response.status(400).json({ error: error.message });
+  }
 });
 
 app.get('/api/economy/tables', (request, response) => {
@@ -591,6 +815,8 @@ const io = setupSocketServer(server, {
   socketManager,
   queueManager,
   corsOptions,
+  paymentService,
+  paymentGateEnabled: paymentSystemEnabled,
 });
 
 const stuckMatchMonitor = setInterval(() => {
