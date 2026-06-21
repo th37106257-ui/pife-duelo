@@ -1,10 +1,7 @@
+import { getServerUrl } from './serverUrl.js';
+
 const ACTIVE_MATCH_STORAGE_KEY = 'pifeDuelo.activeOnlineMatch';
 const recentReports = new Map();
-
-function getServerUrl() {
-  if (import.meta.env.VITE_SOCKET_URL) return import.meta.env.VITE_SOCKET_URL;
-  return typeof window === 'undefined' ? '' : window.location.origin;
-}
 
 function readSession() {
   try {

@@ -210,7 +210,9 @@ app.get('/health', (request, response) => {
   const metrics = getProductionMetrics();
   const memory = process.memoryUsage();
   response.json({
+    ok: true,
     status: 'ok',
+    time: new Date().toISOString(),
     uptime: process.uptime(),
     onlinePlayers: metrics.onlinePlayers,
     activeMatches: metrics.activeMatches,

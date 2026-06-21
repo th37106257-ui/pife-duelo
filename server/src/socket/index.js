@@ -320,9 +320,15 @@ export function setupSocketServer(httpServer, {
       });
     });
 
-    onSafe('joinQueue', (payload = {}) => {
+    onSafe('joinQueue', (payload = {}, ack) => {
       const playerName = String(payload.playerName || '').trim().slice(0, 32) || 'Jogador';
       const tableValue = Number(payload.tableValue);
+      logInfo('JOIN_QUEUE_RECEIVED', {
+        socketId: socket.id,
+        playerId: player.id,
+        playerName,
+        tableValue,
+      });
 
       if (!queueManager.isValidTableValue(tableValue)) {
         logInfo('MATCHMAKING_ERROR', {
@@ -335,6 +341,7 @@ export function setupSocketServer(httpServer, {
           reason: 'invalid-table-value',
           message: 'Mesa invalida.',
         });
+        ack?.({ ok: false, reason: 'invalid-table-value', message: 'Mesa invalida.', serverNow: Date.now() });
         return;
       }
 
@@ -363,6 +370,12 @@ export function setupSocketServer(httpServer, {
           reason: queueResult.reason,
           message: 'Voce ja esta na fila ou a entrada nao e valida.',
         });
+        ack?.({
+          ok: false,
+          reason: queueResult.reason,
+          message: 'Voce ja esta na fila ou a entrada nao e valida.',
+          serverNow: Date.now(),
+        });
         return;
       }
 
@@ -372,6 +385,13 @@ export function setupSocketServer(httpServer, {
         playerName,
         tableValue,
         queuePosition: queueResult.queuePosition,
+      });
+      ack?.({
+        ok: true,
+        playerId: player.id,
+        tableValue,
+        queuePosition: queueResult.queuePosition,
+        serverNow: Date.now(),
       });
       socket.emit('queueJoined', {
         playerId: player.id,

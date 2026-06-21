@@ -1,10 +1,4 @@
-function getServerUrl() {
-  if (import.meta.env.VITE_SOCKET_URL) {
-    return import.meta.env.VITE_SOCKET_URL;
-  }
-
-  return typeof window === 'undefined' ? '' : window.location.origin;
-}
+import { getServerUrl } from './serverUrl.js';
 
 async function readJson(response) {
   if (!response.ok) {

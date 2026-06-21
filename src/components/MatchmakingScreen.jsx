@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import OnlineGameTable from './OnlineGameTable.jsx';
 import MatchHistoryScreen from './MatchHistoryScreen.jsx';
-import { connectSocket, disconnectSocket, getSocket } from '../services/socket.js';
+import {
+  connectSocket,
+  disconnectSocket,
+  getSocket,
+  getSocketConnectionState,
+  subscribeSocketConnection,
+} from '../services/socket.js';
 import { resumeOnlineMatch, startOnlineListeners, stopOnlineListeners } from '../services/onlineGameSocket.js';
 import { formatMoney, listOfficialTables } from '../shared/economy.js';
 
@@ -41,6 +47,22 @@ function formatTime(seconds) {
   return `${minutes}:${remainingSeconds}`;
 }
 
+function joinQueueWithConfirmation(socket, payload) {
+  return new Promise((resolve, reject) => {
+    socket.timeout(8000).emit('joinQueue', payload, (error, acknowledgement = {}) => {
+      if (error) {
+        reject(new Error('O servidor nao confirmou a entrada na fila.'));
+        return;
+      }
+      if (!acknowledgement.ok) {
+        reject(new Error(acknowledgement.message || 'Nao foi possivel entrar na fila.'));
+        return;
+      }
+      resolve(acknowledgement);
+    });
+  });
+}
+
 export default function MatchmakingScreen() {
   const [playerName, setPlayerName] = useState('Jogador');
   const [tableValue, setTableValue] = useState(2);
@@ -54,6 +76,7 @@ export default function MatchmakingScreen() {
   const [showHistory, setShowHistory] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [onlinePlayers, setOnlinePlayers] = useState(null);
+  const [serverConnection, setServerConnection] = useState(getSocketConnectionState);
   const waitingSinceRef = useRef(null);
   const activeSessionRef = useRef(readStoredMatchSession());
   const onlineGameStateRef = useRef(null);
@@ -63,6 +86,14 @@ export default function MatchmakingScreen() {
     () => matchInfo?.players?.find((player) => player.position === 'top') ?? null,
     [matchInfo],
   );
+  const isServerConnected = serverConnection.connected && serverConnection.status === 'connected';
+
+  useEffect(() => subscribeSocketConnection((nextState) => {
+    setServerConnection({ ...nextState });
+    if (nextState.status === 'error') {
+      setErrorMessage(nextState.message || 'Servidor indisponivel. Tente novamente.');
+    }
+  }), []);
 
   useEffect(() => {
     if (status !== 'searching') return undefined;
@@ -144,71 +175,63 @@ export default function MatchmakingScreen() {
   };
 
   const attachListeners = (socket) => {
-    socket.off('connection:success');
-    socket.off('queueJoined');
-    socket.off('queueLeft');
-    socket.off('queueTimeout');
-    socket.off('queueStatus');
-    socket.off('serverStatus');
-    socket.off('matchFound');
+    socket.pifeLobbyCleanup?.();
     stopOnlineListeners();
-    socket.off('matchmakingError');
-    socket.off('disconnect');
-    if (socket.pifeResumeHandler) {
-      socket.off('connect', socket.pifeResumeHandler);
-    }
 
-    socket.on('connection:success', (payload) => {
+    const onConnectionSuccess = (payload) => {
       setPlayerId(payload.playerId);
       socket.emit('requestServerStatus');
-    });
+    };
 
-    socket.on('serverStatus', (payload) => {
+    const onServerStatus = (payload) => {
       setOnlinePlayers(Math.max(0, Number(payload.onlinePlayers) || 0));
-    });
+      setErrorMessage('');
+    };
 
-    socket.on('queueJoined', (payload) => {
+    const onQueueJoined = (payload) => {
+      console.info('[socket] entrada na fila confirmada:', payload);
       waitingSinceRef.current = new Date(payload.waitingSince).getTime();
       setElapsedSeconds(0);
       setQueueInfo(payload);
       setErrorMessage('');
       setStatus('searching');
-    });
+    };
 
-    socket.on('queueLeft', () => {
+    const onQueueLeft = () => {
       waitingSinceRef.current = null;
       setQueueInfo(null);
       setElapsedSeconds(0);
       setStatus('idle');
-    });
+    };
 
-    socket.on('queueTimeout', (payload) => {
+    const onQueueTimeout = (payload) => {
       waitingSinceRef.current = null;
       setQueueInfo(null);
       setElapsedSeconds(0);
       setErrorMessage(payload.message);
       setStatus('timeout');
-    });
+    };
 
-    socket.on('queueStatus', (payload) => {
+    const onQueueStatus = (payload) => {
       setQueueInfo((current) => ({
         ...current,
         ...payload,
       }));
-    });
+    };
 
-    socket.on('matchFound', (payload) => {
+    const onMatchFound = (payload) => {
+      console.info('[socket] match_found recebido:', payload.roomId);
       waitingSinceRef.current = null;
       activeSessionRef.current = {
         roomId: payload.roomId,
-        playerId: playerId || getSocket()?.connectionSuccess?.playerId,
+        playerId: socket.connectionSuccess?.playerId || playerId,
         tableValue: payload.tableValue,
       };
       setMatchInfo(payload);
       setQueueInfo(null);
       setElapsedSeconds(0);
       setStatus('matched');
-    });
+    };
 
     startOnlineListeners({
       onMatchStarted: (payload) => {
@@ -235,27 +258,50 @@ export default function MatchmakingScreen() {
       },
     });
 
-    socket.on('matchmakingError', (payload) => {
+    const onMatchmakingError = (payload) => {
       setErrorMessage(payload.message || 'Nao foi possivel entrar na fila.');
       setStatus('idle');
-    });
+    };
 
-    socket.on('disconnect', () => {
+    const onDisconnect = () => {
       waitingSinceRef.current = null;
       setQueueInfo(null);
       if (!activeSessionRef.current) {
         setStatus('idle');
       }
-    });
+    };
 
-    socket.pifeResumeHandler = () => {
+    const onConnect = () => {
+      socket.emit('requestServerStatus');
       const session = activeSessionRef.current ?? readStoredMatchSession();
       if (session?.matchId && session?.roomId && session?.playerId) {
         activeSessionRef.current = session;
         resumeOnlineMatch(session);
       }
     };
-    socket.on('connect', socket.pifeResumeHandler);
+
+    const handlers = {
+      'connection:success': onConnectionSuccess,
+      serverStatus: onServerStatus,
+      queueJoined: onQueueJoined,
+      queueLeft: onQueueLeft,
+      queueTimeout: onQueueTimeout,
+      queueStatus: onQueueStatus,
+      matchFound: onMatchFound,
+      matchmakingError: onMatchmakingError,
+      disconnect: onDisconnect,
+      connect: onConnect,
+    };
+    Object.entries(handlers).forEach(([eventName, handler]) => socket.on(eventName, handler));
+    socket.pifeLobbyCleanup = () => {
+      Object.entries(handlers).forEach(([eventName, handler]) => socket.off(eventName, handler));
+      socket.pifeLobbyCleanup = null;
+    };
+
+    if (socket.connectionSuccess?.playerId) {
+      setPlayerId(socket.connectionSuccess.playerId);
+    }
+    socket.emit('requestServerStatus');
   };
 
   const restoreActiveMatch = async () => {
@@ -291,8 +337,9 @@ export default function MatchmakingScreen() {
         if (cancelled) return;
         attachListeners(socket);
         socket.emit('requestServerStatus');
-      } catch {
+      } catch (error) {
         setOnlinePlayers(null);
+        setErrorMessage(error.message || 'Servidor indisponivel. Tente novamente.');
       }
     };
 
@@ -359,14 +406,26 @@ export default function MatchmakingScreen() {
       if (socket.connectionSuccess?.playerId) {
         setPlayerId(socket.connectionSuccess.playerId);
       }
-      socket.emit('joinQueue', {
+      const queuePayload = {
         playerName,
         tableValue,
-      });
+      };
+      console.info('[socket] join_match enviado:', queuePayload);
+      await joinQueueWithConfirmation(socket, queuePayload);
       socket.emit('requestQueueStatus', { tableValue });
     } catch (error) {
       setErrorMessage(error.message || 'Nao foi possivel conectar ao servidor.');
       setStatus('idle');
+    }
+  };
+
+  const handleReconnectServer = async () => {
+    setErrorMessage('');
+    try {
+      const socket = await connectSocket();
+      attachListeners(socket);
+    } catch (error) {
+      setErrorMessage(error.message || 'Servidor indisponivel. Tente novamente.');
     }
   };
 
@@ -436,11 +495,11 @@ export default function MatchmakingScreen() {
                 onChange={(event) => setPlayerName(event.target.value)}
               />
             </label>
-            <div className="matchmaking-presence" aria-live="polite">
+            <div className={`matchmaking-presence is-${serverConnection.status}`} aria-live="polite">
               <span aria-hidden="true" />
-              {onlinePlayers == null
-                ? 'Conectando ao servidor...'
-                : `${onlinePlayers} ${onlinePlayers === 1 ? 'jogador online' : 'jogadores online'}`}
+              {isServerConnected
+                ? `Conectado ao servidor${onlinePlayers == null ? '' : ` · ${onlinePlayers} ${onlinePlayers === 1 ? 'jogador online' : 'jogadores online'}`}`
+                : serverConnection.message}
             </div>
 
             <div className="matchmaking-tables" aria-label="Mesa">
@@ -459,8 +518,19 @@ export default function MatchmakingScreen() {
             </div>
 
             <div className="matchmaking-actions">
-              <button className="matchmaking-primary-action" type="button" onClick={handlePlayOnline} disabled={status === 'connecting'}>
-                {status === 'connecting' ? 'Conectando...' : 'Jogar'}
+              <button
+                className="matchmaking-primary-action"
+                type="button"
+                onClick={isServerConnected ? handlePlayOnline : handleReconnectServer}
+                disabled={status === 'connecting' || serverConnection.status === 'connecting' || serverConnection.status === 'reconnecting'}
+              >
+                {status === 'connecting'
+                  ? 'Entrando...'
+                  : isServerConnected
+                    ? 'Jogar'
+                    : serverConnection.status === 'error'
+                      ? 'Tentar conectar'
+                      : 'Aguardando servidor...'}
               </button>
               <div className="matchmaking-secondary-actions">
                 <button className="matchmaking-test-action" type="button" onClick={handleLocalPlay}>

@@ -1,16 +1,36 @@
 import { io } from 'socket.io-client';
 import { reportClientError } from './errorReporter.js';
+import { getServerUrl } from './serverUrl.js';
+
+const CONNECTION_TIMEOUT_MS = 30000;
+const connectionSubscribers = new Set();
 
 let socket = null;
 let socketConnectPromise = null;
 let gamePingInterval = null;
+let connectionState = {
+  status: 'disconnected',
+  connected: false,
+  message: 'Desconectado do servidor.',
+  url: null,
+};
 
-function getSocketUrl() {
-  if (import.meta.env.VITE_SOCKET_URL) {
-    return import.meta.env.VITE_SOCKET_URL;
-  }
+function publishConnectionState(nextState) {
+  connectionState = {
+    ...connectionState,
+    ...nextState,
+  };
+  connectionSubscribers.forEach((listener) => listener(connectionState));
+}
 
-  return typeof window === 'undefined' ? '' : window.location.origin;
+export function subscribeSocketConnection(listener) {
+  connectionSubscribers.add(listener);
+  listener(connectionState);
+  return () => connectionSubscribers.delete(listener);
+}
+
+export function getSocketConnectionState() {
+  return connectionState;
 }
 
 export function getSocket() {
@@ -44,82 +64,152 @@ function startGameLatencyMonitor() {
   gamePingInterval = window.setInterval(updateGameLatency, 10000);
 }
 
-export async function connectSocket() {
-  if (socket?.connected) {
-    return socket;
-  }
-  if (socketConnectPromise) {
-    return socketConnectPromise;
-  }
+function createSocket() {
+  const socketUrl = getServerUrl();
+  console.info('[socket] URL usada para conectar:', socketUrl);
 
-  socketConnectPromise = (async () => {
-    if (!socket) {
-      socket = io(getSocketUrl(), {
-        autoConnect: false,
-        transports: ['polling', 'websocket'],
-        tryAllTransports: true,
-        upgrade: true,
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 500,
-        reconnectionDelayMax: 4000,
-      });
-      socket.gameTelemetry = {
-        latencyMs: null,
-        socketTransport: null,
-        lastStateUpdateAt: null,
-      };
-      window.__PIFE_DUELO_SOCKET__ = socket;
+  const nextSocket = io(socketUrl, {
+    autoConnect: false,
+    transports: ['websocket', 'polling'],
+    tryAllTransports: true,
+    upgrade: true,
+    reconnection: true,
+    reconnectionAttempts: 8,
+    reconnectionDelay: 800,
+    reconnectionDelayMax: 4000,
+    timeout: 10000,
+  });
 
-      socket.on('connect', () => {
-        console.log('[SOCKET_CONNECTED]', { socketId: socket.id });
-        socket.gameTelemetry.socketTransport = socket.io.engine.transport.name;
-        startGameLatencyMonitor();
-      });
+  nextSocket.gameTelemetry = {
+    latencyMs: null,
+    socketTransport: null,
+    lastStateUpdateAt: null,
+  };
+  window.__PIFE_DUELO_SOCKET__ = nextSocket;
 
-      socket.on('connection:success', (payload) => {
-        socket.connectionSuccess = payload;
-      });
+  nextSocket.on('connect', () => {
+    console.info('[socket] conectado:', nextSocket.id);
+    nextSocket.gameTelemetry.socketTransport = nextSocket.io.engine.transport.name;
+    startGameLatencyMonitor();
+  });
 
-      socket.on('disconnect', (reason) => {
-        console.log('[SOCKET_DISCONNECTED]', { socketId: socket.id, reason });
-        if (reason !== 'io client disconnect') {
-          reportClientError(new Error(`Socket desconectado: ${reason}`), 'socket-disconnect', { level: 'warn' });
-        }
-        if (gamePingInterval) {
-          window.clearInterval(gamePingInterval);
-          gamePingInterval = null;
-        }
-      });
-
-      socket.on('connect_error', (error) => {
-        reportClientError(error, 'socket-connect');
-      });
-    }
-
-    return new Promise((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
-        cleanup();
-        socket.disconnect();
-        socketConnectPromise = null;
-        reject(new Error('Nao foi possivel conectar. Verifique sua internet e tente novamente.'));
-      }, 20000);
-
-      const cleanup = () => {
-        window.clearTimeout(timeoutId);
-        socket.off('connect', onConnect);
-      };
-
-      const onConnect = () => {
-        cleanup();
-        socketConnectPromise = null;
-        resolve(socket);
-      };
-
-      socket.once('connect', onConnect);
-      socket.connect();
+  nextSocket.on('connection:success', (payload) => {
+    nextSocket.connectionSuccess = payload;
+    publishConnectionState({
+      status: 'connected',
+      connected: true,
+      message: 'Conectado ao servidor',
+      url: socketUrl,
+      socketId: nextSocket.id,
     });
-  })();
+  });
+
+  nextSocket.on('connect_error', (error) => {
+    console.error('[socket] erro de conexao:', error?.message, error);
+    publishConnectionState({
+      status: 'reconnecting',
+      connected: false,
+      message: 'Reconectando ao servidor...',
+      url: socketUrl,
+      reason: error?.message ?? 'connect_error',
+    });
+    reportClientError(error, 'socket-connect');
+  });
+
+  nextSocket.on('disconnect', (reason) => {
+    console.warn('[socket] desconectado:', reason);
+    nextSocket.connectionSuccess = null;
+    publishConnectionState({
+      status: reason === 'io client disconnect' ? 'disconnected' : 'reconnecting',
+      connected: false,
+      message: reason === 'io client disconnect' ? 'Desconectado do servidor.' : 'Reconectando ao servidor...',
+      url: socketUrl,
+      reason,
+    });
+    if (reason !== 'io client disconnect') {
+      reportClientError(new Error(`Socket desconectado: ${reason}`), 'socket-disconnect', { level: 'warn' });
+    }
+    if (gamePingInterval) {
+      window.clearInterval(gamePingInterval);
+      gamePingInterval = null;
+    }
+  });
+
+  nextSocket.io.on('reconnect_attempt', (attempt) => {
+    console.info('[socket] tentativa de reconexao:', attempt);
+    publishConnectionState({
+      status: 'reconnecting',
+      connected: false,
+      message: 'Reconectando ao servidor...',
+      url: socketUrl,
+      attempt,
+    });
+  });
+
+  nextSocket.io.on('reconnect_failed', () => {
+    console.error('[socket] reconexao esgotada');
+    publishConnectionState({
+      status: 'error',
+      connected: false,
+      message: 'Servidor indisponivel. Tente conectar novamente.',
+      url: socketUrl,
+    });
+  });
+
+  return nextSocket;
+}
+
+export async function connectSocket() {
+  if (!socket) socket = createSocket();
+  if (socket.connected && socket.connectionSuccess?.connected) return socket;
+  if (socketConnectPromise) return socketConnectPromise;
+
+  publishConnectionState({
+    status: socket.active ? 'reconnecting' : 'connecting',
+    connected: false,
+    message: socket.active ? 'Reconectando ao servidor...' : 'Conectando ao servidor...',
+    url: getServerUrl(),
+  });
+
+  socketConnectPromise = new Promise((resolve, reject) => {
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      socket.off('connection:success', onServerConfirmed);
+      socket.io.off('reconnect_failed', onReconnectFailed);
+    };
+
+    const fail = (message) => {
+      cleanup();
+      socketConnectPromise = null;
+      socket.disconnect();
+      const error = new Error(message);
+      publishConnectionState({
+        status: 'error',
+        connected: false,
+        message,
+        url: getServerUrl(),
+      });
+      reject(error);
+    };
+
+    const onServerConfirmed = () => {
+      cleanup();
+      socketConnectPromise = null;
+      resolve(socket);
+    };
+
+    const onReconnectFailed = () => {
+      fail('Servidor indisponivel. Tente conectar novamente.');
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      fail('O servidor nao confirmou a conexao. Tente novamente.');
+    }, CONNECTION_TIMEOUT_MS);
+
+    socket.once('connection:success', onServerConfirmed);
+    socket.io.once('reconnect_failed', onReconnectFailed);
+    socket.connect();
+  });
 
   return socketConnectPromise;
 }
@@ -129,9 +219,16 @@ export function disconnectSocket() {
 
   socket.disconnect();
   socket.removeAllListeners();
+  socket.io.removeAllListeners();
   socket = null;
   if (gamePingInterval) window.clearInterval(gamePingInterval);
   gamePingInterval = null;
   window.__PIFE_DUELO_SOCKET__ = null;
   socketConnectPromise = null;
+  publishConnectionState({
+    status: 'disconnected',
+    connected: false,
+    message: 'Desconectado do servidor.',
+    socketId: null,
+  });
 }

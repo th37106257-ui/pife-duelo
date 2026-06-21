@@ -5178,6 +5178,28 @@ button {
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
 }
 
+.matchmaking-presence.is-connecting,
+.matchmaking-presence.is-reconnecting {
+  color: #fde68a;
+}
+
+.matchmaking-presence.is-connecting > span,
+.matchmaking-presence.is-reconnecting > span {
+  background: #facc15;
+  box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.12);
+}
+
+.matchmaking-presence.is-error,
+.matchmaking-presence.is-disconnected {
+  color: #fca5a5;
+}
+
+.matchmaking-presence.is-error > span,
+.matchmaking-presence.is-disconnected > span {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+}
+
 .matchmaking-tables {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

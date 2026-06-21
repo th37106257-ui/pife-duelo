@@ -91,15 +91,19 @@ try {
   const secondStartedPromise = once(second.socket, 'matchStarted');
   const firstSyncPromise = once(first.socket, 'time_sync');
   const secondSyncPromise = once(second.socket, 'time_sync');
-  first.socket.emit('joinQueue', { playerName: 'Tempo A', tableValue: 2 });
-  second.socket.emit('joinQueue', { playerName: 'Tempo B', tableValue: 2 });
+  const firstQueueResultPromise = emitAction(first.socket, 'joinQueue', { playerName: 'Tempo A', tableValue: 2 });
+  const secondQueueResultPromise = emitAction(second.socket, 'joinQueue', { playerName: 'Tempo B', tableValue: 2 });
 
-  const [firstState, secondState, firstSync, secondSync] = await Promise.all([
+  const [firstState, secondState, firstSync, secondSync, firstQueueResult, secondQueueResult] = await Promise.all([
     firstStartedPromise,
     secondStartedPromise,
     firstSyncPromise,
     secondSyncPromise,
+    firstQueueResultPromise,
+    secondQueueResultPromise,
   ]);
+  assert.equal(firstQueueResult.ack.ok, true);
+  assert.equal(secondQueueResult.ack.ok, true);
   assert.equal(firstState.matchId, secondState.matchId);
   assert.equal(firstSync.turnStartedAt, secondSync.turnStartedAt);
   assert.equal(firstSync.currentPlayerId, secondSync.currentPlayerId);

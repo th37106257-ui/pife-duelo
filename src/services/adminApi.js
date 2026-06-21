@@ -1,7 +1,5 @@
-function getServerUrl() {
-  if (import.meta.env.VITE_SOCKET_URL) return import.meta.env.VITE_SOCKET_URL;
-  return typeof window === 'undefined' ? '' : window.location.origin;
-}
+import { reportClientError } from './errorReporter.js';
+import { getServerUrl } from './serverUrl.js';
 
 async function requestAdmin(path, { password, method = 'GET', body = null } = {}) {
   const response = await fetch(`${getServerUrl()}${path}`, {
@@ -77,4 +75,3 @@ export function adminRemoveRoom(password, roomId, { reason, confirmActiveMatch =
     body: { reason, confirmActiveMatch },
   });
 }
-import { reportClientError } from './errorReporter.js';
