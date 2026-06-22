@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { PaymentStore } from '../server/src/payments/PaymentStore.js';
 import { PaymentService } from '../server/src/payments/PaymentService.js';
-import { WhatsAppPaymentBot } from '../server/src/payments/WhatsAppPaymentBot.js';
+import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from '../server/src/payments/WhatsAppPaymentBot.js';
 import { EvolutionClient } from '../server/src/payments/EvolutionClient.js';
 
 let now = Date.parse('2026-06-20T12:00:00.000Z');
@@ -74,8 +74,44 @@ assert.deepEqual(connectivityMessages, [{ phone: playerPhone, text: '\u{1F3B4} P
 const ignoredConnectivityMessage = await connectivityBot.handleConnectivityWebhook(
   webhook({ phone: playerPhone, id: 'connectivity-2', text: '5' }),
 );
-assert.equal(ignoredConnectivityMessage.reason, 'connectivity-test-only');
+assert.equal(ignoredConnectivityMessage.reason, 'connectivity_test_only');
 assert.equal(connectivityMessages.length, 1, 'Modo seguro n\u00e3o inicia o fluxo Pix.');
+
+const outgoingDiagnostic = buildEvolutionMessageDiagnostic({
+  ...webhook({ phone: playerPhone, id: 'outgoing-1', text: 'oi' }),
+  data: {
+    ...webhook({ phone: playerPhone, id: 'outgoing-1', text: 'oi' }).data,
+    key: { remoteJid: `${playerPhone}@s.whatsapp.net`, fromMe: true, id: 'outgoing-1' },
+  },
+});
+assert.equal(outgoingDiagnostic.decision, 'ignored_from_me');
+assert.equal(outgoingDiagnostic.reason, 'key_from_me_true');
+assert.doesNotMatch(outgoingDiagnostic.remoteJid, new RegExp(playerPhone));
+const outgoingResult = await connectivityBot.handleConnectivityWebhook({
+  ...webhook({ phone: playerPhone, id: 'outgoing-1', text: 'oi' }),
+  data: {
+    ...webhook({ phone: playerPhone, id: 'outgoing-1', text: 'oi' }).data,
+    key: { remoteJid: `${playerPhone}@s.whatsapp.net`, fromMe: true, id: 'outgoing-1' },
+  },
+});
+assert.equal(outgoingResult.decision, 'ignored_from_me');
+
+const incomingFalseString = webhook({ phone: playerPhone, id: 'incoming-string-false', text: 'oi' });
+incomingFalseString.data.key.fromMe = 'false';
+const incomingStringResult = await connectivityBot.handleConnectivityWebhook(incomingFalseString);
+assert.equal(incomingStringResult.decision, 'reply_sent', 'Somente o booleano true deve indicar fromMe.');
+
+const emptyMessagePayload = webhook({ phone: playerPhone, id: 'empty-1', text: '' });
+const emptyMessageResult = await connectivityBot.handleConnectivityWebhook(emptyMessagePayload);
+assert.equal(emptyMessageResult.decision, 'ignored_invalid');
+assert.equal(emptyMessageResult.reason, 'empty_text');
+
+const groupPayload = webhook({ phone: playerPhone, id: 'group-1', text: 'oi' });
+groupPayload.data.key.remoteJid = '120363000000000000@g.us';
+groupPayload.data.key.participant = `${playerPhone}@s.whatsapp.net`;
+const groupResult = await connectivityBot.handleConnectivityWebhook(groupPayload);
+assert.equal(groupResult.decision, 'ignored_invalid');
+assert.equal(groupResult.reason, 'group_not_supported');
 
 const menu = await sendIncoming({ phone: playerPhone, id: 'msg-1', text: 'oi' });
 assert.equal(menu.type, 'menu_sent');

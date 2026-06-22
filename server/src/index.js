@@ -19,7 +19,7 @@ import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js'
 import { PaymentStore } from './payments/PaymentStore.js';
 import { PaymentService } from './payments/PaymentService.js';
 import { EvolutionClient } from './payments/EvolutionClient.js';
-import { WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
+import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
 import {
   getDailyObservabilityMetrics,
   getErrorCountSince,
@@ -383,6 +383,8 @@ app.post('/api/webhooks/evolution', async (request, response) => {
   }
 
   try {
+    const messageDiagnostic = buildEvolutionMessageDiagnostic(request.body ?? {});
+    logInfo('EVOLUTION_MESSAGE_DIAGNOSTIC', messageDiagnostic);
     logInfo('EVOLUTION_MESSAGE_RECEIVED', {
       originIp,
       event: request.body?.event ?? null,
@@ -391,8 +393,21 @@ app.post('/api/webhooks/evolution', async (request, response) => {
     const result = paymentSystemEnabled
       ? await whatsappPaymentBot.handleWebhook(request.body ?? {}, { originIp })
       : await whatsappPaymentBot.handleConnectivityWebhook(request.body ?? {}, { originIp });
+    logInfo('EVOLUTION_MESSAGE_DECISION', {
+      decision: result.decision ?? (result.ignored ? 'ignored_invalid' : 'processed_incoming'),
+      reason: result.reason ?? result.type ?? 'unknown',
+      messageType: messageDiagnostic.messageType,
+      keyFromMe: messageDiagnostic.keyFromMe,
+      remoteJid: messageDiagnostic.remoteJid,
+    });
     if (result.type === 'connectivity_greeting_sent') {
-      logInfo('EVOLUTION_REPLY_SENT', { originIp, replyType: result.type });
+      logInfo('EVOLUTION_REPLY_SENT', {
+        originIp,
+        replyType: result.type,
+        decision: 'reply_sent',
+        reason: result.reason,
+        remoteJid: messageDiagnostic.remoteJid,
+      });
     }
     logInfo('EVOLUTION_WEBHOOK_PROCESSED', {
       originIp,

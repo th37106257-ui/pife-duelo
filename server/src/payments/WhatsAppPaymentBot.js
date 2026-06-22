@@ -21,18 +21,90 @@ function getMessageText(message = {}) {
   );
 }
 
+function maskTechnicalIdentity(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const [identity, suffix] = raw.split('@');
+  const digits = identity.replace(/\D/g, '');
+  if (digits.length >= 4) return `${'*'.repeat(Math.min(8, Math.max(4, digits.length - 4)))}${digits.slice(-4)}${suffix ? `@${suffix}` : ''}`;
+  return '<present>';
+}
+
+function normalizeJid(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getOwnerJid(payload = {}) {
+  const candidates = [
+    payload.ownerJid,
+    payload.instance?.ownerJid,
+    payload.data?.ownerJid,
+    payload.sender,
+  ];
+  return candidates.find((value) => /@(?:s\.whatsapp\.net|lid)$/i.test(String(value || ''))) || '';
+}
+
 function parseIncomingMessage(payload = {}) {
   const data = payload.data ?? payload;
   const key = data.key ?? {};
   const message = data.message ?? {};
   const remoteJid = String(key.remoteJid || data.sender || payload.sender || '');
+  const participant = String(key.participant || data.participant || '');
+  const ownerJid = getOwnerJid(payload);
   const phone = normalizePhone(remoteJid.split('@')[0]);
   return {
     phone,
+    remoteJid,
+    participant,
+    ownerJid,
     messageId: String(key.id || data.messageId || payload.messageId || '').trim(),
-    fromMe: Boolean(key.fromMe),
+    fromMe: key.fromMe === true,
+    rawFromMe: key.fromMe,
+    isGroup: remoteJid.endsWith('@g.us'),
+    messageType: String(data.messageType || Object.keys(message)[0] || ''),
+    sender: data.sender || payload.sender || null,
+    pushName: data.pushName || payload.pushName || null,
     text: getMessageText(message),
     hasReceiptMedia: Boolean(message.imageMessage || message.documentMessage),
+  };
+}
+
+export function buildEvolutionMessageDiagnostic(payload = {}) {
+  const incoming = parseIncomingMessage(payload);
+  const remoteJid = normalizeJid(incoming.remoteJid);
+  const participant = normalizeJid(incoming.participant);
+  const ownerJid = normalizeJid(incoming.ownerJid);
+  let decision = 'processed_incoming';
+  let reason = 'incoming_private_text';
+
+  if (incoming.fromMe) {
+    decision = 'ignored_from_me';
+    reason = 'key_from_me_true';
+  } else if (incoming.isGroup) {
+    decision = 'ignored_invalid';
+    reason = 'group_not_supported';
+  } else if (!incoming.phone || !remoteJid) {
+    decision = 'ignored_invalid';
+    reason = 'missing_remote_jid';
+  } else if (!incoming.text) {
+    decision = 'ignored_invalid';
+    reason = 'empty_text';
+  }
+
+  return {
+    event: String(payload?.event || ''),
+    instance: String(payload?.instance || ''),
+    messageType: incoming.messageType || null,
+    keyFromMe: incoming.rawFromMe ?? null,
+    remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+    participant: maskTechnicalIdentity(incoming.participant),
+    sender: maskTechnicalIdentity(incoming.sender),
+    pushName: incoming.pushName ? maskTechnicalIdentity(incoming.pushName) : null,
+    ownerJid: maskTechnicalIdentity(incoming.ownerJid),
+    remoteEqualsOwner: Boolean(remoteJid && ownerJid && remoteJid === ownerJid),
+    participantEqualsOwner: Boolean(participant && ownerJid && participant === ownerJid),
+    decision,
+    reason,
   };
 }
 
@@ -102,11 +174,14 @@ export class WhatsAppPaymentBot {
     if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
 
     const incoming = parseIncomingMessage(payload);
-    if (!incoming.phone || incoming.fromMe) return { ignored: true, reason: 'invalid-or-outgoing-message' };
-    if (incoming.text.toLowerCase() !== 'oi') return { ignored: true, reason: 'connectivity-test-only' };
+    if (incoming.fromMe) return { ignored: true, decision: 'ignored_from_me', reason: 'key_from_me_true' };
+    if (incoming.isGroup) return { ignored: true, decision: 'ignored_invalid', reason: 'group_not_supported' };
+    if (!incoming.phone || !incoming.remoteJid) return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
+    if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
+    if (incoming.text.toLowerCase() !== 'oi') return { ignored: true, decision: 'ignored_invalid', reason: 'connectivity_test_only' };
 
     await this.send(incoming.phone, '\u{1F3B4} Pife Duelo online.');
-    return { type: 'connectivity_greeting_sent', originIp };
+    return { type: 'connectivity_greeting_sent', decision: 'reply_sent', reason: 'incoming_private_oi', originIp };
   }
 
   menuText() {
