@@ -234,7 +234,7 @@ assert.equal(requestCapture[0].url, 'https://evolution.example/message/sendText/
 assert.equal(requestCapture[0].options.headers.apikey, 'backend-only-key');
 assert.deepEqual(JSON.parse(requestCapture[0].options.body), {
   number: playerPhone,
-  textMessage: { text: 'teste' },
+  text: 'teste',
 });
 
 console.log('WhatsApp/Pix: fluxo manual, auditoria, autorização, idempotência e acesso validados.');

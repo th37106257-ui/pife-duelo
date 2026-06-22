@@ -38,7 +38,7 @@ export class EvolutionClient {
             },
             body: JSON.stringify({
               number,
-              textMessage: { text: safeText },
+              text: safeText,
             }),
             signal: controller.signal,
           },
