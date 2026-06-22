@@ -62,6 +62,14 @@ const whatsappPaymentBot = new WhatsAppPaymentBot({
 const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
   && config.PAYMENT_GATE_ENABLED
   && getPaymentConfigurationErrors().length === 0;
+const whatsappConnectivityConfigured = Boolean(
+  config.EVOLUTION_API_URL
+  && config.EVOLUTION_API_KEY
+  && config.EVOLUTION_INSTANCE_NAME
+  && config.EVOLUTION_WEBHOOK_SECRET,
+);
+const whatsappConnectivityTestEnabled = config.WHATSAPP_CONNECTIVITY_TEST_ENABLED
+  && whatsappConnectivityConfigured;
 
 function getPaymentConfigurationErrors() {
   const required = {
@@ -319,6 +327,10 @@ app.get('/health', (request, response) => {
       enabled: paymentSystemEnabled,
       configured: getPaymentConfigurationErrors().length === 0,
     },
+    whatsapp: {
+      connectivityTestEnabled: whatsappConnectivityTestEnabled,
+      configured: whatsappConnectivityConfigured,
+    },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,
     errorCountLastHour: getErrorCountSince(Date.now() - 60 * 60 * 1000),
@@ -355,7 +367,10 @@ app.get('/api/status', (request, response) => {
 
 app.post('/api/webhooks/evolution', async (request, response) => {
   const originIp = request.ip || request.get('x-forwarded-for') || null;
-  if (!requirePaymentsReady(response)) return;
+  if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled) {
+    response.status(503).json({ error: 'whatsapp-disabled' });
+    return;
+  }
   if (!secureEquals(getWebhookSecret(request), config.EVOLUTION_WEBHOOK_SECRET)) {
     logWarn('EVOLUTION_WEBHOOK_UNAUTHORIZED', { originIp });
     response.status(401).json({ error: 'webhook-unauthorized' });
@@ -368,7 +383,17 @@ app.post('/api/webhooks/evolution', async (request, response) => {
   }
 
   try {
-    const result = await whatsappPaymentBot.handleWebhook(request.body ?? {}, { originIp });
+    logInfo('EVOLUTION_MESSAGE_RECEIVED', {
+      originIp,
+      event: request.body?.event ?? null,
+      mode: paymentSystemEnabled ? 'payments' : 'connectivity-test',
+    });
+    const result = paymentSystemEnabled
+      ? await whatsappPaymentBot.handleWebhook(request.body ?? {}, { originIp })
+      : await whatsappPaymentBot.handleConnectivityWebhook(request.body ?? {}, { originIp });
+    if (result.type === 'connectivity_greeting_sent') {
+      logInfo('EVOLUTION_REPLY_SENT', { originIp, replyType: result.type });
+    }
     logInfo('EVOLUTION_WEBHOOK_PROCESSED', {
       originIp,
       event: request.body?.event ?? null,

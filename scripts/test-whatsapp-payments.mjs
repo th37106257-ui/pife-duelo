@@ -34,6 +34,14 @@ const bot = new WhatsAppPaymentBot({
   clock: () => now,
 });
 
+const connectivityMessages = [];
+const connectivityBot = new WhatsAppPaymentBot({
+  evolutionClient: {
+    isConfigured: () => true,
+    sendText: async (phone, text) => connectivityMessages.push({ phone, text }),
+  },
+});
+
 function advance() {
   now += 4000;
 }
@@ -56,6 +64,18 @@ async function sendIncoming(input) {
   advance();
   return bot.handleWebhook(webhook(input), { originIp: '127.0.0.1' });
 }
+
+const connectivityReply = await connectivityBot.handleConnectivityWebhook(
+  webhook({ phone: playerPhone, id: 'connectivity-1', text: 'oi' }),
+  { originIp: '127.0.0.1' },
+);
+assert.equal(connectivityReply.type, 'connectivity_greeting_sent');
+assert.deepEqual(connectivityMessages, [{ phone: playerPhone, text: '\u{1F3B4} Pife Duelo online.' }]);
+const ignoredConnectivityMessage = await connectivityBot.handleConnectivityWebhook(
+  webhook({ phone: playerPhone, id: 'connectivity-2', text: '5' }),
+);
+assert.equal(ignoredConnectivityMessage.reason, 'connectivity-test-only');
+assert.equal(connectivityMessages.length, 1, 'Modo seguro n\u00e3o inicia o fluxo Pix.');
 
 const menu = await sendIncoming({ phone: playerPhone, id: 'msg-1', text: 'oi' });
 assert.equal(menu.type, 'menu_sent');

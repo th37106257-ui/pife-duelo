@@ -97,6 +97,18 @@ export class WhatsAppPaymentBot {
     return this.evolutionClient.sendText(phone, text);
   }
 
+  async handleConnectivityWebhook(payload, { originIp = null } = {}) {
+    const event = String(payload?.event || '').toUpperCase().replace('.', '_');
+    if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
+
+    const incoming = parseIncomingMessage(payload);
+    if (!incoming.phone || incoming.fromMe) return { ignored: true, reason: 'invalid-or-outgoing-message' };
+    if (incoming.text.toLowerCase() !== 'oi') return { ignored: true, reason: 'connectivity-test-only' };
+
+    await this.send(incoming.phone, '\u{1F3B4} Pife Duelo online.');
+    return { type: 'connectivity_greeting_sent', originIp };
+  }
+
   menuText() {
     return [
       '🎴 Pife Duelo online.',
