@@ -69,13 +69,23 @@ function getPaymentAccessToken() {
   return new URLSearchParams(window.location.search).get('access')?.trim() || '';
 }
 
+function getWhatsAppEntryToken() {
+  if (typeof window === 'undefined') return '';
+  return new URLSearchParams(window.location.search).get('entry')?.trim() || '';
+}
+
 function isPaymentAccessError(error) {
   return error?.data?.code === 'PAYMENT_REQUIRED' || error?.message === 'PAYMENT_REQUIRED';
+}
+
+function isEntryAccessError(error) {
+  return error?.data?.code === 'ENTRY_ACCESS_DENIED' || error?.message === 'ENTRY_ACCESS_DENIED';
 }
 
 function createSocket() {
   const socketUrl = getServerUrl();
   const paymentToken = getPaymentAccessToken();
+  const entryToken = getWhatsAppEntryToken();
   console.info('[socket] URL usada para conectar:', socketUrl);
 
   const nextSocket = io(socketUrl, {
@@ -88,7 +98,10 @@ function createSocket() {
     reconnectionDelay: 800,
     reconnectionDelayMax: 4000,
     timeout: 10000,
-    auth: paymentToken ? { paymentToken } : {},
+    auth: {
+      ...(paymentToken ? { paymentToken } : {}),
+      ...(entryToken ? { entryToken } : {}),
+    },
   });
 
   nextSocket.gameTelemetry = {
@@ -118,12 +131,15 @@ function createSocket() {
   nextSocket.on('connect_error', (error) => {
     console.error('[socket] erro de conexao:', error?.message, error);
     const paymentDenied = isPaymentAccessError(error);
+    const entryDenied = isEntryAccessError(error);
     publishConnectionState({
-      status: paymentDenied ? 'error' : 'reconnecting',
+      status: paymentDenied || entryDenied ? 'error' : 'reconnecting',
       connected: false,
-      message: paymentDenied
-        ? 'Pagamento confirmado necessario. Use o link recebido no WhatsApp.'
-        : 'Reconectando ao servidor...',
+      message: entryDenied
+        ? 'Esta entrada nao foi liberada, expirou ou nao e valida.'
+        : paymentDenied
+          ? 'Pagamento confirmado necessario. Use o link recebido no WhatsApp.'
+          : 'Reconectando ao servidor...',
       url: socketUrl,
       reason: error?.message ?? 'connect_error',
     });
@@ -218,6 +234,10 @@ export async function connectSocket() {
     };
 
     const onConnectError = (error) => {
+      if (isEntryAccessError(error)) {
+        fail('Esta entrada nao foi liberada, expirou ou nao e valida.');
+        return;
+      }
       if (isPaymentAccessError(error)) {
         fail('Pagamento confirmado necessario. Use o link recebido no WhatsApp.');
       }

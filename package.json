@@ -13,7 +13,7 @@
     "test:observability": "node scripts/test-observability.mjs && node scripts/test-observability-integration.mjs",
     "test:online-sync": "node scripts/test-online-sync.mjs",
     "test:payments": "node scripts/test-whatsapp-payments.mjs && node scripts/test-payment-gate-integration.mjs",
-    "test:entries": "node scripts/test-whatsapp-entries.mjs",
+    "test:entries": "node scripts/test-whatsapp-entries.mjs && node scripts/test-whatsapp-entry-gate-integration.mjs",
     "test:report": "node scripts/test-game-rules.mjs --report",
     "DEBUG_WIN_HAND": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_WIN_HAND",
     "DEBUG_BOT_WIN": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_BOT_WIN",

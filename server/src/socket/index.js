@@ -12,6 +12,8 @@ export function setupSocketServer(httpServer, {
   queueManager,
   paymentService = null,
   paymentGateEnabled = false,
+  entryService = null,
+  safeEntryEnabled = false,
   corsOptions,
 } = {}) {
   const io = new Server(httpServer, {
@@ -25,8 +27,28 @@ export function setupSocketServer(httpServer, {
     pingInterval: 25000,
     pingTimeout: 20000,
   });
-  if (paymentGateEnabled) {
+  if (paymentGateEnabled || safeEntryEnabled) {
     io.use((socket, next) => {
+      const entryToken = String(socket.handshake.auth?.entryToken || '').trim();
+      if (safeEntryEnabled && entryToken) {
+        const entry = entryService?.validateAccessToken(entryToken);
+        if (!entry) {
+          const error = new Error('ENTRY_ACCESS_DENIED');
+          error.data = { code: 'ENTRY_ACCESS_DENIED' };
+          next(error);
+          return;
+        }
+        socket.entryAccess = {
+          entryId: entry.entryId,
+          selectedTable: entry.selectedTable,
+          linkedMatchId: entry.linkedMatchId ?? null,
+        };
+      }
+
+      if (!paymentGateEnabled) {
+        next();
+        return;
+      }
       const payment = paymentService?.validateAccessToken(socket.handshake.auth?.paymentToken);
       if (!payment) {
         const error = new Error('PAYMENT_REQUIRED');
@@ -82,6 +104,7 @@ export function setupSocketServer(httpServer, {
     activeMatches: matchManager.listMatches().filter((match) => match.status !== 'finished').length,
     queuedPlayers: queueManager.getQueueSize(),
     paymentGateEnabled,
+    safeEntryEnabled,
     uptime: Math.round(process.uptime()),
   });
 
@@ -158,6 +181,17 @@ export function setupSocketServer(httpServer, {
         }
       });
     }
+    entries.filter((entry) => entry.entryId).forEach((entry) => {
+      const safeEntry = entryService?.getEntry(entry.entryId, { includeSecrets: true });
+      if (
+        !safeEntry
+        || safeEntry.status !== 'queued'
+        || safeEntry.queueSocketId !== entry.socketId
+        || Number(safeEntry.selectedTable) !== Number(entry.tableValue)
+      ) {
+        throw new Error('ENTRY_ACCESS_INVALID_FOR_MATCH');
+      }
+    });
     const roomPlayers = [
       {
         id: first.playerId,
@@ -213,6 +247,20 @@ export function setupSocketServer(httpServer, {
         paymentIds: entries.map((entry) => entry.paymentId),
       });
     }
+    entries.filter((entry) => entry.entryId).forEach((entry) => {
+      entryService.linkToMatch({
+        entryId: entry.entryId,
+        socketId: entry.socketId,
+        matchId: onlineMatch.matchId,
+      });
+    });
+    if (entries.some((entry) => entry.entryId)) {
+      logInfo('WHATSAPP_ENTRIES_LINKED_TO_MATCH', {
+        matchId: onlineMatch.matchId,
+        roomId: room.roomId,
+        entryIds: entries.map((entry) => entry.entryId).filter(Boolean),
+      });
+    }
 
     roomManager.updateRoom(room.roomId, {
       status: 'playing',
@@ -253,6 +301,13 @@ export function setupSocketServer(httpServer, {
     if (paymentGateEnabled && entry.paymentId) {
       paymentService.releaseAccessReservation({
         paymentId: entry.paymentId,
+        socketId: entry.socketId,
+        reason: 'queue_timeout',
+      });
+    }
+    if (entry.entryId) {
+      entryService?.releaseQueueAccess({
+        entryId: entry.entryId,
         socketId: entry.socketId,
         reason: 'queue_timeout',
       });
@@ -298,6 +353,10 @@ export function setupSocketServer(httpServer, {
       paymentAccess: socket.paymentAccess ? {
         paymentId: socket.paymentAccess.paymentId,
         selectedTable: socket.paymentAccess.selectedTable,
+      } : null,
+      entryAccess: socket.entryAccess ? {
+        entryId: socket.entryAccess.entryId,
+        selectedTable: socket.entryAccess.selectedTable,
       } : null,
     });
     broadcastServerStatus();
@@ -438,6 +497,29 @@ export function setupSocketServer(httpServer, {
         }
       }
 
+      if (socket.entryAccess) {
+        try {
+          entryService.reserveQueueAccess({
+            entryId: socket.entryAccess.entryId,
+            socketId: socket.id,
+            selectedTable: tableValue,
+          });
+        } catch (error) {
+          logWarn('WHATSAPP_ENTRY_QUEUE_REJECTED', {
+            socketId: socket.id,
+            entryId: socket.entryAccess.entryId,
+            tableValue,
+            reason: error.message,
+          });
+          const message = error.message === 'ENTRY_TABLE_MISMATCH'
+            ? 'Use a mesma mesa liberada pelo admin.'
+            : 'Esta entrada nao esta disponivel para a fila.';
+          socket.emit('matchmakingError', { reason: error.message, message });
+          ack?.({ ok: false, reason: error.message, message, serverNow: Date.now() });
+          return;
+        }
+      }
+
       const queuedPlayer = playerManager.updatePlayer(player.id, {
         name: playerName,
         socketId: socket.id,
@@ -451,12 +533,20 @@ export function setupSocketServer(httpServer, {
         playerName,
         tableValue,
         paymentId: socket.paymentAccess?.paymentId ?? null,
+        entryId: socket.entryAccess?.entryId ?? null,
       });
 
       if (queueResult.blocked) {
         if (paymentGateEnabled && socket.paymentAccess) {
           paymentService.releaseAccessReservation({
             paymentId: socket.paymentAccess.paymentId,
+            socketId: socket.id,
+            reason: queueResult.reason,
+          });
+        }
+        if (socket.entryAccess) {
+          entryService.releaseQueueAccess({
+            entryId: socket.entryAccess.entryId,
             socketId: socket.id,
             reason: queueResult.reason,
           });
@@ -512,6 +602,13 @@ export function setupSocketServer(httpServer, {
       if (paymentGateEnabled && leaveResult.entry?.paymentId) {
         paymentService.releaseAccessReservation({
           paymentId: leaveResult.entry.paymentId,
+          socketId: socket.id,
+          reason: 'queue_left',
+        });
+      }
+      if (leaveResult.entry?.entryId) {
+        entryService?.releaseQueueAccess({
+          entryId: leaveResult.entry.entryId,
           socketId: socket.id,
           reason: 'queue_left',
         });
@@ -747,6 +844,13 @@ export function setupSocketServer(httpServer, {
         if (paymentGateEnabled && leaveResult.entry.paymentId) {
           paymentService.releaseAccessReservation({
             paymentId: leaveResult.entry.paymentId,
+            socketId: socket.id,
+            reason: 'disconnect',
+          });
+        }
+        if (leaveResult.entry.entryId) {
+          entryService?.releaseQueueAccess({
+            entryId: leaveResult.entry.entryId,
             socketId: socket.id,
             reason: 'disconnect',
           });

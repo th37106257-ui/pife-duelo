@@ -181,10 +181,11 @@ export default function MatchmakingScreen() {
 
     const onConnectionSuccess = (payload) => {
       setPlayerId(payload.playerId);
-      if (payload.paymentAccess?.selectedTable) {
-        const paidTable = Number(payload.paymentAccess.selectedTable);
-        setTableValue(paidTable);
-        setLockedTableValue(paidTable);
+      const authorizedTable = payload.entryAccess?.selectedTable ?? payload.paymentAccess?.selectedTable;
+      if (authorizedTable) {
+        const lockedTable = Number(authorizedTable);
+        setTableValue(lockedTable);
+        setLockedTableValue(lockedTable);
       }
       socket.emit('requestServerStatus');
     };
@@ -412,12 +413,14 @@ export default function MatchmakingScreen() {
       if (socket.connectionSuccess?.playerId) {
         setPlayerId(socket.connectionSuccess.playerId);
       }
-      if (socket.connectionSuccess?.paymentAccess?.selectedTable) {
-        const paidTable = Number(socket.connectionSuccess.paymentAccess.selectedTable);
-        setTableValue(paidTable);
-        setLockedTableValue(paidTable);
+      const authorizedTable = socket.connectionSuccess?.entryAccess?.selectedTable
+        ?? socket.connectionSuccess?.paymentAccess?.selectedTable;
+      if (authorizedTable) {
+        const lockedTable = Number(authorizedTable);
+        setTableValue(lockedTable);
+        setLockedTableValue(lockedTable);
       }
-      const confirmedTableValue = Number(socket.connectionSuccess?.paymentAccess?.selectedTable) || null;
+      const confirmedTableValue = Number(authorizedTable) || null;
       const queueTableValue = confirmedTableValue ?? tableValue;
       const queuePayload = {
         playerName,
