@@ -148,8 +148,19 @@ function errorMessage(error) {
 }
 
 export class WhatsAppPaymentBot {
-  constructor({ paymentService, evolutionClient, pixKey, pixReceiver, adminNumbers = [], clock = Date.now } = {}) {
+  constructor({
+    paymentService,
+    entryService,
+    safeEntryEnabled = false,
+    evolutionClient,
+    pixKey,
+    pixReceiver,
+    adminNumbers = [],
+    clock = Date.now,
+  } = {}) {
     this.paymentService = paymentService;
+    this.entryService = entryService;
+    this.safeEntryEnabled = Boolean(safeEntryEnabled);
     this.evolutionClient = evolutionClient;
     this.pixKey = String(pixKey || '');
     this.pixReceiver = String(pixReceiver || '');
@@ -248,13 +259,111 @@ export class WhatsAppPaymentBot {
     ].join('\n');
   }
 
-  safeTableSelectedText(amount) {
+  safeTableSelectedText(amount, { entryRegistered = false } = {}) {
+    if (entryRegistered) {
+      return [
+        `\u2705 Mesa selecionada: R$${Number(amount).toFixed(2).replace('.', ',')}.`,
+        '',
+        'Sua entrada foi registrada em modo seguro.',
+        'Aguarde a libera\u00e7\u00e3o do admin para receber o link da partida.',
+        '',
+        '\u26A0\uFE0F Pix e pagamentos ainda est\u00e3o desligados nesta fase de teste.',
+      ].join('\n');
+    }
     return [
       `\u2705 Mesa selecionada: R$${Number(amount).toFixed(2).replace('.', ',')}`,
       '',
       'O fluxo de pagamento ainda est\u00e1 em modo seguro/desligado.',
       'Em breve enviaremos as instru\u00e7\u00f5es de Pix por aqui.',
     ].join('\n');
+  }
+
+  safeEntryApprovedText(entry, accessLink) {
+    return [
+      '\u2705 Entrada liberada!',
+      '',
+      `Mesa: R$${Number(entry.tableAmount).toFixed(2).replace('.', ',')}`,
+      `Pr\u00eamio da mesa: R$${Number(entry.prizeAmount).toFixed(2).replace('.', ',')}`,
+      '',
+      'Entre pelo link:',
+      accessLink,
+      '',
+      'Tempo por jogada: 60 segundos.',
+    ].join('\n');
+  }
+
+  pendingEntriesText() {
+    const entries = this.entryService?.listEntries({ status: 'pending_admin_validation' }) ?? [];
+    if (!entries.length) return 'Nenhuma entrada pendente.';
+    return [
+      'Entradas pendentes:',
+      ...entries.slice(0, 20).map((entry) => (
+        `#${entry.entryId} | Mesa R$${Number(entry.tableAmount).toFixed(2).replace('.', ',')} | Tel: ${entry.phoneMasked}`
+      )),
+    ].join('\n');
+  }
+
+  async handleSafeEntryAdminCommand(phone, text) {
+    if (!this.safeEntryEnabled || !this.entryService?.isConfigured() || !this.entryService.isAdmin(phone)) {
+      await this.send(phone, 'Comando n\u00e3o autorizado.');
+      return { type: 'entry_admin_unauthorized', decision: 'reply_sent', reason: 'admin_not_authorized' };
+    }
+
+    if (/^\/admin\s+entradas$/i.test(text)) {
+      await this.send(phone, this.pendingEntriesText());
+      return { type: 'entry_admin_pending_list', decision: 'reply_sent', reason: 'pending_entries_listed' };
+    }
+
+    const approveMatch = text.match(/^\/admin\s+liberar\s+(E?\d+)$/i);
+    if (approveMatch) {
+      const entryId = approveMatch[1].toUpperCase().startsWith('E') ? approveMatch[1].toUpperCase() : `E${approveMatch[1]}`;
+      let approval = null;
+      try {
+        const internalEntry = this.entryService.getEntry(entryId, { includeSecrets: true });
+        approval = this.entryService.approveEntry({ entryId, actor: phone, source: 'whatsapp-admin' });
+        await this.send(internalEntry.phone, this.safeEntryApprovedText(approval.entry, approval.accessLink));
+        this.entryService.markLinkDelivery(entryId, { sent: true });
+        await this.send(phone, `\u2705 Entrada #${entryId} liberada. Link enviado ao jogador.`);
+        return { type: 'entry_approved', decision: 'reply_sent', reason: 'entry_approved_by_whatsapp', entryId };
+      } catch (error) {
+        const current = approval ? this.entryService.getEntry(entryId) : null;
+        if (current?.status === 'approved_for_queue' && !current.linkSentAt) {
+          this.entryService.markLinkDelivery(entryId, { sent: false, error: error.message });
+          this.entryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
+        }
+        await this.send(phone, `N\u00e3o foi poss\u00edvel liberar a entrada: ${error.message}`);
+        return { type: 'entry_admin_command_failed', decision: 'reply_sent', reason: error.message, entryId };
+      }
+    }
+
+    const rejectMatch = text.match(/^\/admin\s+rejeitar\s+(E?\d+)\s+(.+)$/i);
+    if (rejectMatch) {
+      const entryId = rejectMatch[1].toUpperCase().startsWith('E') ? rejectMatch[1].toUpperCase() : `E${rejectMatch[1]}`;
+      try {
+        const internalEntry = this.entryService.getEntry(entryId, { includeSecrets: true });
+        const entry = this.entryService.rejectEntry({
+          entryId,
+          actor: phone,
+          reason: sanitizeText(rejectMatch[2]),
+          source: 'whatsapp-admin',
+        });
+        await this.send(internalEntry.phone, [
+          '\u274C Sua entrada n\u00e3o foi liberada pelo admin.',
+          '',
+          `Motivo: ${entry.rejectionReason}`,
+          '',
+          'Digite menu para come\u00e7ar novamente.',
+        ].join('\n'));
+        await this.send(phone, `Entrada #${entryId} rejeitada e jogador avisado.`);
+        return { type: 'entry_rejected', decision: 'reply_sent', reason: 'entry_rejected_by_whatsapp', entryId };
+      } catch (error) {
+        await this.send(phone, `N\u00e3o foi poss\u00edvel rejeitar a entrada: ${error.message}`);
+        return { type: 'entry_admin_command_failed', decision: 'reply_sent', reason: error.message, entryId };
+      }
+    }
+
+    await this.send(phone, 'Comando admin inv\u00e1lido. Use /admin entradas, /admin liberar ENTRY_ID ou /admin rejeitar ENTRY_ID motivo.');
+    return { type: 'entry_admin_invalid_command', decision: 'reply_sent', reason: 'invalid_admin_command' };
   }
 
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
@@ -267,7 +376,13 @@ export class WhatsAppPaymentBot {
     if (!incoming.phone || !incoming.remoteJid) return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
     if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
 
+    if (this.safeEntryEnabled && incoming.messageId && this.entryService?.store?.hasProcessedMessage(incoming.messageId)) {
+      return { ignored: true, decision: 'ignored_invalid', reason: 'duplicate_message' };
+    }
+    if (this.safeEntryEnabled && incoming.messageId) this.entryService?.store?.markMessageProcessed(incoming.messageId);
+
     const command = normalizeCommand(incoming.text);
+    if (command.startsWith('/admin')) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text);
     if (MENU_COMMANDS.has(command)) {
       this.setConversationState(incoming.phone, 'idle');
       await this.send(incoming.phone, this.safeMenuText());
@@ -277,14 +392,31 @@ export class WhatsAppPaymentBot {
     const currentState = this.getConversationState(incoming.phone);
     if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
       const selectedTable = SAFE_TABLES.get(command);
+      let entry = null;
+      if (this.safeEntryEnabled) {
+        if (!this.entryService?.isConfigured()) {
+          await this.send(incoming.phone, 'As entradas est\u00e3o temporariamente indispon\u00edveis. Digite menu e tente novamente mais tarde.');
+          return { type: 'whatsapp_entry_unavailable', decision: 'reply_sent', reason: 'entry_service_not_configured', state: 'idle', originIp };
+        }
+        try {
+          entry = this.entryService.createEntry({ phone: incoming.phone, selectedTable, source: 'whatsapp' });
+        } catch (error) {
+          if (error.message === 'ENTRY_TABLE_LOCKED') {
+            await this.send(incoming.phone, 'Voc\u00ea j\u00e1 possui uma entrada ativa em outra mesa. Aguarde o admin ou digite menu.');
+            return { type: 'whatsapp_entry_table_locked', decision: 'reply_sent', reason: error.message, state: currentState.state, originIp };
+          }
+          throw error;
+        }
+      }
       this.setConversationState(incoming.phone, 'table_selected', selectedTable);
-      await this.send(incoming.phone, this.safeTableSelectedText(selectedTable));
+      await this.send(incoming.phone, this.safeTableSelectedText(selectedTable, { entryRegistered: Boolean(entry) }));
       return {
-        type: 'whatsapp_table_selected_safe',
+        type: entry ? 'whatsapp_entry_pending_admin' : 'whatsapp_table_selected_safe',
         decision: 'reply_sent',
-        reason: 'table_selected_payments_disabled',
+        reason: entry ? 'entry_pending_admin_validation' : 'table_selected_payments_disabled',
         state: 'table_selected',
         selectedTable,
+        entryId: entry?.entryId ?? null,
         originIp,
       };
     }

@@ -65,6 +65,10 @@ export class WhatsAppEntryService {
     if (!this.store || !this.accessSecret || !this.publicGameUrl) throw new Error('WHATSAPP_ENTRIES_NOT_CONFIGURED');
   }
 
+  isConfigured() {
+    return Boolean(this.store && this.accessSecret && this.publicGameUrl);
+  }
+
   isAdmin(phone) {
     return this.adminNumbers.has(normalizePhone(phone));
   }
@@ -241,6 +245,28 @@ export class WhatsAppEntryService {
         updatedAt: at,
         auditLog: [...current.auditLog, auditEntry({
           action: sent ? 'entry_link_sent' : 'entry_link_delivery_failed',
+          actor: 'system',
+          at,
+          details: error ? { error: String(error).slice(0, 180) } : null,
+        })],
+      };
+    }));
+  }
+
+  rollbackApprovalAfterDeliveryFailure(entryId, { error = null } = {}) {
+    return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
+      if (current.status !== 'approved_for_queue' || current.linkSentAt) throw new Error('ENTRY_APPROVAL_ROLLBACK_BLOCKED');
+      const at = nowIso(this.clock);
+      return {
+        ...current,
+        status: 'pending_admin_validation',
+        approvedBy: null,
+        approvedAt: null,
+        accessTokenHash: null,
+        accessExpiresAt: null,
+        updatedAt: at,
+        auditLog: [...current.auditLog, auditEntry({
+          action: 'entry_approval_rolled_back',
           actor: 'system',
           at,
           details: error ? { error: String(error).slice(0, 180) } : null,

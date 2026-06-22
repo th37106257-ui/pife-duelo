@@ -20,6 +20,8 @@ import { PaymentStore } from './payments/PaymentStore.js';
 import { PaymentService } from './payments/PaymentService.js';
 import { EvolutionClient } from './payments/EvolutionClient.js';
 import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
+import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
+import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
 import {
   getDailyObservabilityMetrics,
   getErrorCountSince,
@@ -47,6 +49,15 @@ const paymentService = new PaymentService({
   paymentExpiryMinutes: config.PAYMENT_EXPIRY_MINUTES,
   accessTtlMinutes: config.PAYMENT_ACCESS_TTL_MINUTES,
 });
+const whatsappEntryStore = new WhatsAppEntryStore({ filePath: config.WHATSAPP_ENTRY_STORE_PATH || null });
+const whatsappEntryService = new WhatsAppEntryService({
+  store: whatsappEntryStore,
+  adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
+  accessSecret: config.WHATSAPP_ENTRY_ACCESS_SECRET,
+  publicGameUrl: config.PUBLIC_GAME_URL,
+  entryExpiryMinutes: config.WHATSAPP_ENTRY_EXPIRY_MINUTES,
+  accessTtlMinutes: config.WHATSAPP_ENTRY_ACCESS_TTL_MINUTES,
+});
 const evolutionClient = new EvolutionClient({
   baseUrl: config.EVOLUTION_API_URL,
   apiKey: config.EVOLUTION_API_KEY,
@@ -54,6 +65,8 @@ const evolutionClient = new EvolutionClient({
 });
 const whatsappPaymentBot = new WhatsAppPaymentBot({
   paymentService,
+  entryService: whatsappEntryService,
+  safeEntryEnabled: config.WHATSAPP_SAFE_ENTRY_ENABLED,
   evolutionClient,
   pixKey: config.PIX_KEY,
   pixReceiver: config.PIX_RECEIVER,
@@ -70,6 +83,8 @@ const whatsappConnectivityConfigured = Boolean(
 );
 const whatsappConnectivityTestEnabled = config.WHATSAPP_CONNECTIVITY_TEST_ENABLED
   && whatsappConnectivityConfigured;
+const whatsappSafeEntryEnabled = config.WHATSAPP_SAFE_ENTRY_ENABLED
+  && getWhatsAppEntryConfigurationErrors().length === 0;
 
 function getPaymentConfigurationErrors() {
   const required = {
@@ -83,6 +98,19 @@ function getPaymentConfigurationErrors() {
     EVOLUTION_WEBHOOK_SECRET: config.EVOLUTION_WEBHOOK_SECRET,
     PIX_KEY: config.PIX_KEY,
     PIX_RECEIVER: config.PIX_RECEIVER,
+  };
+  return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+}
+
+function getWhatsAppEntryConfigurationErrors() {
+  const required = {
+    WHATSAPP_ENTRY_STORE_PATH: config.WHATSAPP_ENTRY_STORE_PATH,
+    WHATSAPP_ENTRY_ACCESS_SECRET: config.WHATSAPP_ENTRY_ACCESS_SECRET,
+    PUBLIC_GAME_URL: config.PUBLIC_GAME_URL,
+    EVOLUTION_API_URL: config.EVOLUTION_API_URL,
+    EVOLUTION_API_KEY: config.EVOLUTION_API_KEY,
+    EVOLUTION_INSTANCE_NAME: config.EVOLUTION_INSTANCE_NAME,
+    EVOLUTION_WEBHOOK_SECRET: config.EVOLUTION_WEBHOOK_SECRET,
   };
   return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
 }
@@ -180,6 +208,27 @@ async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
   } catch (error) {
     paymentService.markLinkDelivery(result.payment.paymentId, { sent: false, error: error.message });
     error.paymentId = result.payment.paymentId;
+    throw error;
+  }
+}
+
+async function approveAndDeliverWhatsAppEntry(entryId, { actor, source }) {
+  if (!whatsappSafeEntryEnabled) throw new Error('WHATSAPP_SAFE_ENTRIES_DISABLED');
+  if (!evolutionClient.isConfigured()) throw new Error('EVOLUTION_API_NOT_CONFIGURED');
+  const internalEntry = whatsappEntryService.getEntry(entryId, { includeSecrets: true });
+  if (!internalEntry) throw new Error('ENTRY_NOT_FOUND');
+  const result = whatsappEntryService.approveEntry({ entryId, actor, source });
+  try {
+    await evolutionClient.sendText(
+      internalEntry.phone,
+      whatsappPaymentBot.safeEntryApprovedText(result.entry, result.accessLink),
+    );
+    whatsappEntryService.markLinkDelivery(entryId, { sent: true });
+    return { entry: whatsappEntryService.getEntry(entryId), notificationSent: true };
+  } catch (error) {
+    whatsappEntryService.markLinkDelivery(entryId, { sent: false, error: error.message });
+    whatsappEntryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
+    error.entryId = entryId;
     throw error;
   }
 }
@@ -326,10 +375,14 @@ app.get('/health', (request, response) => {
     payments: {
       enabled: paymentSystemEnabled,
       configured: getPaymentConfigurationErrors().length === 0,
+      whatsappPaymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED,
+      gateEnabled: config.PAYMENT_GATE_ENABLED,
     },
     whatsapp: {
       connectivityTestEnabled: whatsappConnectivityTestEnabled,
       configured: whatsappConnectivityConfigured,
+      safeEntryEnabled: whatsappSafeEntryEnabled,
+      safeEntryConfigured: getWhatsAppEntryConfigurationErrors().length === 0,
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,
@@ -367,7 +420,7 @@ app.get('/api/status', (request, response) => {
 
 app.post('/api/webhooks/evolution', async (request, response) => {
   const originIp = request.ip || request.get('x-forwarded-for') || null;
-  if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled) {
+  if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled && !whatsappSafeEntryEnabled) {
     response.status(503).json({ error: 'whatsapp-disabled' });
     return;
   }
@@ -388,7 +441,7 @@ app.post('/api/webhooks/evolution', async (request, response) => {
     logInfo('EVOLUTION_MESSAGE_RECEIVED', {
       originIp,
       event: request.body?.event ?? null,
-      mode: paymentSystemEnabled ? 'payments' : 'connectivity-test',
+      mode: paymentSystemEnabled ? 'payments' : (whatsappSafeEntryEnabled ? 'safe-entry-without-pix' : 'connectivity-test'),
     });
     const result = paymentSystemEnabled
       ? await whatsappPaymentBot.handleWebhook(request.body ?? {}, { originIp })
@@ -438,6 +491,25 @@ app.get('/api/payment-access/validate', (request, response) => {
     paymentGateEnabled: true,
     paymentId: payment.paymentId,
     selectedTable: payment.selectedTable,
+  });
+});
+
+app.get('/api/entry-access/validate', (request, response) => {
+  if (!whatsappSafeEntryEnabled) {
+    response.status(503).json({ ok: false, error: 'whatsapp-safe-entries-disabled' });
+    return;
+  }
+  const entry = whatsappEntryService.validateAccessToken(request.query?.token);
+  if (!entry) {
+    response.status(403).json({ ok: false, error: 'entry-access-denied' });
+    return;
+  }
+  response.json({
+    ok: true,
+    entryId: entry.entryId,
+    selectedTable: entry.selectedTable,
+    status: entry.status,
+    accessExpiresAt: entry.accessExpiresAt,
   });
 });
 
@@ -509,6 +581,103 @@ app.post('/api/admin/payments/:paymentId/reject', async (request, response) => {
     recordAdminLog({
       adminAction: 'payment_reject_failed',
       targetId: request.params.paymentId,
+      reason: error.message,
+      result: 'blocked',
+    });
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/whatsapp-entries', (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  const status = request.query?.status;
+  if (status && !whatsappEntryService.assertValidStatus(status)) {
+    response.status(400).json({ error: 'invalid-entry-status' });
+    return;
+  }
+  response.json({ entries: whatsappEntryService.listEntries({ status: status || null }) });
+});
+
+app.post('/api/admin/whatsapp-entries/:entryId/approve', async (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  try {
+    const result = await approveAndDeliverWhatsAppEntry(request.params.entryId, {
+      actor: 'admin-panel',
+      source: 'admin-panel',
+    });
+    recordAdminLog({ adminAction: 'whatsapp_entry_approved', targetId: request.params.entryId, result: 'ok' });
+    logInfo('WHATSAPP_ENTRY_APPROVED', { entryId: request.params.entryId, source: 'admin-panel' });
+    response.json(result);
+  } catch (error) {
+    recordAdminLog({
+      adminAction: 'whatsapp_entry_approve_failed',
+      targetId: request.params.entryId,
+      reason: error.message,
+      result: 'blocked',
+    });
+    logWarn('WHATSAPP_ENTRY_APPROVAL_REJECTED', { entryId: request.params.entryId, reason: error.message });
+    response.status(error.entryId ? 502 : 400).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/whatsapp-entries/:entryId/reject', async (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  try {
+    const internalEntry = whatsappEntryService.getEntry(request.params.entryId, { includeSecrets: true });
+    if (!internalEntry) throw new Error('ENTRY_NOT_FOUND');
+    const entry = whatsappEntryService.rejectEntry({
+      entryId: request.params.entryId,
+      actor: 'admin-panel',
+      reason: request.body?.reason,
+      source: 'admin-panel',
+    });
+    let notificationSent = false;
+    try {
+      await evolutionClient.sendText(internalEntry.phone, [
+        '\u274C Sua entrada n\u00e3o foi liberada pelo admin.',
+        '',
+        `Motivo: ${entry.rejectionReason}`,
+        '',
+        'Digite menu para come\u00e7ar novamente.',
+      ].join('\n'));
+      notificationSent = true;
+    } catch (error) {
+      logWarn('WHATSAPP_ENTRY_REJECTION_NOTIFICATION_FAILED', { entryId: entry.entryId, message: error.message });
+    }
+    recordAdminLog({
+      adminAction: 'whatsapp_entry_rejected',
+      targetId: entry.entryId,
+      reason: entry.rejectionReason,
+      result: 'ok',
+    });
+    logInfo('WHATSAPP_ENTRY_REJECTED', { entryId: entry.entryId, source: 'admin-panel' });
+    response.json({ entry, notificationSent });
+  } catch (error) {
+    recordAdminLog({
+      adminAction: 'whatsapp_entry_reject_failed',
+      targetId: request.params.entryId,
+      reason: error.message,
+      result: 'blocked',
+    });
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/whatsapp-entries/:entryId/expire', (request, response) => {
+  if (!requireAdmin(request, response)) return;
+  try {
+    const entry = whatsappEntryService.expireEntry({
+      entryId: request.params.entryId,
+      actor: 'admin-panel',
+      source: 'admin-panel',
+    });
+    recordAdminLog({ adminAction: 'whatsapp_entry_expired', targetId: entry.entryId, result: 'ok' });
+    logInfo('WHATSAPP_ENTRY_EXPIRED', { entryId: entry.entryId, source: 'admin-panel' });
+    response.json({ entry });
+  } catch (error) {
+    recordAdminLog({
+      adminAction: 'whatsapp_entry_expire_failed',
+      targetId: request.params.entryId,
       reason: error.message,
       result: 'blocked',
     });
@@ -858,6 +1027,8 @@ const io = setupSocketServer(server, {
   corsOptions,
   paymentService,
   paymentGateEnabled: paymentSystemEnabled,
+  entryService: whatsappEntryService,
+  safeEntryEnabled: whatsappSafeEntryEnabled,
 });
 
 const stuckMatchMonitor = setInterval(() => {

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   adminConfirmPayment,
+  adminApproveWhatsAppEntry,
   adminEndMatch,
+  adminExpireWhatsAppEntry,
   adminForceWinner,
   adminRejectPayment,
+  adminRejectWhatsAppEntry,
   adminRemoveRoom,
   getAdminMatchAudit,
   getAdminSnapshot,
@@ -280,6 +283,60 @@ export default function AdminPanel() {
 
         {activeTab === 'overview' ? (
           <>
+
+        <section className="admin-section">
+          <h2>Entradas WhatsApp pendentes</h2>
+          <div className="admin-card-list">
+            {(snapshot?.pendingWhatsAppEntries ?? []).map((entry) => (
+              <article key={entry.entryId} className="admin-match-card">
+                <strong>#{entry.entryId}</strong>
+                <span>Telefone: {entry.phoneMasked}</span>
+                <span>Mesa: {formatMoney(entry.tableAmount)} · Prêmio: {formatMoney(entry.prizeAmount)}</span>
+                <span>Status: {entry.status}</span>
+                <span>Modo: teste seguro sem Pix</span>
+                <span>Criado em: {formatDate(entry.createdAt)}</span>
+                <div className="admin-actions">
+                  <button
+                    type="button"
+                    onClick={() => runCriticalAction(
+                      `Liberar a entrada #${entry.entryId} para a fila?`,
+                      () => adminApproveWhatsAppEntry(password, entry.entryId),
+                    )}
+                  >
+                    Liberar para fila
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      const reason = window.prompt('Motivo da rejeição:');
+                      if (!reason?.trim()) return;
+                      runCriticalAction(
+                        `Rejeitar a entrada #${entry.entryId}?`,
+                        () => adminRejectWhatsAppEntry(password, entry.entryId, reason.trim()),
+                      );
+                    }}
+                  >
+                    Rejeitar
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => runCriticalAction(
+                      `Expirar a entrada #${entry.entryId}?`,
+                      () => adminExpireWhatsAppEntry(password, entry.entryId),
+                    )}
+                  >
+                    Expirar
+                  </button>
+                </div>
+              </article>
+            ))}
+            {(snapshot?.pendingWhatsAppEntries ?? []).length === 0
+              ? <p className="admin-empty">Nenhuma entrada WhatsApp pendente.</p>
+              : null}
+          </div>
+        </section>
 
         <section className="admin-section">
           <h2>Pagamentos pendentes</h2>

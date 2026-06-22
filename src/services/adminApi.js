@@ -30,12 +30,13 @@ export function loginAdmin(password) {
 }
 
 export async function getAdminSnapshot(password) {
-  const [dashboard, activeMatches, players, history, payments] = await Promise.all([
+  const [dashboard, activeMatches, players, history, payments, whatsappEntries] = await Promise.all([
     requestAdmin('/api/admin/dashboard', { password }),
     requestAdmin('/api/admin/active-matches', { password }),
     requestAdmin('/api/admin/online-players', { password }),
     requestAdmin('/api/admin/match-history', { password }),
     requestAdmin('/api/admin/payments?status=pending', { password }),
+    requestAdmin('/api/admin/whatsapp-entries?status=pending_admin_validation', { password }),
   ]);
 
   return {
@@ -47,7 +48,32 @@ export async function getAdminSnapshot(password) {
     players: players.players ?? [],
     history: history.history ?? [],
     pendingPayments: payments.payments ?? [],
+    pendingWhatsAppEntries: whatsappEntries.entries ?? [],
   };
+}
+
+export function adminApproveWhatsAppEntry(password, entryId) {
+  return requestAdmin(`/api/admin/whatsapp-entries/${entryId}/approve`, {
+    password,
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function adminRejectWhatsAppEntry(password, entryId, reason) {
+  return requestAdmin(`/api/admin/whatsapp-entries/${entryId}/reject`, {
+    password,
+    method: 'POST',
+    body: { reason },
+  });
+}
+
+export function adminExpireWhatsAppEntry(password, entryId) {
+  return requestAdmin(`/api/admin/whatsapp-entries/${entryId}/expire`, {
+    password,
+    method: 'POST',
+    body: {},
+  });
 }
 
 export function adminConfirmPayment(password, paymentId) {
