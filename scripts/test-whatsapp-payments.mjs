@@ -59,6 +59,7 @@ async function sendIncoming(input) {
 
 const menu = await sendIncoming({ phone: playerPhone, id: 'msg-1', text: 'oi' });
 assert.equal(menu.type, 'menu_sent');
+assert.ok(sentMessages.at(-1).text.startsWith('🎴 Pife Duelo online.'));
 assert.match(sentMessages.at(-1).text, /Escolha uma mesa/i);
 
 const table = await sendIncoming({ phone: playerPhone, id: 'msg-2', text: '5' });

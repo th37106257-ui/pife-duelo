@@ -99,7 +99,7 @@ export class WhatsAppPaymentBot {
 
   menuText() {
     return [
-      'Olá! Bem-vindo ao Pife Duelo.',
+      '🎴 Pife Duelo online.',
       '',
       'Escolha uma mesa:',
       '2 - Mesa R$2 | prêmio R$3,60',
