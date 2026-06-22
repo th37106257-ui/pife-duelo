@@ -400,13 +400,14 @@ app.post('/api/webhooks/evolution', async (request, response) => {
       keyFromMe: messageDiagnostic.keyFromMe,
       remoteJid: messageDiagnostic.remoteJid,
     });
-    if (result.type === 'connectivity_greeting_sent') {
+    if (result.decision === 'reply_sent') {
       logInfo('EVOLUTION_REPLY_SENT', {
         originIp,
         replyType: result.type,
         decision: 'reply_sent',
         reason: result.reason,
         remoteJid: messageDiagnostic.remoteJid,
+        conversationState: result.state ?? null,
       });
     }
     logInfo('EVOLUTION_WEBHOOK_PROCESSED', {

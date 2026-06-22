@@ -65,17 +65,64 @@ async function sendIncoming(input) {
   return bot.handleWebhook(webhook(input), { originIp: '127.0.0.1' });
 }
 
-const connectivityReply = await connectivityBot.handleConnectivityWebhook(
-  webhook({ phone: playerPhone, id: 'connectivity-1', text: 'oi' }),
-  { originIp: '127.0.0.1' },
-);
-assert.equal(connectivityReply.type, 'connectivity_greeting_sent');
-assert.deepEqual(connectivityMessages, [{ phone: playerPhone, text: '\u{1F3B4} Pife Duelo online.' }]);
-const ignoredConnectivityMessage = await connectivityBot.handleConnectivityWebhook(
-  webhook({ phone: playerPhone, id: 'connectivity-2', text: '5' }),
-);
-assert.equal(ignoredConnectivityMessage.reason, 'connectivity_test_only');
-assert.equal(connectivityMessages.length, 1, 'Modo seguro n\u00e3o inicia o fluxo Pix.');
+let connectivitySequence = 0;
+async function sendConnectivity(text, phone = playerPhone) {
+  connectivitySequence += 1;
+  return connectivityBot.handleConnectivityWebhook(webhook({
+    phone,
+    id: `connectivity-${connectivitySequence}`,
+    text,
+  }), { originIp: '127.0.0.1' });
+}
+
+const connectivityReply = await sendConnectivity('oi');
+assert.equal(connectivityReply.type, 'whatsapp_menu_sent');
+assert.equal(connectivityReply.state, 'idle');
+assert.match(connectivityMessages.at(-1).text, /Bem-vindo ao Pife Duelo/);
+assert.match(connectivityMessages.at(-1).text, /1\uFE0F\u20E3 Jogar/);
+
+const safeTables = await sendConnectivity('1');
+assert.equal(safeTables.type, 'whatsapp_tables_sent');
+assert.equal(safeTables.state, 'choosing_table');
+assert.match(connectivityMessages.at(-1).text, /Mesa R\$2,00/);
+assert.match(connectivityMessages.at(-1).text, /Mesa R\$20,00/);
+
+const safeTableTwo = await sendConnectivity('1');
+assert.equal(safeTableTwo.type, 'whatsapp_table_selected_safe');
+assert.equal(safeTableTwo.selectedTable, 2);
+assert.equal(connectivityBot.getConversationState(playerPhone).state, 'table_selected');
+assert.match(connectivityMessages.at(-1).text, /Mesa selecionada: R\$2,00/);
+assert.match(connectivityMessages.at(-1).text, /modo seguro\/desligado/);
+
+for (const [option, amount] of [['2', 5], ['3', 10], ['4', 20]]) {
+  await sendConnectivity('menu');
+  await sendConnectivity('1');
+  const selection = await sendConnectivity(option);
+  assert.equal(selection.type, 'whatsapp_table_selected_safe');
+  assert.equal(selection.selectedTable, amount);
+  assert.match(connectivityMessages.at(-1).text, new RegExp(`Mesa selecionada: R\\$${amount},00`));
+}
+
+await sendConnectivity('ol\u00e1');
+const tablesByOptionTwo = await sendConnectivity('2');
+assert.equal(tablesByOptionTwo.type, 'whatsapp_tables_sent');
+
+await sendConnectivity('come\u00e7ar');
+const safeRules = await sendConnectivity('3');
+assert.equal(safeRules.type, 'whatsapp_rules_sent');
+assert.match(connectivityMessages.at(-1).text, /Tempo por jogada: 60 segundos/);
+
+await sendConnectivity('iniciar');
+const safeSupport = await sendConnectivity('4');
+assert.equal(safeSupport.type, 'whatsapp_support_sent');
+assert.match(connectivityMessages.at(-1).text, /aguarde atendimento/);
+
+const invalidSafeOption = await sendConnectivity('qualquer coisa');
+assert.equal(invalidSafeOption.type, 'whatsapp_invalid_option');
+assert.match(connectivityMessages.at(-1).text, /Digite menu/);
+
+assert.equal(store.listPayments().length, 0, 'Menu seguro n\u00e3o cria pagamento.');
+assert.ok(connectivityMessages.every(({ text }) => !/chave pix|access=|https?:\/\//i.test(text)), 'Menu seguro n\u00e3o envia Pix nem link.');
 
 const outgoingDiagnostic = buildEvolutionMessageDiagnostic({
   ...webhook({ phone: playerPhone, id: 'outgoing-1', text: 'oi' }),

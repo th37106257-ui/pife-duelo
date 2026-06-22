@@ -34,6 +34,23 @@ function normalizeJid(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function normalizeCommand(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+const SAFE_TABLES = new Map([
+  ['1', 2],
+  ['2', 5],
+  ['3', 10],
+  ['4', 20],
+]);
+
+const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
+
 function getOwnerJid(payload = {}) {
   const candidates = [
     payload.ownerJid,
@@ -140,6 +157,7 @@ export class WhatsAppPaymentBot {
     this.clock = clock;
     this.rateLimits = new Map();
     this.recentFingerprints = new Map();
+    this.conversationStates = new Map();
   }
 
   isConfigured() {
@@ -169,6 +187,76 @@ export class WhatsAppPaymentBot {
     return this.evolutionClient.sendText(phone, text);
   }
 
+  getConversationState(phone) {
+    return this.conversationStates.get(phone) || { state: 'idle', selectedTable: null };
+  }
+
+  setConversationState(phone, state, selectedTable = null) {
+    if (this.conversationStates.size >= 5000 && !this.conversationStates.has(phone)) {
+      const oldestPhone = this.conversationStates.keys().next().value;
+      this.conversationStates.delete(oldestPhone);
+    }
+    this.conversationStates.set(phone, { state, selectedTable, updatedAt: new Date(this.clock()).toISOString() });
+  }
+
+  safeMenuText() {
+    return [
+      '\u{1F3B4} Bem-vindo ao Pife Duelo!',
+      '',
+      'Escolha uma op\u00e7\u00e3o:',
+      '',
+      '1\uFE0F\u20E3 Jogar',
+      '2\uFE0F\u20E3 Ver mesas',
+      '3\uFE0F\u20E3 Regras',
+      '4\uFE0F\u20E3 Suporte',
+    ].join('\n');
+  }
+
+  safeTablesText() {
+    return [
+      'Escolha sua mesa:',
+      '',
+      '1\uFE0F\u20E3 Mesa R$2,00 \u2014 vencedor recebe R$3,60',
+      '2\uFE0F\u20E3 Mesa R$5,00 \u2014 vencedor recebe R$9,00',
+      '3\uFE0F\u20E3 Mesa R$10,00 \u2014 vencedor recebe R$17,00',
+      '4\uFE0F\u20E3 Mesa R$20,00 \u2014 vencedor recebe R$32,80',
+      '',
+      'Digite o n\u00famero da mesa desejada.',
+    ].join('\n');
+  }
+
+  safeRulesText() {
+    return [
+      '\u{1F4DC} Regras b\u00e1sicas do Pife Duelo:',
+      '',
+      '* Partida 1x1',
+      '* Voc\u00ea joga no seu turno',
+      '* Pode comprar do monte ou do descarte',
+      '* Depois deve descartar uma carta',
+      '* Para vencer, forme combina\u00e7\u00f5es v\u00e1lidas do Pife',
+      '* Tempo por jogada: 60 segundos',
+      '* Se o tempo acabar, o sistema faz jogada autom\u00e1tica',
+      '* Ap\u00f3s pagamento confirmado, n\u00e3o h\u00e1 cancelamento autom\u00e1tico',
+    ].join('\n');
+  }
+
+  safeSupportText() {
+    return [
+      '\u{1F6E0}\uFE0F Suporte Pife Duelo',
+      '',
+      'Envie sua d\u00favida aqui e aguarde atendimento.',
+    ].join('\n');
+  }
+
+  safeTableSelectedText(amount) {
+    return [
+      `\u2705 Mesa selecionada: R$${Number(amount).toFixed(2).replace('.', ',')}`,
+      '',
+      'O fluxo de pagamento ainda est\u00e1 em modo seguro/desligado.',
+      'Em breve enviaremos as instru\u00e7\u00f5es de Pix por aqui.',
+    ].join('\n');
+  }
+
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
     if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
@@ -178,10 +266,50 @@ export class WhatsAppPaymentBot {
     if (incoming.isGroup) return { ignored: true, decision: 'ignored_invalid', reason: 'group_not_supported' };
     if (!incoming.phone || !incoming.remoteJid) return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
     if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
-    if (incoming.text.toLowerCase() !== 'oi') return { ignored: true, decision: 'ignored_invalid', reason: 'connectivity_test_only' };
 
-    await this.send(incoming.phone, '\u{1F3B4} Pife Duelo online.');
-    return { type: 'connectivity_greeting_sent', decision: 'reply_sent', reason: 'incoming_private_oi', originIp };
+    const command = normalizeCommand(incoming.text);
+    if (MENU_COMMANDS.has(command)) {
+      this.setConversationState(incoming.phone, 'idle');
+      await this.send(incoming.phone, this.safeMenuText());
+      return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
+    }
+
+    const currentState = this.getConversationState(incoming.phone);
+    if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
+      const selectedTable = SAFE_TABLES.get(command);
+      this.setConversationState(incoming.phone, 'table_selected', selectedTable);
+      await this.send(incoming.phone, this.safeTableSelectedText(selectedTable));
+      return {
+        type: 'whatsapp_table_selected_safe',
+        decision: 'reply_sent',
+        reason: 'table_selected_payments_disabled',
+        state: 'table_selected',
+        selectedTable,
+        originIp,
+      };
+    }
+
+    if (command === '1' || command === '2') {
+      this.setConversationState(incoming.phone, 'choosing_table');
+      await this.send(incoming.phone, this.safeTablesText());
+      return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
+    }
+
+    if (command === '3') {
+      this.setConversationState(incoming.phone, 'idle');
+      await this.send(incoming.phone, this.safeRulesText());
+      return { type: 'whatsapp_rules_sent', decision: 'reply_sent', reason: 'rules_requested', state: 'idle', originIp };
+    }
+
+    if (command === '4') {
+      this.setConversationState(incoming.phone, 'idle');
+      await this.send(incoming.phone, this.safeSupportText());
+      return { type: 'whatsapp_support_sent', decision: 'reply_sent', reason: 'support_requested', state: 'idle', originIp };
+    }
+
+    this.setConversationState(incoming.phone, 'idle');
+    await this.send(incoming.phone, 'Op\u00e7\u00e3o inv\u00e1lida. Digite menu para ver as op\u00e7\u00f5es.');
+    return { type: 'whatsapp_invalid_option', decision: 'reply_sent', reason: 'invalid_option', state: 'idle', originIp };
   }
 
   menuText() {
