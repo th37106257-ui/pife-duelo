@@ -65,12 +65,17 @@ function parseIncomingMessage(payload = {}) {
   const data = payload.data ?? payload;
   const key = data.key ?? {};
   const message = data.message ?? {};
-  const remoteJid = String(key.remoteJid || data.sender || payload.sender || '');
+  const keyRemoteJid = String(key.remoteJid || '');
+  const senderJid = String(data.sender || payload.sender || '');
+  const remoteJid = String(keyRemoteJid || senderJid || '');
   const participant = String(key.participant || data.participant || '');
   const ownerJid = getOwnerJid(payload);
-  const phone = normalizePhone(remoteJid.split('@')[0]);
+  const phoneJid = /@s\.whatsapp\.net$/i.test(senderJid) ? senderJid : remoteJid;
+  const phone = normalizePhone(phoneJid.split('@')[0]);
+  const replyTo = keyRemoteJid || senderJid || phone;
   return {
     phone,
+    replyTo,
     remoteJid,
     participant,
     ownerJid,
@@ -303,14 +308,14 @@ export class WhatsAppPaymentBot {
     ].join('\n');
   }
 
-  async handleSafeEntryAdminCommand(phone, text) {
+  async handleSafeEntryAdminCommand(phone, text, { replyTo = phone } = {}) {
     if (!this.safeEntryEnabled || !this.entryService?.isConfigured() || !this.entryService.isAdmin(phone)) {
-      await this.send(phone, 'Comando n\u00e3o autorizado.');
+      await this.send(replyTo, 'Comando n\u00e3o autorizado.');
       return { type: 'entry_admin_unauthorized', decision: 'reply_sent', reason: 'admin_not_authorized' };
     }
 
     if (/^\/admin\s+entradas$/i.test(text)) {
-      await this.send(phone, this.pendingEntriesText());
+      await this.send(replyTo, this.pendingEntriesText());
       return { type: 'entry_admin_pending_list', decision: 'reply_sent', reason: 'pending_entries_listed' };
     }
 
@@ -323,7 +328,7 @@ export class WhatsAppPaymentBot {
         approval = this.entryService.approveEntry({ entryId, actor: phone, source: 'whatsapp-admin' });
         await this.send(internalEntry.phone, this.safeEntryApprovedText(approval.entry, approval.accessLink));
         this.entryService.markLinkDelivery(entryId, { sent: true });
-        await this.send(phone, `\u2705 Entrada #${entryId} liberada. Link enviado ao jogador.`);
+        await this.send(replyTo, `\u2705 Entrada #${entryId} liberada. Link enviado ao jogador.`);
         return { type: 'entry_approved', decision: 'reply_sent', reason: 'entry_approved_by_whatsapp', entryId };
       } catch (error) {
         const current = approval ? this.entryService.getEntry(entryId) : null;
@@ -331,7 +336,7 @@ export class WhatsAppPaymentBot {
           this.entryService.markLinkDelivery(entryId, { sent: false, error: error.message });
           this.entryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
         }
-        await this.send(phone, `N\u00e3o foi poss\u00edvel liberar a entrada: ${error.message}`);
+        await this.send(replyTo, `N\u00e3o foi poss\u00edvel liberar a entrada: ${error.message}`);
         return { type: 'entry_admin_command_failed', decision: 'reply_sent', reason: error.message, entryId };
       }
     }
@@ -354,15 +359,15 @@ export class WhatsAppPaymentBot {
           '',
           'Digite menu para come\u00e7ar novamente.',
         ].join('\n'));
-        await this.send(phone, `Entrada #${entryId} rejeitada e jogador avisado.`);
+        await this.send(replyTo, `Entrada #${entryId} rejeitada e jogador avisado.`);
         return { type: 'entry_rejected', decision: 'reply_sent', reason: 'entry_rejected_by_whatsapp', entryId };
       } catch (error) {
-        await this.send(phone, `N\u00e3o foi poss\u00edvel rejeitar a entrada: ${error.message}`);
+        await this.send(replyTo, `N\u00e3o foi poss\u00edvel rejeitar a entrada: ${error.message}`);
         return { type: 'entry_admin_command_failed', decision: 'reply_sent', reason: error.message, entryId };
       }
     }
 
-    await this.send(phone, 'Comando admin inv\u00e1lido. Use /admin entradas, /admin liberar ENTRY_ID ou /admin rejeitar ENTRY_ID motivo.');
+    await this.send(replyTo, 'Comando admin inv\u00e1lido. Use /admin entradas, /admin liberar ENTRY_ID ou /admin rejeitar ENTRY_ID motivo.');
     return { type: 'entry_admin_invalid_command', decision: 'reply_sent', reason: 'invalid_admin_command' };
   }
 
@@ -382,10 +387,11 @@ export class WhatsAppPaymentBot {
     if (this.safeEntryEnabled && incoming.messageId) this.entryService?.store?.markMessageProcessed(incoming.messageId);
 
     const command = normalizeCommand(incoming.text);
-    if (command.startsWith('/admin')) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text);
+    const replyTo = incoming.replyTo || incoming.phone;
+    if (command.startsWith('/admin')) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
     if (MENU_COMMANDS.has(command)) {
       this.setConversationState(incoming.phone, 'idle');
-      await this.send(incoming.phone, this.safeMenuText());
+      await this.send(replyTo, this.safeMenuText());
       return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
     }
 
@@ -395,21 +401,21 @@ export class WhatsAppPaymentBot {
       let entry = null;
       if (this.safeEntryEnabled) {
         if (!this.entryService?.isConfigured()) {
-          await this.send(incoming.phone, 'As entradas est\u00e3o temporariamente indispon\u00edveis. Digite menu e tente novamente mais tarde.');
+          await this.send(replyTo, 'As entradas est\u00e3o temporariamente indispon\u00edveis. Digite menu e tente novamente mais tarde.');
           return { type: 'whatsapp_entry_unavailable', decision: 'reply_sent', reason: 'entry_service_not_configured', state: 'idle', originIp };
         }
         try {
           entry = this.entryService.createEntry({ phone: incoming.phone, selectedTable, source: 'whatsapp' });
         } catch (error) {
           if (error.message === 'ENTRY_TABLE_LOCKED') {
-            await this.send(incoming.phone, 'Voc\u00ea j\u00e1 possui uma entrada ativa em outra mesa. Aguarde o admin ou digite menu.');
+            await this.send(replyTo, 'Voc\u00ea j\u00e1 possui uma entrada ativa em outra mesa. Aguarde o admin ou digite menu.');
             return { type: 'whatsapp_entry_table_locked', decision: 'reply_sent', reason: error.message, state: currentState.state, originIp };
           }
           throw error;
         }
       }
       this.setConversationState(incoming.phone, 'table_selected', selectedTable);
-      await this.send(incoming.phone, this.safeTableSelectedText(selectedTable, { entryRegistered: Boolean(entry) }));
+      await this.send(replyTo, this.safeTableSelectedText(selectedTable, { entryRegistered: Boolean(entry) }));
       return {
         type: entry ? 'whatsapp_entry_pending_admin' : 'whatsapp_table_selected_safe',
         decision: 'reply_sent',
@@ -423,24 +429,24 @@ export class WhatsAppPaymentBot {
 
     if (command === '1' || command === '2') {
       this.setConversationState(incoming.phone, 'choosing_table');
-      await this.send(incoming.phone, this.safeTablesText());
+      await this.send(replyTo, this.safeTablesText());
       return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
     }
 
     if (command === '3') {
       this.setConversationState(incoming.phone, 'idle');
-      await this.send(incoming.phone, this.safeRulesText());
+      await this.send(replyTo, this.safeRulesText());
       return { type: 'whatsapp_rules_sent', decision: 'reply_sent', reason: 'rules_requested', state: 'idle', originIp };
     }
 
     if (command === '4') {
       this.setConversationState(incoming.phone, 'idle');
-      await this.send(incoming.phone, this.safeSupportText());
+      await this.send(replyTo, this.safeSupportText());
       return { type: 'whatsapp_support_sent', decision: 'reply_sent', reason: 'support_requested', state: 'idle', originIp };
     }
 
     this.setConversationState(incoming.phone, 'idle');
-    await this.send(incoming.phone, 'Op\u00e7\u00e3o inv\u00e1lida. Digite menu para ver as op\u00e7\u00f5es.');
+    await this.send(replyTo, 'Op\u00e7\u00e3o inv\u00e1lida. Digite menu para ver as op\u00e7\u00f5es.');
     return { type: 'whatsapp_invalid_option', decision: 'reply_sent', reason: 'invalid_option', state: 'idle', originIp };
   }
 

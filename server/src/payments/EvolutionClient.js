@@ -4,6 +4,12 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeRecipient(value) {
+  const raw = String(value || '').trim();
+  if (/@(?:s\.whatsapp\.net|lid)$/i.test(raw)) return raw;
+  return normalizePhone(raw);
+}
+
 export class EvolutionClient {
   constructor({ baseUrl, apiKey, instanceName, fetchImpl = fetch, timeoutMs = 10000 } = {}) {
     this.baseUrl = String(baseUrl || '').replace(/\/$/, '');
@@ -19,7 +25,7 @@ export class EvolutionClient {
 
   async sendText(phone, text) {
     if (!this.isConfigured()) throw new Error('EVOLUTION_API_NOT_CONFIGURED');
-    const number = normalizePhone(phone);
+    const number = normalizeRecipient(phone);
     const safeText = String(text || '').trim().slice(0, 4000);
     if (!number || !safeText) throw new Error('INVALID_WHATSAPP_MESSAGE');
 

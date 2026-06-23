@@ -121,6 +121,14 @@ const invalidSafeOption = await sendConnectivity('qualquer coisa');
 assert.equal(invalidSafeOption.type, 'whatsapp_invalid_option');
 assert.match(connectivityMessages.at(-1).text, /Digite menu/);
 
+const lidPayload = webhook({ phone: playerPhone, id: 'lid-1', text: 'oi' });
+lidPayload.data.key.remoteJid = '123456789012@lid';
+lidPayload.data.sender = `${playerPhone}@s.whatsapp.net`;
+const lidReply = await connectivityBot.handleConnectivityWebhook(lidPayload, { originIp: '127.0.0.1' });
+assert.equal(lidReply.type, 'whatsapp_menu_sent');
+assert.equal(connectivityMessages.at(-1).phone, '123456789012@lid', 'Mensagens recebidas por @lid devem ser respondidas no mesmo chat.');
+assert.equal(connectivityBot.getConversationState(playerPhone).state, 'idle', 'O estado interno continua vinculado ao número real do jogador.');
+
 assert.equal(store.listPayments().length, 0, 'Menu seguro n\u00e3o cria pagamento.');
 assert.ok(connectivityMessages.every(({ text }) => !/chave pix|access=|https?:\/\//i.test(text)), 'Menu seguro n\u00e3o envia Pix nem link.');
 
@@ -282,6 +290,11 @@ assert.equal(requestCapture[0].options.headers.apikey, 'backend-only-key');
 assert.deepEqual(JSON.parse(requestCapture[0].options.body), {
   number: playerPhone,
   text: 'teste',
+});
+await contractClient.sendText('123456789012@lid', 'teste lid');
+assert.deepEqual(JSON.parse(requestCapture[1].options.body), {
+  number: '123456789012@lid',
+  text: 'teste lid',
 });
 
 console.log('WhatsApp/Pix: fluxo manual, auditoria, autorização, idempotência e acesso validados.');
