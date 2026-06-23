@@ -34,6 +34,10 @@ function normalizeJid(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function isWhatsappJid(value, suffix) {
+  return String(value || '').trim().toLowerCase().endsWith(`@${suffix}`);
+}
+
 function normalizeCommand(value) {
   return String(value || '')
     .normalize('NFD')
@@ -66,18 +70,27 @@ function parseIncomingMessage(payload = {}) {
   const key = data.key ?? {};
   const message = data.message ?? {};
   const keyRemoteJid = String(key.remoteJid || '');
+  const keyRemoteJidAlt = String(key.remoteJidAlt || data.remoteJidAlt || '');
   const senderJid = String(data.sender || payload.sender || '');
   const remoteJid = String(keyRemoteJid || senderJid || '');
   const participant = String(key.participant || data.participant || '');
+  const participantAlt = String(key.participantAlt || data.participantAlt || '');
   const ownerJid = getOwnerJid(payload);
-  const phoneJid = /@s\.whatsapp\.net$/i.test(senderJid) ? senderJid : remoteJid;
+  const phoneJid = [senderJid, keyRemoteJid, keyRemoteJidAlt, participant, participantAlt]
+    .find((jid) => isWhatsappJid(jid, 's.whatsapp.net')) || remoteJid;
   const phone = normalizePhone(phoneJid.split('@')[0]);
-  const replyTo = keyRemoteJid || senderJid || phone;
+  const replyTo = [keyRemoteJid, keyRemoteJidAlt, participant, participantAlt, senderJid]
+    .find((jid) => isWhatsappJid(jid, 'lid'))
+    || keyRemoteJid
+    || senderJid
+    || phone;
   return {
     phone,
     replyTo,
     remoteJid,
+    remoteJidAlt: keyRemoteJidAlt,
     participant,
+    participantAlt,
     ownerJid,
     messageId: String(key.id || data.messageId || payload.messageId || '').trim(),
     fromMe: key.fromMe === true,
@@ -119,10 +132,13 @@ export function buildEvolutionMessageDiagnostic(payload = {}) {
     messageType: incoming.messageType || null,
     keyFromMe: incoming.rawFromMe ?? null,
     remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+    remoteJidAlt: maskTechnicalIdentity(incoming.remoteJidAlt),
     participant: maskTechnicalIdentity(incoming.participant),
+    participantAlt: maskTechnicalIdentity(incoming.participantAlt),
     sender: maskTechnicalIdentity(incoming.sender),
     pushName: incoming.pushName ? maskTechnicalIdentity(incoming.pushName) : null,
     ownerJid: maskTechnicalIdentity(incoming.ownerJid),
+    replyTo: maskTechnicalIdentity(incoming.replyTo),
     remoteEqualsOwner: Boolean(remoteJid && ownerJid && remoteJid === ownerJid),
     participantEqualsOwner: Boolean(participant && ownerJid && participant === ownerJid),
     decision,
