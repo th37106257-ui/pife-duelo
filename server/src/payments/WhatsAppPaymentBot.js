@@ -507,28 +507,65 @@ export class WhatsAppPaymentBot {
 
         this.setConversationState(incoming.phone, queueResult.match ? 'table_selected' : 'choosing_table', selectedTable);
         if (queueResult.match) {
-          for (const player of queueResult.match.players) {
+          const sendFailures = [];
+          for (const [index, player] of queueResult.match.players.entries()) {
+            const playerLabel = index === 0 ? 'A' : 'B';
+            const sendTarget = player.sendTo || player.replyTo;
             try {
-              await this.send(player.replyTo, this.safeMatchFoundText(selectedTable, player.accessLink));
+              this.matchQueue?.logInfo?.(`Enviando link para jogador ${playerLabel}:`, {
+                matchId: queueResult.match.matchId,
+                roomId: queueResult.match.roomId ?? queueResult.match.matchId,
+                tableValue: selectedTable,
+                entryId: player.entryId,
+                phone: player.phoneMasked,
+                sendTargetMasked: maskPhone(sendTarget),
+                linkGenerated: Boolean(player.accessLink),
+              });
+              await this.send(sendTarget, this.safeMatchFoundText(selectedTable, player.accessLink));
               this.entryService?.markLinkDelivery?.(player.entryId, { sent: true });
               this.matchQueue?.logInfo?.('WHATSAPP_MATCH_LINK_SENT', {
                 matchId: queueResult.match.matchId,
+                roomId: queueResult.match.roomId ?? queueResult.match.matchId,
                 tableValue: selectedTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
+                sendTargetMasked: maskPhone(sendTarget),
                 linkGenerated: Boolean(player.accessLink),
               });
             } catch (error) {
+              sendFailures.push({ entryId: player.entryId, message: error.message });
               this.entryService?.markLinkDelivery?.(player.entryId, { sent: false, error: error.message });
-              this.matchQueue?.logError?.('WHATSAPP_MATCH_LINK_SEND_FAILED', {
+              this.matchQueue?.logError?.('Erro ao enviar link:', {
                 matchId: queueResult.match.matchId,
+                roomId: queueResult.match.roomId ?? queueResult.match.matchId,
                 tableValue: selectedTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
+                sendTargetMasked: maskPhone(sendTarget),
                 message: error.message,
               });
-              throw error;
+              this.matchQueue?.logError?.('WHATSAPP_MATCH_LINK_SEND_FAILED', {
+                matchId: queueResult.match.matchId,
+                roomId: queueResult.match.roomId ?? queueResult.match.matchId,
+                tableValue: selectedTable,
+                entryId: player.entryId,
+                phone: player.phoneMasked,
+                sendTargetMasked: maskPhone(sendTarget),
+                message: error.message,
+              });
             }
+          }
+          if (sendFailures.length) {
+            return {
+              type: 'whatsapp_match_link_send_failed',
+              decision: 'processed_incoming',
+              reason: 'match_created_but_link_send_failed',
+              state: 'table_selected',
+              selectedTable,
+              matchId: queueResult.match.matchId,
+              sendFailures,
+              originIp,
+            };
           }
           return {
             type: 'whatsapp_match_created',

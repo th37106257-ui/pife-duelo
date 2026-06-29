@@ -412,6 +412,12 @@ export class MatchQueue {
     if (!queueId) return null;
 
     const queue = this.queues.get(queueId);
+    this.logInfo('Tentando criar partida para mesa:', {
+      tableValueReceived: tableId,
+      tableValue,
+      tableId: queueId,
+      queueSize: queue?.length ?? 0,
+    });
     this.logInfo('WHATSAPP_QUEUE_MATCH_ATTEMPT', {
       tableValueReceived: tableId,
       tableValue,
@@ -422,23 +428,48 @@ export class MatchQueue {
 
     const players = queue.splice(0, 2);
     const matchId = createId('whatsapp_match');
+    this.logInfo('Jogadores pareados:', {
+      tableValue,
+      tableId: queueId,
+      matchId,
+      players: players.map((player) => ({
+        phone: player.phoneMasked,
+        entryId: player.entryId,
+      })),
+    });
     players.forEach((player) => {
-      if (player.accessLink) return;
-      const refreshed = this.entryService?.refreshQueueAccessLink?.(player.entryId, {
-        actor: 'whatsapp-queue',
-        source: 'whatsapp-queue-match',
+      if (!player.accessLink) {
+        const refreshed = this.entryService?.refreshQueueAccessLink?.(player.entryId, {
+          actor: 'whatsapp-queue',
+          source: 'whatsapp-queue-match',
+        });
+        player.accessLink = refreshed?.accessLink ?? player.accessLink;
+      }
+      this.logInfo('Link gerado:', {
+        matchId,
+        tableValue,
+        entryId: player.entryId,
+        phone: player.phoneMasked,
+        linkGenerated: Boolean(player.accessLink),
       });
-      player.accessLink = refreshed?.accessLink ?? player.accessLink;
     });
     const roomUrl = players[0].accessLink;
+    this.logInfo('Room ID gerado:', {
+      matchId,
+      roomId: matchId,
+      tableValue,
+      roomUrlGenerated: Boolean(roomUrl),
+    });
     const match = {
       matchId,
+      roomId: matchId,
       tableId: queueId,
       tableValue,
       roomUrl,
       createdAt: nowIso(this.clock),
       players: players.map((player) => ({
         phoneMasked: player.phoneMasked,
+        sendTo: player.playerPhone,
         entryId: player.entryId,
         accessLink: player.accessLink,
         replyTo: player.replyTo,
@@ -454,6 +485,15 @@ export class MatchQueue {
       });
     });
 
+    this.logInfo('Match criada:', {
+      matchId,
+      roomId: match.roomId,
+      tableId: queueId,
+      tableValue,
+      players: players.map((player) => player.phoneMasked),
+      queueSizeAfterMatch: queue.length,
+      linkGenerated: Boolean(roomUrl),
+    });
     this.logInfo('WHATSAPP_MATCH_CREATED', {
       matchId,
       tableId: queueId,

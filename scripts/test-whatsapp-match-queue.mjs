@@ -94,8 +94,8 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
 
   const matchMessages = sentMessages.filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
-  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
+  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$2')));
   assert.ok(matchMessages.every((message) => message.text.includes('Entre na sala pelo link abaixo:')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
@@ -145,8 +145,8 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   const matchMessages = secondRuntimeAfterMemoryLoss.sentMessages
     .filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
-  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
+  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$10')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
   assert.ok(sharedStore.listEntries()
