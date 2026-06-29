@@ -31,6 +31,10 @@ function auditEntry({ action, actor, at, details = null }) {
   return { action, actor, at, details };
 }
 
+function buildSafePathSegment(value) {
+  return encodeURIComponent(String(value || '').trim()).replace(/%2F/gi, '');
+}
+
 export function sanitizeWhatsAppEntry(entry) {
   if (!entry) return null;
   const { phone, accessTokenHash, queueSocketId, whatsappReplyTo, ...safe } = entry;
@@ -75,6 +79,13 @@ export class WhatsAppEntryService {
 
   hashToken(token) {
     return createHmac('sha256', this.accessSecret).update(String(token)).digest('hex');
+  }
+
+  buildAccessLink(token, { matchId = null } = {}) {
+    const encodedToken = encodeURIComponent(String(token || ''));
+    const safeMatchId = buildSafePathSegment(matchId);
+    if (safeMatchId) return `${this.publicGameUrl}/join/${safeMatchId}?online=1&entry=${encodedToken}`;
+    return `${this.publicGameUrl}/?online=1&entry=${encodedToken}`;
   }
 
   expirePendingEntries() {
@@ -153,6 +164,7 @@ export class WhatsAppEntryService {
       queuedAt: null,
       whatsappReplyTo: null,
       linkedMatchId: null,
+      whatsappMatchId: null,
       roomUrl: null,
       linkSentAt: null,
       playingAt: null,
@@ -196,7 +208,7 @@ export class WhatsAppEntryService {
 
     return {
       entry: sanitizeWhatsAppEntry(updated),
-      accessLink: `${this.publicGameUrl}/?online=1&entry=${encodeURIComponent(token)}`,
+      accessLink: this.buildAccessLink(token),
     };
   }
 
@@ -291,10 +303,11 @@ export class WhatsAppEntryService {
     return includeSecrets ? entries : entries.map(sanitizeWhatsAppEntry);
   }
 
-  refreshQueueAccessLink(entryId, { actor = 'system', source = 'whatsapp-queue-match' } = {}) {
+  refreshQueueAccessLink(entryId, { actor = 'system', source = 'whatsapp-queue-match', matchId = null } = {}) {
     const token = this.tokenFactory();
     const at = nowIso(this.clock);
     const accessExpiresAt = new Date(this.clock() + this.accessTtlMs).toISOString();
+    const safeMatchId = String(matchId || '').trim();
     const updated = this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'approved_for_queue') throw new Error('ENTRY_NOT_APPROVED');
       if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
@@ -302,19 +315,21 @@ export class WhatsAppEntryService {
         ...current,
         accessTokenHash: this.hashToken(token),
         accessExpiresAt,
+        whatsappMatchId: safeMatchId || current.whatsappMatchId || null,
+        roomUrl: safeMatchId ? `${this.publicGameUrl}/join/${buildSafePathSegment(safeMatchId)}` : current.roomUrl,
         updatedAt: at,
         auditLog: [...current.auditLog, auditEntry({
           action: 'entry_queue_access_refreshed',
           actor: String(actor || 'system'),
           at,
-          details: { source },
+          details: { source, matchId: safeMatchId || null },
         })],
       };
     });
 
     return {
       entry: sanitizeWhatsAppEntry(updated),
-      accessLink: `${this.publicGameUrl}/?online=1&entry=${encodeURIComponent(token)}`,
+      accessLink: this.buildAccessLink(token, { matchId: safeMatchId }),
     };
   }
 

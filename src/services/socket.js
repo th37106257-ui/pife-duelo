@@ -74,6 +74,12 @@ function getWhatsAppEntryToken() {
   return new URLSearchParams(window.location.search).get('entry')?.trim() || '';
 }
 
+function getWhatsAppJoinMatchId() {
+  if (typeof window === 'undefined') return '';
+  const pathMatch = window.location.pathname.match(/^\/join\/([^/]+)\/?$/);
+  return decodeURIComponent(pathMatch?.[1] || new URLSearchParams(window.location.search).get('matchId') || '').trim();
+}
+
 function isPaymentAccessError(error) {
   return error?.data?.code === 'PAYMENT_REQUIRED' || error?.message === 'PAYMENT_REQUIRED';
 }
@@ -86,7 +92,9 @@ function createSocket() {
   const socketUrl = getServerUrl();
   const paymentToken = getPaymentAccessToken();
   const entryToken = getWhatsAppEntryToken();
+  const joinMatchId = getWhatsAppJoinMatchId();
   console.info('[socket] URL usada para conectar:', socketUrl);
+  if (joinMatchId) console.info('[socket] matchId recebido pelo link:', joinMatchId);
 
   const nextSocket = io(socketUrl, {
     autoConnect: false,
@@ -101,6 +109,7 @@ function createSocket() {
     auth: {
       ...(paymentToken ? { paymentToken } : {}),
       ...(entryToken ? { entryToken } : {}),
+      ...(joinMatchId ? { joinMatchId } : {}),
     },
   });
 

@@ -33,15 +33,48 @@ export function setupSocketServer(httpServer, {
       if (safeEntryEnabled && entryToken) {
         const entry = entryService?.validateAccessToken(entryToken);
         if (!entry) {
+          logWarn('WHATSAPP_ENTRY_LINK_OPENED', {
+            socketId: socket.id,
+            requestedMatchId: String(socket.handshake.auth?.joinMatchId || '').trim() || null,
+            matchFound: false,
+            reason: 'ENTRY_ACCESS_DENIED',
+          });
           const error = new Error('ENTRY_ACCESS_DENIED');
           error.data = { code: 'ENTRY_ACCESS_DENIED' };
           next(error);
           return;
         }
+        const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim();
+        const expectedMatchId = entry.whatsappMatchId || entry.linkedMatchId || null;
+        if (requestedMatchId && expectedMatchId && requestedMatchId !== expectedMatchId) {
+          logWarn('WHATSAPP_ENTRY_LINK_OPENED', {
+            socketId: socket.id,
+            requestedMatchId,
+            expectedMatchId,
+            entryId: entry.entryId,
+            matchFound: false,
+            reason: 'ENTRY_MATCH_MISMATCH',
+          });
+          const error = new Error('ENTRY_MATCH_MISMATCH');
+          error.data = { code: 'ENTRY_ACCESS_DENIED' };
+          next(error);
+          return;
+        }
+        logInfo('WHATSAPP_ENTRY_LINK_OPENED', {
+          socketId: socket.id,
+          requestedMatchId: requestedMatchId || null,
+          expectedMatchId,
+          linkedMatchId: entry.linkedMatchId ?? null,
+          entryId: entry.entryId,
+          selectedTable: entry.selectedTable,
+          matchFound: Boolean(entry.linkedMatchId || expectedMatchId),
+        });
         socket.entryAccess = {
           entryId: entry.entryId,
           selectedTable: entry.selectedTable,
           linkedMatchId: entry.linkedMatchId ?? null,
+          whatsappMatchId: entry.whatsappMatchId ?? null,
+          requestedMatchId: requestedMatchId || null,
         };
       }
 
@@ -357,6 +390,9 @@ export function setupSocketServer(httpServer, {
       entryAccess: socket.entryAccess ? {
         entryId: socket.entryAccess.entryId,
         selectedTable: socket.entryAccess.selectedTable,
+        whatsappMatchId: socket.entryAccess.whatsappMatchId,
+        requestedMatchId: socket.entryAccess.requestedMatchId,
+        linkedMatchId: socket.entryAccess.linkedMatchId,
       } : null,
     });
     broadcastServerStatus();

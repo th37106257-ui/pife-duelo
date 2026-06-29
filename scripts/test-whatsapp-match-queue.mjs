@@ -59,6 +59,10 @@ function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
   return { bot, store, entryService, matchQueue, sentMessages };
 }
 
+function extractFirstUrl(text) {
+  return String(text || '').match(/https?:\/\/\S+/)?.[0] || '';
+}
+
 async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', replyJid = `${phone}@s.whatsapp.net`) {
   await bot.handleConnectivityWebhook(createWebhook(phone, 'oi', replyJid));
   await bot.handleConnectivityWebhook(createWebhook(phone, menuOption, replyJid));
@@ -106,6 +110,10 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$2')));
   assert.ok(matchMessages.every((message) => message.text.includes('Entre na sala pelo link abaixo:')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
+  const matchUrls = matchMessages.map((message) => new URL(extractFirstUrl(message.text)));
+  assert.ok(matchUrls.every((url) => url.pathname.startsWith('/join/whatsapp_match-')));
+  assert.equal(matchUrls[0].pathname, matchUrls[1].pathname, 'Os dois jogadores devem receber o mesmo matchId no caminho do link.');
+  assert.notEqual(matchUrls[0].searchParams.get('entry'), matchUrls[1].searchParams.get('entry'), 'Cada jogador mantem token individual seguro.');
   assert.ok(matchMessages.every((message) => !/Pix|chave/i.test(message.text)));
 
   const entries = store.listEntries();
@@ -145,6 +153,9 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$5')));
+  const matchUrls = matchMessages.map((message) => new URL(extractFirstUrl(message.text)));
+  assert.ok(matchUrls.every((url) => url.pathname.startsWith('/join/whatsapp_match-')));
+  assert.equal(matchUrls[0].pathname, matchUrls[1].pathname);
 }
 
 {

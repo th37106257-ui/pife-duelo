@@ -14,6 +14,17 @@ import { formatMoney, listOfficialTables } from '../shared/economy.js';
 const TABLE_OPTIONS = listOfficialTables();
 const ACTIVE_MATCH_STORAGE_KEY = 'pifeDuelo.activeOnlineMatch';
 
+function readEntryTokenFromUrl() {
+  if (typeof window === 'undefined') return '';
+  return new URLSearchParams(window.location.search).get('entry')?.trim() || '';
+}
+
+function readJoinMatchIdFromUrl() {
+  if (typeof window === 'undefined') return '';
+  const pathMatch = window.location.pathname.match(/^\/join\/([^/]+)\/?$/);
+  return decodeURIComponent(pathMatch?.[1] || new URLSearchParams(window.location.search).get('matchId') || '').trim();
+}
+
 function readStoredMatchSession() {
   if (typeof window === 'undefined') return null;
 
@@ -82,6 +93,9 @@ export default function MatchmakingScreen() {
   const activeSessionRef = useRef(readStoredMatchSession());
   const onlineGameStateRef = useRef(null);
   const bootstrappedRef = useRef(false);
+  const directJoinAttemptedRef = useRef(false);
+  const directJoinMatchId = useMemo(() => readJoinMatchIdFromUrl(), []);
+  const hasDirectEntryLink = useMemo(() => Boolean(readEntryTokenFromUrl()), []);
 
   const opponent = useMemo(
     () => matchInfo?.players?.find((player) => player.position === 'top') ?? null,
@@ -182,6 +196,10 @@ export default function MatchmakingScreen() {
     const onConnectionSuccess = (payload) => {
       setPlayerId(payload.playerId);
       const authorizedTable = payload.entryAccess?.selectedTable ?? payload.paymentAccess?.selectedTable;
+      if (payload.entryAccess?.requestedMatchId || payload.entryAccess?.whatsappMatchId || directJoinMatchId) {
+        console.info('[whatsapp-link] matchId recebido:', payload.entryAccess?.requestedMatchId || directJoinMatchId || null);
+        console.info('[whatsapp-link] partida encontrada:', Boolean(payload.entryAccess?.whatsappMatchId || payload.entryAccess?.linkedMatchId));
+      }
       if (authorizedTable) {
         const lockedTable = Number(authorizedTable);
         setTableValue(lockedTable);
@@ -311,6 +329,51 @@ export default function MatchmakingScreen() {
     socket.emit('requestServerStatus');
   };
 
+  const enterOnlineQueue = async ({ automatic = false } = {}) => {
+    if (status === 'searching' && !automatic) return;
+
+    setErrorMessage('');
+    setMatchInfo(null);
+    setOnlineGameState(null);
+    activeSessionRef.current = null;
+    onlineGameStateRef.current = null;
+    clearStoredMatchSession();
+    setActionError('');
+    setStatus('connecting');
+
+    try {
+      const socket = await connectSocket();
+      attachListeners(socket);
+      if (socket.connectionSuccess?.playerId) {
+        setPlayerId(socket.connectionSuccess.playerId);
+      }
+      const authorizedTable = socket.connectionSuccess?.entryAccess?.selectedTable
+        ?? socket.connectionSuccess?.paymentAccess?.selectedTable;
+      if (authorizedTable) {
+        const lockedTable = Number(authorizedTable);
+        setTableValue(lockedTable);
+        setLockedTableValue(lockedTable);
+      }
+      const confirmedTableValue = Number(authorizedTable) || null;
+      const queueTableValue = confirmedTableValue ?? tableValue;
+      const queuePayload = {
+        playerName,
+        tableValue: queueTableValue,
+      };
+      console.info('[socket] join_match enviado:', {
+        ...queuePayload,
+        source: automatic ? 'whatsapp_link' : 'lobby',
+        requestedMatchId: socket.connectionSuccess?.entryAccess?.requestedMatchId || directJoinMatchId || null,
+      });
+      await joinQueueWithConfirmation(socket, queuePayload);
+      socket.emit('requestQueueStatus', { tableValue: queueTableValue });
+    } catch (error) {
+      console.error('[whatsapp-link] erro ao entrar pela URL:', error?.message || error);
+      setErrorMessage(error.message || 'Nao foi possivel conectar ao servidor.');
+      setStatus('idle');
+    }
+  };
+
   const restoreActiveMatch = async () => {
     const session = readStoredMatchSession();
     if (!session?.matchId || !session?.roomId || !session?.playerId) return false;
@@ -336,7 +399,7 @@ export default function MatchmakingScreen() {
     let cancelled = false;
 
     const bootstrapLobby = async () => {
-      const restored = await restoreActiveMatch();
+      const restored = hasDirectEntryLink ? false : await restoreActiveMatch();
       if (cancelled || restored) return;
 
       try {
@@ -344,6 +407,11 @@ export default function MatchmakingScreen() {
         if (cancelled) return;
         attachListeners(socket);
         socket.emit('requestServerStatus');
+        if (hasDirectEntryLink && !directJoinAttemptedRef.current) {
+          directJoinAttemptedRef.current = true;
+          console.info('[whatsapp-link] abrindo entrada direta:', { matchId: directJoinMatchId || null });
+          await enterOnlineQueue({ automatic: true });
+        }
       } catch (error) {
         setOnlinePlayers(null);
         setErrorMessage(error.message || 'Servidor indisponivel. Tente novamente.');
@@ -396,43 +464,7 @@ export default function MatchmakingScreen() {
   }, []);
 
   const handlePlayOnline = async () => {
-    if (status === 'searching') return;
-
-    setErrorMessage('');
-    setMatchInfo(null);
-    setOnlineGameState(null);
-    activeSessionRef.current = null;
-    onlineGameStateRef.current = null;
-    clearStoredMatchSession();
-    setActionError('');
-    setStatus('connecting');
-
-    try {
-      const socket = await connectSocket();
-      attachListeners(socket);
-      if (socket.connectionSuccess?.playerId) {
-        setPlayerId(socket.connectionSuccess.playerId);
-      }
-      const authorizedTable = socket.connectionSuccess?.entryAccess?.selectedTable
-        ?? socket.connectionSuccess?.paymentAccess?.selectedTable;
-      if (authorizedTable) {
-        const lockedTable = Number(authorizedTable);
-        setTableValue(lockedTable);
-        setLockedTableValue(lockedTable);
-      }
-      const confirmedTableValue = Number(authorizedTable) || null;
-      const queueTableValue = confirmedTableValue ?? tableValue;
-      const queuePayload = {
-        playerName,
-        tableValue: queueTableValue,
-      };
-      console.info('[socket] join_match enviado:', queuePayload);
-      await joinQueueWithConfirmation(socket, queuePayload);
-      socket.emit('requestQueueStatus', { tableValue: queueTableValue });
-    } catch (error) {
-      setErrorMessage(error.message || 'Nao foi possivel conectar ao servidor.');
-      setStatus('idle');
-    }
+    await enterOnlineQueue();
   };
 
   const handleReconnectServer = async () => {

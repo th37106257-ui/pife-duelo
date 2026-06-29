@@ -494,13 +494,12 @@ export class MatchQueue {
       })),
     });
     players.forEach((player) => {
-      if (!player.accessLink) {
-        const refreshed = this.entryService?.refreshQueueAccessLink?.(player.entryId, {
-          actor: 'whatsapp-queue',
-          source: 'whatsapp-queue-match',
-        });
-        player.accessLink = refreshed?.accessLink ?? player.accessLink;
-      }
+      const refreshed = this.entryService?.refreshQueueAccessLink?.(player.entryId, {
+        actor: 'whatsapp-queue',
+        source: 'whatsapp-queue-match',
+        matchId,
+      });
+      player.accessLink = refreshed?.accessLink ?? player.accessLink;
       console.log('[5.3] link gerado:', maskAccessLink(player.accessLink));
       this.logInfo('Link gerado:', {
         matchId,
@@ -553,6 +552,11 @@ export class MatchQueue {
       players: players.map((player) => player.phoneMasked),
       queueSizeAfterMatch: queue.length,
       linkGenerated: Boolean(roomUrl),
+    });
+    this.logInfo('MATCH CRIADA:', {
+      matchId,
+      players: players.map((player) => player.phoneMasked),
+      linkEnviado: players.map((player) => maskAccessLink(player.accessLink)),
     });
     this.logInfo('WHATSAPP_MATCH_CREATED', {
       matchId,
