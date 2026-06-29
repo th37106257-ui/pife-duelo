@@ -22,6 +22,7 @@ import { EvolutionClient } from './payments/EvolutionClient.js';
 import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
 import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
+import { MatchQueue } from './services/matchQueue.js';
 import {
   getDailyObservabilityMetrics,
   getErrorCountSince,
@@ -63,9 +64,16 @@ const evolutionClient = new EvolutionClient({
   apiKey: config.EVOLUTION_API_KEY,
   instanceName: config.EVOLUTION_INSTANCE_NAME,
 });
+const whatsappMatchQueue = new MatchQueue({
+  entryService: whatsappEntryService,
+  logInfo,
+  logWarn,
+  logError,
+});
 const whatsappPaymentBot = new WhatsAppPaymentBot({
   paymentService,
   entryService: whatsappEntryService,
+  matchQueue: whatsappMatchQueue,
   safeEntryEnabled: config.WHATSAPP_SAFE_ENTRY_ENABLED,
   evolutionClient,
   pixKey: config.PIX_KEY,

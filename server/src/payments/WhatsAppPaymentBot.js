@@ -172,6 +172,7 @@ export class WhatsAppPaymentBot {
   constructor({
     paymentService,
     entryService,
+    matchQueue,
     safeEntryEnabled = false,
     evolutionClient,
     pixKey,
@@ -181,6 +182,7 @@ export class WhatsAppPaymentBot {
   } = {}) {
     this.paymentService = paymentService;
     this.entryService = entryService;
+    this.matchQueue = matchQueue;
     this.safeEntryEnabled = Boolean(safeEntryEnabled);
     this.evolutionClient = evolutionClient;
     this.pixKey = String(pixKey || '');
@@ -387,6 +389,29 @@ export class WhatsAppPaymentBot {
     return { type: 'entry_admin_invalid_command', decision: 'reply_sent', reason: 'invalid_admin_command' };
   }
 
+  safeQueueJoinedText(amount) {
+    return `✅ Você entrou na fila da mesa R$${Number(amount).toFixed(2).replace('.', ',')}. Aguarde um adversário.`;
+  }
+
+  safeQueueDuplicateText() {
+    return '⏳ Você já está aguardando um adversário nesta mesa.';
+  }
+
+  safeActiveMatchText() {
+    return '⚠️ Você já está em uma partida ativa.';
+  }
+
+  safeMatchFoundText(accessLink) {
+    return [
+      '🎮 Partida encontrada! Entre pelo link abaixo:',
+      accessLink,
+    ].join('\n');
+  }
+
+  safeOtherQueueText() {
+    return '⏳ Você já está aguardando adversário em outra mesa. Aguarde ou digite menu.';
+  }
+
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
     if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
@@ -414,6 +439,63 @@ export class WhatsAppPaymentBot {
     const currentState = this.getConversationState(incoming.phone);
     if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
       const selectedTable = SAFE_TABLES.get(command);
+      if (this.safeEntryEnabled && this.matchQueue?.isConfigured?.()) {
+        const queueResult = this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
+        if (queueResult.blocked) {
+          if (queueResult.reason === 'already_in_queue') {
+            await this.send(replyTo, this.safeQueueDuplicateText());
+            return { type: 'whatsapp_queue_duplicate', decision: 'reply_sent', reason: 'already_in_queue', state: 'choosing_table', selectedTable, originIp };
+          }
+          if (queueResult.reason === 'already_in_active_match' || queueResult.reason === 'PLAYER_ALREADY_ACTIVE_MATCH') {
+            await this.send(replyTo, this.safeActiveMatchText());
+            return { type: 'whatsapp_queue_active_match_blocked', decision: 'reply_sent', reason: queueResult.reason, state: 'table_selected', selectedTable, originIp };
+          }
+          if (queueResult.reason === 'already_in_other_queue') {
+            await this.send(replyTo, this.safeOtherQueueText());
+            return { type: 'whatsapp_queue_other_table_blocked', decision: 'reply_sent', reason: 'already_in_other_queue', state: 'choosing_table', selectedTable, originIp };
+          }
+          if (queueResult.reason === 'ENTRY_TABLE_LOCKED') {
+            await this.send(replyTo, 'Você já possui uma entrada ativa em outra mesa. Aguarde ou digite menu.');
+            return { type: 'whatsapp_entry_table_locked', decision: 'reply_sent', reason: queueResult.reason, state: currentState.state, originIp };
+          }
+          await this.send(replyTo, 'Não foi possível entrar na fila agora. Digite menu e tente novamente.');
+          return { type: 'whatsapp_queue_join_failed', decision: 'reply_sent', reason: queueResult.reason, state: currentState.state, selectedTable, originIp };
+        }
+
+        this.setConversationState(incoming.phone, queueResult.match ? 'table_selected' : 'choosing_table', selectedTable);
+        if (queueResult.match) {
+          for (const player of queueResult.match.players) {
+            try {
+              await this.send(player.replyTo, this.safeMatchFoundText(player.accessLink));
+              this.entryService?.markLinkDelivery?.(player.entryId, { sent: true });
+            } catch (error) {
+              this.entryService?.markLinkDelivery?.(player.entryId, { sent: false, error: error.message });
+              throw error;
+            }
+          }
+          return {
+            type: 'whatsapp_match_created',
+            decision: 'reply_sent',
+            reason: 'two_players_matched',
+            state: 'table_selected',
+            selectedTable,
+            matchId: queueResult.match.matchId,
+            originIp,
+          };
+        }
+
+        await this.send(replyTo, this.safeQueueJoinedText(selectedTable));
+        return {
+          type: 'whatsapp_queue_joined',
+          decision: 'reply_sent',
+          reason: 'waiting_for_opponent',
+          state: 'choosing_table',
+          selectedTable,
+          entryId: queueResult.entry?.entryId ?? null,
+          originIp,
+        };
+      }
+
       let entry = null;
       if (this.safeEntryEnabled) {
         if (!this.entryService?.isConfigured()) {
