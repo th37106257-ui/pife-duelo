@@ -391,6 +391,8 @@ app.get('/health', (request, response) => {
       configured: whatsappConnectivityConfigured,
       safeEntryEnabled: whatsappSafeEntryEnabled,
       safeEntryConfigured: getWhatsAppEntryConfigurationErrors().length === 0,
+      entryStorePersisted: Boolean(config.WHATSAPP_ENTRY_STORE_PATH),
+      publicGameUrlConfigured: Boolean(config.PUBLIC_GAME_URL),
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,

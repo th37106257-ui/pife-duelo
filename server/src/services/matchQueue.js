@@ -20,6 +20,23 @@ function tableQueueId(tableId) {
   return TABLE_QUEUE_IDS.get(tableValue) ?? null;
 }
 
+function maskAccessLink(link) {
+  const value = String(link || '');
+  if (!value) return '';
+  return value.replace(/([?&]entry=)[^&]+/i, '$1***');
+}
+
+function queueSnapshot(queues) {
+  return Object.fromEntries([...queues.entries()].map(([queueId, queue]) => [
+    queueId,
+    queue.map((entry) => ({
+      jogador: entry.phoneMasked,
+      mesa: entry.tableValue,
+      entryId: entry.entryId,
+    })),
+  ]));
+}
+
 function createQueueEntry({ phone, replyTo, tableId, entryId, accessLink, clock }) {
   const economy = calculatePrize(tableId);
   return {
@@ -314,6 +331,9 @@ export class MatchQueue {
     const phone = normalizePhone(playerPhone);
     const tableValue = this.normalizeTable(tableId);
     const queueId = tableQueueId(tableValue);
+    console.log('[5.3] mesa recebida:', tableValue);
+    console.log('[5.3] fila usada:', queueId);
+    console.log('[5.3] jogador:', maskPhone(phone));
     this.logInfo('WHATSAPP_QUEUE_JOIN_REQUEST', {
       tableValueReceived: tableId,
       tableValue,
@@ -323,6 +343,7 @@ export class MatchQueue {
     if (!phone) return { blocked: true, reason: 'invalid_phone' };
     if (!tableValue || !queueId) return { blocked: true, reason: 'invalid_table' };
     this.syncQueueFromStore();
+    console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
 
     const existingQueue = this.findPlayerQueue(phone);
     if (existingQueue) {
@@ -378,6 +399,8 @@ export class MatchQueue {
     });
     const queue = this.queues.get(queueId);
     queue.push(queueEntry);
+    console.log('[5.3] quantidade na fila:', queue.length);
+    console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
 
     this.logInfo('WHATSAPP_QUEUE_JOINED', {
       tableId: queueId,
@@ -412,6 +435,10 @@ export class MatchQueue {
     if (!queueId) return null;
 
     const queue = this.queues.get(queueId);
+    console.log('[5.3] tentando parear jogadores...');
+    console.log('[5.3] mesa recebida:', tableValue);
+    console.log('[5.3] fila usada:', queueId);
+    console.log('[5.3] quantidade na fila:', queue?.length ?? 0);
     this.logInfo('Tentando criar partida para mesa:', {
       tableValueReceived: tableId,
       tableValue,
@@ -428,6 +455,7 @@ export class MatchQueue {
 
     const players = queue.splice(0, 2);
     const matchId = createId('whatsapp_match');
+    console.log('[5.3] jogadores pareados:', players[0]?.phoneMasked, players[1]?.phoneMasked);
     this.logInfo('Jogadores pareados:', {
       tableValue,
       tableId: queueId,
@@ -445,6 +473,7 @@ export class MatchQueue {
         });
         player.accessLink = refreshed?.accessLink ?? player.accessLink;
       }
+      console.log('[5.3] link gerado:', maskAccessLink(player.accessLink));
       this.logInfo('Link gerado:', {
         matchId,
         tableValue,
@@ -454,6 +483,7 @@ export class MatchQueue {
       });
     });
     const roomUrl = players[0].accessLink;
+    console.log('[5.3] sala criada:', matchId);
     this.logInfo('Room ID gerado:', {
       matchId,
       roomId: matchId,
@@ -472,6 +502,7 @@ export class MatchQueue {
         sendTo: player.playerPhone,
         entryId: player.entryId,
         accessLink: player.accessLink,
+        matchLinkMasked: maskAccessLink(player.accessLink),
         replyTo: player.replyTo,
       })),
     };
@@ -485,6 +516,7 @@ export class MatchQueue {
       });
     });
 
+    console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
     this.logInfo('Match criada:', {
       matchId,
       roomId: match.roomId,

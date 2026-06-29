@@ -510,7 +510,22 @@ export class WhatsAppPaymentBot {
           const sendFailures = [];
           for (const [index, player] of queueResult.match.players.entries()) {
             const playerLabel = index === 0 ? 'A' : 'B';
-            const sendTarget = player.sendTo || player.replyTo;
+            const sendTargets = [...new Set([player.replyTo, player.sendTo].filter(Boolean))];
+            if (!player.accessLink) {
+              const error = new Error('MATCH_LINK_EMPTY');
+              console.log('[5.3] erro:', error.message);
+              sendFailures.push({ entryId: player.entryId, message: error.message });
+              this.entryService?.markLinkDelivery?.(player.entryId, { sent: false, error: error.message });
+              this.matchQueue?.logError?.('Erro ao enviar link:', {
+                matchId: queueResult.match.matchId,
+                roomId: queueResult.match.roomId ?? queueResult.match.matchId,
+                tableValue: selectedTable,
+                entryId: player.entryId,
+                phone: player.phoneMasked,
+                message: error.message,
+              });
+              continue;
+            }
             try {
               this.matchQueue?.logInfo?.(`Enviando link para jogador ${playerLabel}:`, {
                 matchId: queueResult.match.matchId,
@@ -518,10 +533,33 @@ export class WhatsAppPaymentBot {
                 tableValue: selectedTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
-                sendTargetMasked: maskPhone(sendTarget),
+                sendTargetsMasked: sendTargets.map(maskPhone),
                 linkGenerated: Boolean(player.accessLink),
               });
-              await this.send(sendTarget, this.safeMatchFoundText(selectedTable, player.accessLink));
+              console.log(`[5.3] enviando link para jogador ${playerLabel}:`, player.phoneMasked);
+              console.log('[5.3] enviando link para:', player.phoneMasked);
+              let sent = false;
+              let lastError = null;
+              for (const sendTarget of sendTargets) {
+                try {
+                  await this.send(sendTarget, this.safeMatchFoundText(selectedTable, player.accessLink));
+                  sent = true;
+                  break;
+                } catch (targetError) {
+                  lastError = targetError;
+                  console.log('[5.3] erro:', targetError.message);
+                  this.matchQueue?.logError?.('Erro ao enviar link:', {
+                    matchId: queueResult.match.matchId,
+                    roomId: queueResult.match.roomId ?? queueResult.match.matchId,
+                    tableValue: selectedTable,
+                    entryId: player.entryId,
+                    phone: player.phoneMasked,
+                    sendTargetMasked: maskPhone(sendTarget),
+                    message: targetError.message,
+                  });
+                }
+              }
+              if (!sent) throw lastError || new Error('MATCH_LINK_SEND_FAILED');
               this.entryService?.markLinkDelivery?.(player.entryId, { sent: true });
               this.matchQueue?.logInfo?.('WHATSAPP_MATCH_LINK_SENT', {
                 matchId: queueResult.match.matchId,
@@ -529,7 +567,7 @@ export class WhatsAppPaymentBot {
                 tableValue: selectedTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
-                sendTargetMasked: maskPhone(sendTarget),
+                sendTargetsMasked: sendTargets.map(maskPhone),
                 linkGenerated: Boolean(player.accessLink),
               });
             } catch (error) {
@@ -541,7 +579,7 @@ export class WhatsAppPaymentBot {
                 tableValue: selectedTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
-                sendTargetMasked: maskPhone(sendTarget),
+                sendTargetsMasked: sendTargets.map(maskPhone),
                 message: error.message,
               });
               this.matchQueue?.logError?.('WHATSAPP_MATCH_LINK_SEND_FAILED', {
@@ -550,7 +588,7 @@ export class WhatsAppPaymentBot {
                 tableValue: selectedTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
-                sendTargetMasked: maskPhone(sendTarget),
+                sendTargetsMasked: sendTargets.map(maskPhone),
                 message: error.message,
               });
             }

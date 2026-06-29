@@ -8,6 +8,7 @@ try {
 const productionFrontendUrl = 'https://pife-duelo-production-4f73.up.railway.app';
 const defaultClientUrl = process.env.NODE_ENV === 'production' ? productionFrontendUrl : 'http://localhost:5173';
 const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || defaultClientUrl;
+const defaultWhatsappEntryStorePath = process.env.NODE_ENV === 'production' ? '/data/whatsapp-entries.json' : '';
 const allowedClientUrls = [
   frontendUrl,
   process.env.CLIENT_URL,
@@ -34,7 +35,7 @@ export const config = {
   PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
   WHATSAPP_CONNECTIVITY_TEST_ENABLED: parseBoolean(process.env.WHATSAPP_CONNECTIVITY_TEST_ENABLED),
   WHATSAPP_SAFE_ENTRY_ENABLED: parseBoolean(process.env.WHATSAPP_SAFE_ENTRY_ENABLED),
-  WHATSAPP_ENTRY_STORE_PATH: process.env.WHATSAPP_ENTRY_STORE_PATH || '',
+  WHATSAPP_ENTRY_STORE_PATH: process.env.WHATSAPP_ENTRY_STORE_PATH || defaultWhatsappEntryStorePath,
   WHATSAPP_ENTRY_ACCESS_SECRET: process.env.WHATSAPP_ENTRY_ACCESS_SECRET || '',
   WHATSAPP_ENTRY_EXPIRY_MINUTES: Number(process.env.WHATSAPP_ENTRY_EXPIRY_MINUTES || 60),
   WHATSAPP_ENTRY_ACCESS_TTL_MINUTES: Number(process.env.WHATSAPP_ENTRY_ACCESS_TTL_MINUTES || 180),

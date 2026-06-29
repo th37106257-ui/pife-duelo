@@ -36,7 +36,7 @@ function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`) {
   };
 }
 
-function createBot(store = new WhatsAppEntryStore()) {
+function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
   const entryService = createEntryService(store);
   const matchQueue = new MatchQueue({
     entryService,
@@ -49,7 +49,7 @@ function createBot(store = new WhatsAppEntryStore()) {
     safeEntryEnabled: true,
     evolutionClient: {
       isConfigured: () => true,
-      sendText: async (phone, text) => sentMessages.push({ phone, text }),
+      sendText: sendText ?? (async (phone, text) => sentMessages.push({ phone, text })),
     },
     adminNumbers: ['5511999990000'],
     clock: () => now,
@@ -94,8 +94,8 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
 
   const matchMessages = sentMessages.filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
-  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
+  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$2')));
   assert.ok(matchMessages.every((message) => message.text.includes('Entre na sala pelo link abaixo:')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
@@ -145,13 +145,39 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   const matchMessages = secondRuntimeAfterMemoryLoss.sentMessages
     .filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
-  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
+  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$10')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
   assert.ok(sharedStore.listEntries()
     .filter((entry) => [firstPhone, secondPhone].includes(entry.phone))
     .every((entry) => entry.linkSentAt));
+}
+
+{
+  const sentMessages = [];
+  const runtime = createBot(new WhatsAppEntryStore(), {
+    sendText: async (phone, text) => {
+      if (String(phone).endsWith('@lid') && text.includes('🎮 Partida encontrada!')) {
+        throw new Error('SEND_LID_FAILED');
+      }
+      sentMessages.push({ phone, text });
+    },
+  });
+  const firstPhone = '551188880050';
+  const secondPhone = '551188880051';
+  const firstReplyJid = `${firstPhone}000@lid`;
+  const secondReplyJid = `${secondPhone}000@lid`;
+
+  await chooseTable(runtime.bot, firstPhone, '1', '2', firstReplyJid);
+  const fallbackMatch = await chooseTable(runtime.bot, secondPhone, '1', '2', secondReplyJid);
+  assert.equal(fallbackMatch.type, 'whatsapp_match_created');
+
+  const matchMessages = sentMessages.filter((message) => message.text.includes('🎮 Partida encontrada!'));
+  assert.equal(matchMessages.length, 2);
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
+  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
+  assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$5')));
 }
 
 {
