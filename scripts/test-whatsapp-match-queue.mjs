@@ -19,7 +19,7 @@ function createEntryService(store = new WhatsAppEntryStore()) {
   });
 }
 
-function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`) {
+function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`, { senderJid = `${phone}@s.whatsapp.net`, ownerJid = null } = {}) {
   messageSequence += 1;
   return {
     event: 'messages.upsert',
@@ -30,7 +30,8 @@ function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`) {
         fromMe: false,
         id: `queue-msg-${messageSequence}`,
       },
-      sender: `${phone}@s.whatsapp.net`,
+      ownerJid,
+      sender: senderJid,
       message: { conversation: text },
     },
   };
@@ -62,6 +63,12 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   await bot.handleConnectivityWebhook(createWebhook(phone, 'oi', replyJid));
   await bot.handleConnectivityWebhook(createWebhook(phone, menuOption, replyJid));
   return bot.handleConnectivityWebhook(createWebhook(phone, tableOption, replyJid));
+}
+
+async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJid, senderJid, ownerJid = null) {
+  await bot.handleConnectivityWebhook(createWebhook(phone, 'oi', replyJid, { senderJid, ownerJid }));
+  await bot.handleConnectivityWebhook(createWebhook(phone, menuOption, replyJid, { senderJid, ownerJid }));
+  return bot.handleConnectivityWebhook(createWebhook(phone, tableOption, replyJid, { senderJid, ownerJid }));
 }
 
 {
@@ -113,6 +120,31 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   const reservedLinkResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
   assert.equal(reservedLinkResult.type, 'whatsapp_queue_joined');
   assert.notEqual(reservedLinkResult.type, 'whatsapp_queue_active_match_blocked');
+}
+
+{
+  const { bot, matchQueue, sentMessages } = createBot();
+  const botJid = '5521999974561@s.whatsapp.net';
+  const firstPhone = '551188880080';
+  const secondPhone = '551188880081';
+  const firstReplyJid = `${firstPhone}999@lid`;
+  const secondReplyJid = `${secondPhone}999@lid`;
+
+  const firstResult = await chooseTableWithSender(bot, firstPhone, '1', '2', firstReplyJid, botJid, botJid);
+  assert.equal(firstResult.type, 'whatsapp_queue_joined');
+  assert.equal(firstResult.selectedTable, 5);
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 1);
+
+  const secondResult = await chooseTableWithSender(bot, secondPhone, '1', '2', secondReplyJid, botJid, botJid);
+  assert.equal(secondResult.type, 'whatsapp_match_created');
+  assert.equal(secondResult.selectedTable, 5);
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+
+  const matchMessages = sentMessages.filter((message) => message.text.includes('Partida encontrada!'));
+  assert.equal(matchMessages.length, 2);
+  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$5')));
 }
 
 {

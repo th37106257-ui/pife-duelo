@@ -61,9 +61,34 @@ function getOwnerJid(payload = {}) {
     payload.ownerJid,
     payload.instance?.ownerJid,
     payload.data?.ownerJid,
-    payload.sender,
   ];
   return candidates.find((value) => /@(?:s\.whatsapp\.net|lid)$/i.test(String(value || ''))) || '';
+}
+
+function sameJid(left, right) {
+  return Boolean(left && right && normalizeJid(left) === normalizeJid(right));
+}
+
+function pickIncomingPlayerJid({ keyRemoteJid, keyRemoteJidAlt, senderJid, participant, participantAlt, ownerJid }) {
+  const chatCandidates = [keyRemoteJid, keyRemoteJidAlt, participant, participantAlt]
+    .map((value) => String(value || ''))
+    .filter(Boolean)
+    .filter((jid) => !sameJid(jid, ownerJid));
+  const directWhatsappJid = chatCandidates.find((jid) => isWhatsappJid(jid, 's.whatsapp.net'));
+  if (directWhatsappJid) return { jid: directWhatsappJid, source: 'chat_s_whatsapp_net' };
+
+  if (senderJid && isWhatsappJid(senderJid, 's.whatsapp.net') && !sameJid(senderJid, ownerJid)) {
+    return { jid: senderJid, source: 'sender_s_whatsapp_net_fallback' };
+  }
+
+  const lidJid = chatCandidates.find((jid) => isWhatsappJid(jid, 'lid'));
+  if (lidJid) return { jid: lidJid, source: 'chat_lid' };
+
+  if (senderJid && !sameJid(senderJid, ownerJid)) {
+    return { jid: senderJid, source: 'sender_fallback' };
+  }
+
+  return { jid: keyRemoteJid || keyRemoteJidAlt || senderJid || participant || participantAlt || '', source: 'last_resort' };
 }
 
 function parseIncomingMessage(payload = {}) {
@@ -77,8 +102,14 @@ function parseIncomingMessage(payload = {}) {
   const participant = String(key.participant || data.participant || '');
   const participantAlt = String(key.participantAlt || data.participantAlt || '');
   const ownerJid = getOwnerJid(payload);
-  const phoneJid = [senderJid, keyRemoteJid, keyRemoteJidAlt, participant, participantAlt]
-    .find((jid) => isWhatsappJid(jid, 's.whatsapp.net')) || remoteJid;
+  const { jid: phoneJid, source: phoneSource } = pickIncomingPlayerJid({
+    keyRemoteJid,
+    keyRemoteJidAlt,
+    senderJid,
+    participant,
+    participantAlt,
+    ownerJid,
+  });
   const phone = normalizePhone(phoneJid.split('@')[0]);
   const replyTo = [keyRemoteJid, keyRemoteJidAlt, participant, participantAlt, senderJid]
     .find((jid) => isWhatsappJid(jid, 'lid'))
@@ -87,6 +118,7 @@ function parseIncomingMessage(payload = {}) {
     || phone;
   return {
     phone,
+    phoneSource,
     replyTo,
     remoteJid,
     remoteJidAlt: keyRemoteJidAlt,
@@ -138,6 +170,8 @@ export function buildEvolutionMessageDiagnostic(payload = {}) {
     participantAlt: maskTechnicalIdentity(incoming.participantAlt),
     sender: maskTechnicalIdentity(incoming.sender),
     pushName: incoming.pushName ? maskTechnicalIdentity(incoming.pushName) : null,
+    playerPhone: maskPhone(incoming.phone),
+    playerPhoneSource: incoming.phoneSource,
     ownerJid: maskTechnicalIdentity(incoming.ownerJid),
     replyTo: maskTechnicalIdentity(incoming.replyTo),
     remoteEqualsOwner: Boolean(remoteJid && ownerJid && remoteJid === ownerJid),
