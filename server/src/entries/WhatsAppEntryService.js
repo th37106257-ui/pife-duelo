@@ -253,10 +253,11 @@ export class WhatsAppEntryService {
     }));
   }
 
-  cancelQueueEntry(entryId, { actor = 'system', source = 'whatsapp-queue-cancel' } = {}) {
+  cancelQueueEntry(entryId, { actor = 'system', source = 'whatsapp-queue-cancel', force = false } = {}) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'approved_for_queue') throw new Error('ENTRY_CANCEL_NOT_ALLOWED');
-      if (current.linkSentAt || current.linkedMatchId || current.roomUrl) throw new Error('ENTRY_ALREADY_LINKED');
+      if (!force && (current.linkSentAt || current.linkedMatchId || current.roomUrl)) throw new Error('ENTRY_ALREADY_LINKED');
+      if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
       const at = nowIso(this.clock);
       return {
         ...current,

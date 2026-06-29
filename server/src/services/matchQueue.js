@@ -9,6 +9,8 @@ const TABLE_QUEUE_IDS = new Map([
   [20, 'mesa_20'],
 ]);
 
+const REAL_ACTIVE_ENTRY_STATUSES = new Set(['queued', 'linked', 'playing']);
+
 function nowIso(clock) {
   return new Date(clock()).toISOString();
 }
@@ -83,10 +85,42 @@ export class MatchQueue {
     const phone = normalizePhone(playerPhone);
     if (!phone) return null;
     const activeMatch = this.activeMatchesByPhone.get(phone);
-    if (activeMatch) return activeMatch;
+    if (activeMatch) {
+      this.logInfo('WHATSAPP_ACTIVE_MATCH_CHECK', {
+        phone: maskPhone(phone),
+        active: false,
+        source: 'memory_reservation_not_real_match',
+        matchId: activeMatch.matchId ?? null,
+        entryId: activeMatch.entryId ?? null,
+        status: activeMatch.status ?? null,
+      });
+    }
 
     const activeEntry = this.entryService?.getActiveEntryForPhone?.(phone);
-    if (['approved_for_queue', 'queued', 'linked', 'playing'].includes(activeEntry?.status)) {
+    if (!activeEntry) {
+      this.logInfo('WHATSAPP_ACTIVE_MATCH_CHECK', {
+        phone: maskPhone(phone),
+        active: false,
+        source: 'no_active_entry',
+      });
+      return null;
+    }
+
+    const isRealActiveEntry = REAL_ACTIVE_ENTRY_STATUSES.has(activeEntry.status)
+      || Boolean(activeEntry.linkedMatchId)
+      || Boolean(activeEntry.queueSocketId)
+      || Boolean(activeEntry.playingAt);
+
+    if (isRealActiveEntry) {
+      this.logInfo('WHATSAPP_ACTIVE_MATCH_CHECK', {
+        phone: maskPhone(phone),
+        active: true,
+        source: 'entry_status',
+        entryId: activeEntry.entryId,
+        matchId: activeEntry.linkedMatchId ?? null,
+        status: activeEntry.status,
+        hasQueueSocket: Boolean(activeEntry.queueSocketId),
+      });
       return {
         matchId: activeEntry.linkedMatchId ?? null,
         entryId: activeEntry.entryId,
@@ -95,6 +129,16 @@ export class MatchQueue {
       };
     }
 
+    this.logInfo('WHATSAPP_ACTIVE_MATCH_CHECK', {
+      phone: maskPhone(phone),
+      active: false,
+      source: 'entry_not_real_match',
+      entryId: activeEntry.entryId,
+      status: activeEntry.status,
+      hasLinkSent: Boolean(activeEntry.linkSentAt),
+      hasLinkedMatch: Boolean(activeEntry.linkedMatchId),
+      hasQueueSocket: Boolean(activeEntry.queueSocketId),
+    });
     return null;
   }
 
@@ -152,13 +196,17 @@ export class MatchQueue {
     };
   }
 
-  ensureEntryAccess({ phone, tableValue }) {
-    const existing = this.entryService.getActiveEntryForPhone(phone);
-    const entry = existing ?? this.entryService.createEntry({
+  createFreshEntry({ phone, tableValue }) {
+    return this.entryService.createEntry({
       phone,
       selectedTable: tableValue,
       source: 'whatsapp-queue',
     });
+  }
+
+  ensureEntryAccess({ phone, tableValue }) {
+    const existing = this.entryService.getActiveEntryForPhone(phone);
+    let entry = existing ?? this.createFreshEntry({ phone, tableValue });
 
     if (Number(entry.selectedTable) !== Number(tableValue)) {
       throw new Error('ENTRY_TABLE_LOCKED');
@@ -172,7 +220,34 @@ export class MatchQueue {
       });
     }
 
-    if (['approved_for_queue', 'queued', 'linked', 'playing'].includes(entry.status)) {
+    if (
+      entry.status === 'approved_for_queue'
+      && !entry.linkedMatchId
+      && !entry.queueSocketId
+      && !entry.playingAt
+    ) {
+      this.logWarn('WHATSAPP_QUEUE_STALE_APPROVED_ENTRY_RECYCLED', {
+        phone: maskPhone(phone),
+        tableValue,
+        entryId: entry.entryId,
+        status: entry.status,
+        hasLinkSent: Boolean(entry.linkSentAt),
+        reason: 'approved_entry_without_real_match',
+      });
+      this.entryService.cancelQueueEntry(entry.entryId, {
+        actor: phone,
+        source: 'stale-approved-entry-recycled',
+        force: true,
+      });
+      entry = this.createFreshEntry({ phone, tableValue });
+      return this.entryService.approveEntry({
+        entryId: entry.entryId,
+        actor: 'whatsapp-queue',
+        source: 'whatsapp-queue-auto-match-without-pix',
+      });
+    }
+
+    if (REAL_ACTIVE_ENTRY_STATUSES.has(entry.status) || entry.linkedMatchId || entry.queueSocketId || entry.playingAt) {
       throw new Error('PLAYER_ALREADY_ACTIVE_MATCH');
     }
 
