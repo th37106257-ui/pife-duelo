@@ -347,34 +347,33 @@ export class MatchQueue {
 
     const existingQueue = this.findPlayerQueue(phone);
     if (existingQueue) {
-      if (existingQueue.tableValue === tableValue) {
-        const existingQueueState = this.queues.get(existingQueue.tableId) ?? [];
-        console.log('[5.3] quantidade na fila:', existingQueueState.length);
-        console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
-        this.logInfo('WHATSAPP_QUEUE_DUPLICATE_MATCH_CHECK', {
+      const existingQueueState = this.queues.get(existingQueue.tableId) ?? [];
+      console.log('[5.3] quantidade na fila:', existingQueueState.length);
+      console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
+      this.logInfo('WHATSAPP_QUEUE_DUPLICATE_MATCH_CHECK', {
+        phone: maskPhone(phone),
+        requestedTable: tableValue,
+        currentTable: existingQueue.tableValue,
+        tableId: existingQueue.tableId,
+        entryId: existingQueue.entry.entryId,
+        queueSize: existingQueueState.length,
+      });
+      const recoveredMatch = this.tryCreateMatch(existingQueue.tableValue);
+      if (recoveredMatch) {
+        this.logInfo('WHATSAPP_QUEUE_DUPLICATE_RECOVERED_MATCH', {
           phone: maskPhone(phone),
           requestedTable: tableValue,
-          currentTable: existingQueue.tableValue,
-          tableId: existingQueue.tableId,
-          entryId: existingQueue.entry.entryId,
-          queueSize: existingQueueState.length,
+          recoveredTable: existingQueue.tableValue,
+          matchId: recoveredMatch.matchId,
+          players: recoveredMatch.players.map((player) => player.phoneMasked),
         });
-        const recoveredMatch = this.tryCreateMatch(tableValue);
-        if (recoveredMatch) {
-          this.logInfo('WHATSAPP_QUEUE_DUPLICATE_RECOVERED_MATCH', {
-            phone: maskPhone(phone),
-            tableValue,
-            matchId: recoveredMatch.matchId,
-            players: recoveredMatch.players.map((player) => player.phoneMasked),
-          });
-          return {
-            blocked: false,
-            entry: existingQueue.entry,
-            queueStatus: this.getQueueStatus(tableValue),
-            match: recoveredMatch,
-            recoveredFromDuplicate: true,
-          };
-        }
+        return {
+          blocked: false,
+          entry: existingQueue.entry,
+          queueStatus: this.getQueueStatus(existingQueue.tableValue),
+          match: recoveredMatch,
+          recoveredFromDuplicate: true,
+        };
       }
       this.logInfo('WHATSAPP_QUEUE_DUPLICATE', {
         phone: maskPhone(phone),

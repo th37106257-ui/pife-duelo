@@ -508,6 +508,7 @@ export class WhatsAppPaymentBot {
         this.setConversationState(incoming.phone, queueResult.match ? 'table_selected' : 'choosing_table', selectedTable);
         if (queueResult.match) {
           const sendFailures = [];
+          const matchTable = queueResult.match.tableValue ?? selectedTable;
           for (const [index, player] of queueResult.match.players.entries()) {
             const playerLabel = index === 0 ? 'A' : 'B';
             const sendTargets = [...new Set([player.replyTo, player.sendTo].filter(Boolean))];
@@ -519,7 +520,7 @@ export class WhatsAppPaymentBot {
               this.matchQueue?.logError?.('Erro ao enviar link:', {
                 matchId: queueResult.match.matchId,
                 roomId: queueResult.match.roomId ?? queueResult.match.matchId,
-                tableValue: selectedTable,
+                tableValue: matchTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
                 message: error.message,
@@ -530,7 +531,7 @@ export class WhatsAppPaymentBot {
               this.matchQueue?.logInfo?.(`Enviando link para jogador ${playerLabel}:`, {
                 matchId: queueResult.match.matchId,
                 roomId: queueResult.match.roomId ?? queueResult.match.matchId,
-                tableValue: selectedTable,
+                tableValue: matchTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
                 sendTargetsMasked: sendTargets.map(maskPhone),
@@ -542,7 +543,7 @@ export class WhatsAppPaymentBot {
               let lastError = null;
               for (const sendTarget of sendTargets) {
                 try {
-                  await this.send(sendTarget, this.safeMatchFoundText(selectedTable, player.accessLink));
+                  await this.send(sendTarget, this.safeMatchFoundText(matchTable, player.accessLink));
                   sent = true;
                   break;
                 } catch (targetError) {
@@ -551,7 +552,7 @@ export class WhatsAppPaymentBot {
                   this.matchQueue?.logError?.('Erro ao enviar link:', {
                     matchId: queueResult.match.matchId,
                     roomId: queueResult.match.roomId ?? queueResult.match.matchId,
-                    tableValue: selectedTable,
+                    tableValue: matchTable,
                     entryId: player.entryId,
                     phone: player.phoneMasked,
                     sendTargetMasked: maskPhone(sendTarget),
@@ -564,7 +565,7 @@ export class WhatsAppPaymentBot {
               this.matchQueue?.logInfo?.('WHATSAPP_MATCH_LINK_SENT', {
                 matchId: queueResult.match.matchId,
                 roomId: queueResult.match.roomId ?? queueResult.match.matchId,
-                tableValue: selectedTable,
+                tableValue: matchTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
                 sendTargetsMasked: sendTargets.map(maskPhone),
@@ -576,7 +577,7 @@ export class WhatsAppPaymentBot {
               this.matchQueue?.logError?.('Erro ao enviar link:', {
                 matchId: queueResult.match.matchId,
                 roomId: queueResult.match.roomId ?? queueResult.match.matchId,
-                tableValue: selectedTable,
+                tableValue: matchTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
                 sendTargetsMasked: sendTargets.map(maskPhone),
@@ -585,7 +586,7 @@ export class WhatsAppPaymentBot {
               this.matchQueue?.logError?.('WHATSAPP_MATCH_LINK_SEND_FAILED', {
                 matchId: queueResult.match.matchId,
                 roomId: queueResult.match.roomId ?? queueResult.match.matchId,
-                tableValue: selectedTable,
+                tableValue: matchTable,
                 entryId: player.entryId,
                 phone: player.phoneMasked,
                 sendTargetsMasked: sendTargets.map(maskPhone),
@@ -599,7 +600,7 @@ export class WhatsAppPaymentBot {
               decision: 'processed_incoming',
               reason: 'match_created_but_link_send_failed',
               state: 'table_selected',
-              selectedTable,
+              selectedTable: matchTable,
               matchId: queueResult.match.matchId,
               sendFailures,
               originIp,
@@ -610,7 +611,7 @@ export class WhatsAppPaymentBot {
             decision: 'reply_sent',
             reason: 'two_players_matched',
             state: 'table_selected',
-            selectedTable,
+            selectedTable: matchTable,
             matchId: queueResult.match.matchId,
             originIp,
           };

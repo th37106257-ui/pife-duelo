@@ -223,6 +223,47 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
 }
 
 {
+  const sharedStore = new WhatsAppEntryStore();
+  const firstRuntime = createBot(sharedStore);
+  const firstPhone = '551188880070';
+  const secondPhone = '551188880071';
+  const firstReplyJid = `${firstPhone}000@lid`;
+  const secondReplyJid = `${secondPhone}000@lid`;
+
+  const firstWaiting = await chooseTable(firstRuntime.bot, firstPhone, '1', '4', firstReplyJid);
+  assert.equal(firstWaiting.type, 'whatsapp_queue_joined');
+  const secondWaitingEntry = firstRuntime.entryService.createEntry({
+    phone: secondPhone,
+    selectedTable: 20,
+    source: 'stuck-other-table-test',
+  });
+  const secondApproval = firstRuntime.entryService.approveEntry({
+    entryId: secondWaitingEntry.entryId,
+    actor: 'test',
+    source: 'stuck-other-table-test',
+  });
+  firstRuntime.entryService.markWhatsAppQueueWaiting(secondApproval.entry.entryId, {
+    actor: secondPhone,
+    replyTo: secondReplyJid,
+    source: 'stuck-other-table-test',
+  });
+
+  const retryRuntime = createBot(sharedStore);
+  retryRuntime.bot.setConversationState(firstPhone, 'choosing_table', 20);
+  const recoveredMatch = await retryRuntime.bot.handleConnectivityWebhook(createWebhook(firstPhone, '3', firstReplyJid));
+  assert.equal(recoveredMatch.type, 'whatsapp_match_created');
+  assert.equal(recoveredMatch.selectedTable, 20);
+  assert.equal(retryRuntime.matchQueue.getQueueStatus(20).waitingPlayers, 0);
+
+  const matchMessages = retryRuntime.sentMessages
+    .filter((message) => message.text.includes('🎮 Partida encontrada!'));
+  assert.equal(matchMessages.length, 2);
+  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$20')));
+}
+
+{
   const { bot, store, matchQueue, sentMessages } = createBot();
   const cancelPhone = '551188880010';
   await chooseTable(bot, cancelPhone, '1', '3');
