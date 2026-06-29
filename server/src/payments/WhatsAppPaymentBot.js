@@ -511,8 +511,22 @@ export class WhatsAppPaymentBot {
             try {
               await this.send(player.replyTo, this.safeMatchFoundText(selectedTable, player.accessLink));
               this.entryService?.markLinkDelivery?.(player.entryId, { sent: true });
+              this.matchQueue?.logInfo?.('WHATSAPP_MATCH_LINK_SENT', {
+                matchId: queueResult.match.matchId,
+                tableValue: selectedTable,
+                entryId: player.entryId,
+                phone: player.phoneMasked,
+                linkGenerated: Boolean(player.accessLink),
+              });
             } catch (error) {
               this.entryService?.markLinkDelivery?.(player.entryId, { sent: false, error: error.message });
+              this.matchQueue?.logError?.('WHATSAPP_MATCH_LINK_SEND_FAILED', {
+                matchId: queueResult.match.matchId,
+                tableValue: selectedTable,
+                entryId: player.entryId,
+                phone: player.phoneMasked,
+                message: error.message,
+              });
               throw error;
             }
           }

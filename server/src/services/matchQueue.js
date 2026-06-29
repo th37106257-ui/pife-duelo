@@ -36,6 +36,23 @@ function createQueueEntry({ phone, replyTo, tableId, entryId, accessLink, clock 
   };
 }
 
+function createQueueEntryFromStoredEntry(entry) {
+  const economy = calculatePrize(entry.selectedTable);
+  if (!economy) return null;
+  return {
+    playerPhone: normalizePhone(entry.phone),
+    phoneMasked: maskPhone(entry.phone),
+    replyTo: String(entry.whatsappReplyTo || entry.phone || ''),
+    tableId: tableQueueId(economy.tableValue),
+    tableValue: economy.tableValue,
+    tableAmount: economy.playerEntry,
+    prizeAmount: economy.winnerPrize,
+    entryId: entry.entryId,
+    accessLink: null,
+    queuedAt: entry.queuedAt || entry.createdAt,
+  };
+}
+
 export class MatchQueue {
   constructor({
     entryService,
@@ -60,6 +77,40 @@ export class MatchQueue {
   normalizeTable(tableId) {
     const economy = calculatePrize(tableId);
     return economy ? economy.tableValue : null;
+  }
+
+  syncQueueFromStore(tableId = null) {
+    if (!this.entryService?.listWhatsAppQueueEntries) return;
+    const tables = tableId === null ? [...TABLE_QUEUE_IDS.keys()] : [this.normalizeTable(tableId)];
+    tables.filter(Boolean).forEach((tableValue) => {
+      const queueId = tableQueueId(tableValue);
+      const queue = this.queues.get(queueId);
+      const persistedEntries = this.entryService.listWhatsAppQueueEntries({
+        selectedTable: tableValue,
+        includeSecrets: true,
+      });
+      persistedEntries.forEach((entry) => {
+        const phone = normalizePhone(entry.phone);
+        if (!phone || queue.some((item) => item.playerPhone === phone)) return;
+        const queueEntry = createQueueEntryFromStoredEntry(entry);
+        if (!queueEntry) return;
+        queue.push(queueEntry);
+        queue.sort((left, right) => Date.parse(left.queuedAt) - Date.parse(right.queuedAt));
+        this.logInfo('WHATSAPP_QUEUE_RESTORED_FROM_STORE', {
+          tableId: queueId,
+          tableValue,
+          phone: queueEntry.phoneMasked,
+          entryId: queueEntry.entryId,
+          queueSize: queue.length,
+        });
+      });
+      this.logInfo('WHATSAPP_QUEUE_SYNCED', {
+        tableValue,
+        tableId: queueId,
+        persistedCount: persistedEntries.length,
+        memoryQueueSize: queue.length,
+      });
+    });
   }
 
   findPlayerQueue(playerPhone) {
@@ -145,6 +196,7 @@ export class MatchQueue {
   removeFromQueue(playerPhone, { cancelEntry = true, reason = 'queue_cancelled' } = {}) {
     const phone = normalizePhone(playerPhone);
     if (!phone) return { removed: false };
+    this.syncQueueFromStore();
 
     for (const [queueId, queue] of this.queues.entries()) {
       const index = queue.findIndex((entry) => entry.playerPhone === phone);
@@ -262,8 +314,15 @@ export class MatchQueue {
     const phone = normalizePhone(playerPhone);
     const tableValue = this.normalizeTable(tableId);
     const queueId = tableQueueId(tableValue);
+    this.logInfo('WHATSAPP_QUEUE_JOIN_REQUEST', {
+      tableValueReceived: tableId,
+      tableValue,
+      tableId: queueId,
+      phone: maskPhone(phone),
+    });
     if (!phone) return { blocked: true, reason: 'invalid_phone' };
     if (!tableValue || !queueId) return { blocked: true, reason: 'invalid_table' };
+    this.syncQueueFromStore();
 
     const existingQueue = this.findPlayerQueue(phone);
     if (existingQueue) {
@@ -312,6 +371,11 @@ export class MatchQueue {
       accessLink: approval.accessLink,
       clock: this.clock,
     });
+    this.entryService?.markWhatsAppQueueWaiting?.(queueEntry.entryId, {
+      actor: phone,
+      replyTo: queueEntry.replyTo,
+      source: 'whatsapp-queue',
+    });
     const queue = this.queues.get(queueId);
     queue.push(queueEntry);
 
@@ -348,10 +412,24 @@ export class MatchQueue {
     if (!queueId) return null;
 
     const queue = this.queues.get(queueId);
+    this.logInfo('WHATSAPP_QUEUE_MATCH_ATTEMPT', {
+      tableValueReceived: tableId,
+      tableValue,
+      tableId: queueId,
+      queueSize: queue?.length ?? 0,
+    });
     if (!queue || queue.length < 2) return null;
 
     const players = queue.splice(0, 2);
     const matchId = createId('whatsapp_match');
+    players.forEach((player) => {
+      if (player.accessLink) return;
+      const refreshed = this.entryService?.refreshQueueAccessLink?.(player.entryId, {
+        actor: 'whatsapp-queue',
+        source: 'whatsapp-queue-match',
+      });
+      player.accessLink = refreshed?.accessLink ?? player.accessLink;
+    });
     const roomUrl = players[0].accessLink;
     const match = {
       matchId,
@@ -380,6 +458,8 @@ export class MatchQueue {
       matchId,
       tableId: queueId,
       tableValue,
+      queueSizeAfterMatch: queue.length,
+      accessLinksGenerated: players.every((player) => Boolean(player.accessLink)),
       entryIds: players.map((player) => player.entryId),
       players: players.map((player) => player.phoneMasked),
     });

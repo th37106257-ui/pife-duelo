@@ -36,8 +36,7 @@ function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`) {
   };
 }
 
-function createBot() {
-  const store = new WhatsAppEntryStore();
+function createBot(store = new WhatsAppEntryStore()) {
   const entryService = createEntryService(store);
   const matchQueue = new MatchQueue({
     entryService,
@@ -114,6 +113,45 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   const reservedLinkResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
   assert.equal(reservedLinkResult.type, 'whatsapp_queue_joined');
   assert.notEqual(reservedLinkResult.type, 'whatsapp_queue_active_match_blocked');
+}
+
+{
+  const sharedStore = new WhatsAppEntryStore();
+  const firstRuntime = createBot(sharedStore);
+  const firstPhone = '551188880040';
+  const secondPhone = '551188880041';
+  const firstReplyJid = `${firstPhone}000@lid`;
+  const secondReplyJid = `${secondPhone}000@lid`;
+
+  const firstWaiting = await chooseTable(firstRuntime.bot, firstPhone, '1', '3', firstReplyJid);
+  assert.equal(firstWaiting.type, 'whatsapp_queue_joined');
+  assert.equal(firstWaiting.selectedTable, 10);
+  assert.equal(firstRuntime.matchQueue.getQueueStatus(10).waitingPlayers, 1);
+  assert.ok(sharedStore.listEntries().some((entry) => (
+    entry.phone === firstPhone
+    && entry.selectedTable === 10
+    && entry.status === 'approved_for_queue'
+    && entry.queuedAt
+    && entry.whatsappReplyTo === firstReplyJid
+  )));
+
+  const secondRuntimeAfterMemoryLoss = createBot(sharedStore);
+  assert.equal(secondRuntimeAfterMemoryLoss.matchQueue.getQueueStatus(10).waitingPlayers, 0);
+  const secondMatch = await chooseTable(secondRuntimeAfterMemoryLoss.bot, secondPhone, '1', '3', secondReplyJid);
+  assert.equal(secondMatch.type, 'whatsapp_match_created');
+  assert.ok(secondMatch.matchId);
+  assert.equal(secondRuntimeAfterMemoryLoss.matchQueue.getQueueStatus(10).waitingPlayers, 0);
+
+  const matchMessages = secondRuntimeAfterMemoryLoss.sentMessages
+    .filter((message) => message.text.includes('🎮 Partida encontrada!'));
+  assert.equal(matchMessages.length, 2);
+  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$10')));
+  assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
+  assert.ok(sharedStore.listEntries()
+    .filter((entry) => [firstPhone, secondPhone].includes(entry.phone))
+    .every((entry) => entry.linkSentAt));
 }
 
 {

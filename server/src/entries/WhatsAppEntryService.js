@@ -33,7 +33,7 @@ function auditEntry({ action, actor, at, details = null }) {
 
 export function sanitizeWhatsAppEntry(entry) {
   if (!entry) return null;
-  const { phone, accessTokenHash, queueSocketId, ...safe } = entry;
+  const { phone, accessTokenHash, queueSocketId, whatsappReplyTo, ...safe } = entry;
   return {
     ...structuredClone(safe),
     phoneMasked: maskPhone(phone),
@@ -151,6 +151,7 @@ export class WhatsAppEntryService {
       accessExpiresAt: null,
       queueSocketId: null,
       queuedAt: null,
+      whatsappReplyTo: null,
       linkedMatchId: null,
       roomUrl: null,
       linkSentAt: null,
@@ -253,6 +254,70 @@ export class WhatsAppEntryService {
     }));
   }
 
+  markWhatsAppQueueWaiting(entryId, { actor = 'system', replyTo = null, source = 'whatsapp-queue' } = {}) {
+    return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
+      if (current.status !== 'approved_for_queue') throw new Error('ENTRY_NOT_APPROVED');
+      if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
+      const at = nowIso(this.clock);
+      const alreadyQueued = Boolean(current.queuedAt);
+      return {
+        ...current,
+        queuedAt: current.queuedAt || at,
+        whatsappReplyTo: String(replyTo || current.whatsappReplyTo || current.phone || ''),
+        updatedAt: at,
+        auditLog: alreadyQueued ? current.auditLog : [...current.auditLog, auditEntry({
+          action: 'entry_whatsapp_queue_waiting',
+          actor: String(actor || 'system'),
+          at,
+          details: { source },
+        })],
+      };
+    }));
+  }
+
+  listWhatsAppQueueEntries({ selectedTable = null, includeSecrets = false } = {}) {
+    this.expirePendingEntries();
+    const entries = this.store.listEntries()
+      .filter((entry) => (
+        entry.status === 'approved_for_queue'
+        && entry.queuedAt
+        && !entry.linkSentAt
+        && !entry.linkedMatchId
+        && !entry.queueSocketId
+        && !entry.playingAt
+        && (selectedTable === null || Number(entry.selectedTable) === Number(selectedTable))
+      ))
+      .sort((left, right) => Date.parse(left.queuedAt) - Date.parse(right.queuedAt));
+    return includeSecrets ? entries : entries.map(sanitizeWhatsAppEntry);
+  }
+
+  refreshQueueAccessLink(entryId, { actor = 'system', source = 'whatsapp-queue-match' } = {}) {
+    const token = this.tokenFactory();
+    const at = nowIso(this.clock);
+    const accessExpiresAt = new Date(this.clock() + this.accessTtlMs).toISOString();
+    const updated = this.store.updateEntry(entryId, (current) => {
+      if (current.status !== 'approved_for_queue') throw new Error('ENTRY_NOT_APPROVED');
+      if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
+      return {
+        ...current,
+        accessTokenHash: this.hashToken(token),
+        accessExpiresAt,
+        updatedAt: at,
+        auditLog: [...current.auditLog, auditEntry({
+          action: 'entry_queue_access_refreshed',
+          actor: String(actor || 'system'),
+          at,
+          details: { source },
+        })],
+      };
+    });
+
+    return {
+      entry: sanitizeWhatsAppEntry(updated),
+      accessLink: `${this.publicGameUrl}/?online=1&entry=${encodeURIComponent(token)}`,
+    };
+  }
+
   cancelQueueEntry(entryId, { actor = 'system', source = 'whatsapp-queue-cancel', force = false } = {}) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'approved_for_queue') throw new Error('ENTRY_CANCEL_NOT_ALLOWED');
@@ -264,6 +329,8 @@ export class WhatsAppEntryService {
         status: 'expired',
         accessTokenHash: null,
         accessExpiresAt: null,
+        queuedAt: null,
+        whatsappReplyTo: null,
         updatedAt: at,
         auditLog: [...current.auditLog, auditEntry({
           action: 'entry_queue_cancelled',
