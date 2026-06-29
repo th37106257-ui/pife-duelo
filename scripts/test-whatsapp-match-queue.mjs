@@ -181,6 +181,48 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
 }
 
 {
+  const sharedStore = new WhatsAppEntryStore();
+  const firstRuntime = createBot(sharedStore);
+  const firstPhone = '551188880060';
+  const secondPhone = '551188880061';
+  const firstReplyJid = `${firstPhone}000@lid`;
+  const secondReplyJid = `${secondPhone}000@lid`;
+
+  const firstWaiting = await chooseTable(firstRuntime.bot, firstPhone, '1', '3', firstReplyJid);
+  assert.equal(firstWaiting.type, 'whatsapp_queue_joined');
+  const secondWaitingEntry = firstRuntime.entryService.createEntry({
+    phone: secondPhone,
+    selectedTable: 10,
+    source: 'stuck-queue-test',
+  });
+  const secondApproval = firstRuntime.entryService.approveEntry({
+    entryId: secondWaitingEntry.entryId,
+    actor: 'test',
+    source: 'stuck-queue-test',
+  });
+  firstRuntime.entryService.markWhatsAppQueueWaiting(secondApproval.entry.entryId, {
+    actor: secondPhone,
+    replyTo: secondReplyJid,
+    source: 'stuck-queue-test',
+  });
+
+  const retryRuntime = createBot(sharedStore);
+  await retryRuntime.bot.handleConnectivityWebhook(createWebhook(firstPhone, 'oi', firstReplyJid));
+  await retryRuntime.bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
+  const recoveredMatch = await retryRuntime.bot.handleConnectivityWebhook(createWebhook(firstPhone, '3', firstReplyJid));
+  assert.equal(recoveredMatch.type, 'whatsapp_match_created');
+  assert.equal(recoveredMatch.matchId.startsWith('whatsapp_match-'), true);
+  assert.equal(retryRuntime.matchQueue.getQueueStatus(10).waitingPlayers, 0);
+
+  const matchMessages = retryRuntime.sentMessages
+    .filter((message) => message.text.includes('🎮 Partida encontrada!'));
+  assert.equal(matchMessages.length, 2);
+  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$10')));
+}
+
+{
   const { bot, store, matchQueue, sentMessages } = createBot();
   const cancelPhone = '551188880010';
   await chooseTable(bot, cancelPhone, '1', '3');
