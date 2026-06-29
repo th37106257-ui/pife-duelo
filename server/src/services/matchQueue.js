@@ -210,6 +210,72 @@ export class MatchQueue {
     return null;
   }
 
+  clearPlayerState(playerPhone, { actor = null, reason = 'player_requested_cancel' } = {}) {
+    const phone = normalizePhone(playerPhone);
+    if (!phone) return { cleared: false, reason: 'invalid_phone' };
+    this.syncQueueFromStore();
+
+    const beforeEntries = this.entryService?.getClearableStateForPhone?.(phone) ?? {
+      activeEntries: [],
+      pendingEntries: [],
+    };
+    this.logInfo('WHATSAPP_CLEAR_PLAYER_STATE_BEFORE', {
+      playerId: maskPhone(phone),
+      filas: queueSnapshot(this.queues),
+      activeEntries: beforeEntries.activeEntries,
+      pendingEntries: beforeEntries.pendingEntries,
+    });
+
+    const realActiveMatch = this.findActiveMatch(phone);
+    let removedFromQueues = 0;
+    const removedEntries = [];
+    for (const [, queue] of this.queues.entries()) {
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        const entry = queue[index];
+        if (entry.playerPhone !== phone) continue;
+        queue.splice(index, 1);
+        removedFromQueues += 1;
+        removedEntries.push({
+          tableValue: entry.tableValue,
+          entryId: entry.entryId,
+        });
+      }
+    }
+
+    let clearedEntries = { cleared: 0, skipped: 0, entries: [] };
+    if (!realActiveMatch) {
+      this.activeMatchesByPhone.delete(phone);
+      clearedEntries = this.entryService?.clearPlayerEntries?.(phone, {
+        actor: actor || phone,
+        source: reason,
+      }) ?? clearedEntries;
+    }
+
+    const afterEntries = this.entryService?.getClearableStateForPhone?.(phone) ?? {
+      activeEntries: [],
+      pendingEntries: [],
+    };
+    this.logInfo('WHATSAPP_CLEAR_PLAYER_STATE_AFTER', {
+      playerId: maskPhone(phone),
+      filas: queueSnapshot(this.queues),
+      activeEntries: afterEntries.activeEntries,
+      pendingEntries: afterEntries.pendingEntries,
+      removedFromQueues,
+      removedEntries,
+      clearedEntries,
+      realMatchPreserved: Boolean(realActiveMatch),
+    });
+
+    return {
+      cleared: removedFromQueues > 0 || clearedEntries.cleared > 0,
+      removedFromQueues,
+      removedEntries,
+      clearedEntries,
+      realMatchPreserved: Boolean(realActiveMatch),
+      activeMatch: realActiveMatch,
+    };
+  }
+
   removeFromQueue(playerPhone, { cancelEntry = true, reason = 'queue_cancelled' } = {}) {
     const phone = normalizePhone(playerPhone);
     if (!phone) return { removed: false };

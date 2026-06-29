@@ -372,6 +372,27 @@ export class WhatsAppPaymentBot {
       return { type: 'entry_admin_pending_list', decision: 'reply_sent', reason: 'pending_entries_listed' };
     }
 
+    const resetMatch = text.match(/^(?:\/admin\s+)?resetar\s+(\d{8,15})$/i);
+    if (resetMatch) {
+      const targetPhone = normalizePhone(resetMatch[1]);
+      const result = this.matchQueue?.clearPlayerState?.(targetPhone, {
+        actor: phone,
+        reason: 'whatsapp_admin_reset',
+      });
+      await this.send(replyTo, [
+        `✅ Estado limpo para ${maskPhone(targetPhone)}.`,
+        `Filas removidas: ${result?.removedFromQueues ?? 0}`,
+        `Entradas canceladas: ${result?.clearedEntries?.cleared ?? 0}`,
+        result?.realMatchPreserved ? 'Partida real preservada.' : 'Nenhuma partida real foi cancelada.',
+      ].join('\n'));
+      return {
+        type: 'entry_admin_player_reset',
+        decision: 'reply_sent',
+        reason: 'player_state_reset_by_admin',
+        targetPhone: maskPhone(targetPhone),
+      };
+    }
+
     const approveMatch = text.match(/^\/admin\s+liberar\s+(E?\d+)$/i);
     if (approveMatch) {
       const entryId = approveMatch[1].toUpperCase().startsWith('E') ? approveMatch[1].toUpperCase() : `E${approveMatch[1]}`;
@@ -420,7 +441,7 @@ export class WhatsAppPaymentBot {
       }
     }
 
-    await this.send(replyTo, 'Comando admin inv\u00e1lido. Use /admin entradas, /admin liberar ENTRY_ID ou /admin rejeitar ENTRY_ID motivo.');
+    await this.send(replyTo, 'Comando admin inválido. Use /admin entradas, /admin liberar ENTRY_ID, /admin rejeitar ENTRY_ID motivo ou resetar NUMERO.');
     return { type: 'entry_admin_invalid_command', decision: 'reply_sent', reason: 'invalid_admin_command' };
   }
 
@@ -456,10 +477,7 @@ export class WhatsAppPaymentBot {
   }
 
   safeQueueCancelledText() {
-    return [
-      '✅ Você saiu da fila.',
-      'Voltando ao menu principal.',
-    ].join('\n');
+    return '\u2705 Sua entrada foi cancelada. Voc\u00ea voltou ao menu.';
   }
 
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
@@ -479,27 +497,41 @@ export class WhatsAppPaymentBot {
 
     const command = normalizeCommand(incoming.text);
     const replyTo = incoming.replyTo || incoming.phone;
-    if (command.startsWith('/admin')) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
-    const queuedPlayer = this.matchQueue?.findPlayerQueue?.(incoming.phone);
-    if ((MENU_COMMANDS.has(command) || CANCEL_QUEUE_COMMANDS.has(command)) && queuedPlayer) {
-      this.matchQueue.removeFromQueue(incoming.phone, { reason: `whatsapp_${command}` });
+    if (command.startsWith('/admin') || command.startsWith('resetar ')) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
+    if (MENU_COMMANDS.has(command) || CANCEL_QUEUE_COMMANDS.has(command)) {
+      const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {
+        actor: incoming.phone,
+        reason: `whatsapp_${command}`,
+      });
       this.setConversationState(incoming.phone, 'idle');
-      await this.send(replyTo, [
-        this.safeQueueCancelledText(),
-        '',
-        this.safeMenuText(),
-      ].join('\n'));
-      return {
-        type: 'whatsapp_queue_cancelled',
-        decision: 'reply_sent',
-        reason: command === 'menu' ? 'menu_command_cancelled_queue' : 'queue_cancel_command',
-        state: 'idle',
-        selectedTable: queuedPlayer.tableValue,
-        originIp,
-      };
-    }
-    if (CANCEL_QUEUE_COMMANDS.has(command)) {
-      this.setConversationState(incoming.phone, 'idle');
+      if (clearResult?.realMatchPreserved && !clearResult.cleared) {
+        await this.send(replyTo, this.safeActiveMatchText());
+        return {
+          type: 'whatsapp_queue_cancel_real_match_preserved',
+          decision: 'reply_sent',
+          reason: 'real_match_not_cancelled',
+          state: 'idle',
+          originIp,
+        };
+      }
+      if (clearResult?.cleared) {
+        await this.send(replyTo, [
+          this.safeQueueCancelledText(),
+          '',
+          this.safeMenuText(),
+        ].join('\n'));
+        return {
+          type: 'whatsapp_queue_cancelled',
+          decision: 'reply_sent',
+          reason: command === 'menu' ? 'menu_command_cleared_state' : 'queue_cancel_command_cleared_state',
+          state: 'idle',
+          originIp,
+        };
+      }
+      if (MENU_COMMANDS.has(command)) {
+        await this.send(replyTo, this.safeMenuText());
+        return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
+      }
       await this.send(replyTo, [
         'Você não está aguardando em nenhuma fila.',
         '',
@@ -507,12 +539,6 @@ export class WhatsAppPaymentBot {
       ].join('\n'));
       return { type: 'whatsapp_queue_cancel_empty', decision: 'reply_sent', reason: 'player_not_in_queue', state: 'idle', originIp };
     }
-    if (MENU_COMMANDS.has(command)) {
-      this.setConversationState(incoming.phone, 'idle');
-      await this.send(replyTo, this.safeMenuText());
-      return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
-    }
-
     const currentState = this.getConversationState(incoming.phone);
     if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
       const selectedTable = SAFE_TABLES.get(command);

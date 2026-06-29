@@ -315,10 +315,10 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const cancelResult = await bot.handleConnectivityWebhook(createWebhook(cancelPhone, 'sair'));
   assert.equal(cancelResult.type, 'whatsapp_queue_cancelled');
   assert.equal(matchQueue.getQueueStatus(10).waitingPlayers, 0);
-  assert.match(sentMessages.at(-1).text, /Você saiu da fila/);
+  assert.match(sentMessages.at(-1).text, /entrada foi cancelada/);
   assert.match(sentMessages.at(-1).text, /Bem-vindo ao Pife Duelo/);
   assert.equal(store.listEntries().at(-1).status, 'expired');
-  assert.ok(store.listEntries().at(-1).auditLog.some((item) => item.action === 'entry_queue_cancelled'));
+  assert.ok(store.listEntries().at(-1).auditLog.some((item) => item.action === 'entry_player_state_cleared'));
 
   await bot.handleConnectivityWebhook(createWebhook(cancelPhone, '1'));
   const rejoinResult = await bot.handleConnectivityWebhook(createWebhook(cancelPhone, '4'));
@@ -333,6 +333,41 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const emptyCancel = await bot.handleConnectivityWebhook(createWebhook('551188880011', 'cancelar'));
   assert.equal(emptyCancel.type, 'whatsapp_queue_cancel_empty');
   assert.match(sentMessages.at(-1).text, /não está aguardando/);
+}
+
+{
+  const { bot, store, entryService, matchQueue, sentMessages } = createBot();
+  const lockedPhone = '551188880090';
+  entryService.createEntry({ phone: lockedPhone, selectedTable: 5, source: 'locked-entry-test' });
+
+  const menuClear = await bot.handleConnectivityWebhook(createWebhook(lockedPhone, 'menu'));
+  assert.equal(menuClear.type, 'whatsapp_queue_cancelled');
+  assert.equal(store.listEntries().at(-1).status, 'expired');
+  assert.ok(store.listEntries().at(-1).auditLog.some((item) => item.action === 'entry_player_state_cleared'));
+  assert.match(sentMessages.at(-1).text, /entrada foi cancelada/);
+
+  await bot.handleConnectivityWebhook(createWebhook(lockedPhone, '1'));
+  const newTable = await bot.handleConnectivityWebhook(createWebhook(lockedPhone, '3'));
+  assert.equal(newTable.type, 'whatsapp_queue_joined');
+  assert.equal(newTable.selectedTable, 10);
+  assert.equal(matchQueue.getQueueStatus(10).waitingPlayers, 1);
+}
+
+{
+  const { bot, store, entryService, sentMessages } = createBot();
+  const adminPhone = '5511999990000';
+  const resetPhone = '551188880091';
+  entryService.createEntry({ phone: resetPhone, selectedTable: 20, source: 'admin-reset-test' });
+
+  const unauthorized = await bot.handleConnectivityWebhook(createWebhook('551177770000', `resetar ${resetPhone}`));
+  assert.equal(unauthorized.type, 'entry_admin_unauthorized');
+  assert.match(sentMessages.at(-1).text, /Comando/);
+  assert.equal(store.listEntries().at(-1).status, 'pending_admin_validation');
+
+  const resetResult = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `resetar ${resetPhone}`));
+  assert.equal(resetResult.type, 'entry_admin_player_reset');
+  assert.equal(store.listEntries().at(-1).status, 'expired');
+  assert.ok(store.listEntries().at(-1).auditLog.some((item) => item.action === 'entry_player_state_cleared'));
 }
 
 {
@@ -358,7 +393,9 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.match(sentMessages.at(-1).text, /Você entrou na fila da Mesa R\$10/);
   assert.notEqual(staleJoin.type, 'whatsapp_queue_active_match_blocked');
   assert.equal(store.getEntry(staleEntry.entryId).status, 'expired');
-  assert.ok(store.getEntry(staleEntry.entryId).auditLog.some((item) => item.action === 'entry_queue_cancelled'));
+  assert.ok(store.getEntry(staleEntry.entryId).auditLog.some((item) => (
+    item.action === 'entry_queue_cancelled' || item.action === 'entry_player_state_cleared'
+  )));
   assert.equal(matchQueue.getQueueStatus(10).waitingPlayers, 1);
 }
 

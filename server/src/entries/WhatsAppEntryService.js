@@ -22,6 +22,7 @@ const ACTIVE_STATUSES = new Set([
 ]);
 
 const TOKEN_VALID_STATUSES = new Set(['approved_for_queue', 'queued', 'linked', 'playing']);
+const CLEARABLE_STATUSES = new Set(['pending_admin_validation', 'approved_for_queue', 'queued']);
 
 function nowIso(clock) {
   return new Date(clock()).toISOString();
@@ -127,6 +128,81 @@ export class WhatsAppEntryService {
       .filter((item) => item.phone === normalizedPhone && ACTIVE_STATUSES.has(item.status))
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
     return entry ? sanitizeWhatsAppEntry(entry) : null;
+  }
+
+  listEntriesForPhone(phone, { includeSecrets = false } = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return [];
+    this.expirePendingEntries();
+    const entries = this.store.listEntries()
+      .filter((item) => item.phone === normalizedPhone)
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    return includeSecrets ? entries : entries.map(sanitizeWhatsAppEntry);
+  }
+
+  getClearableStateForPhone(phone) {
+    const entries = this.listEntriesForPhone(phone);
+    return {
+      activeEntries: entries.filter((entry) => ACTIVE_STATUSES.has(entry.status)),
+      pendingEntries: entries.filter((entry) => entry.status === 'pending_admin_validation'),
+    };
+  }
+
+  clearPlayerEntries(phone, { actor = 'system', source = 'clear-player-state' } = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return { cleared: 0, skipped: 0, entries: [] };
+    this.expirePendingEntries();
+    const at = nowIso(this.clock);
+    const result = {
+      cleared: 0,
+      skipped: 0,
+      entries: [],
+    };
+
+    this.store.listEntries()
+      .filter((entry) => entry.phone === normalizedPhone && ACTIVE_STATUSES.has(entry.status))
+      .forEach((entry) => {
+        const isRealMatch = Boolean(entry.linkedMatchId || entry.playingAt || entry.status === 'playing' || entry.status === 'linked');
+        if (isRealMatch || !CLEARABLE_STATUSES.has(entry.status)) {
+          result.skipped += 1;
+          result.entries.push({
+            entryId: entry.entryId,
+            status: entry.status,
+            selectedTable: entry.selectedTable,
+            cleared: false,
+            reason: isRealMatch ? 'real_match_not_cancelled' : 'status_not_clearable',
+          });
+          return;
+        }
+
+        const updated = this.store.updateEntry(entry.entryId, (current) => ({
+          ...current,
+          status: 'expired',
+          accessTokenHash: null,
+          accessExpiresAt: null,
+          queueSocketId: null,
+          queuedAt: null,
+          whatsappReplyTo: null,
+          whatsappMatchId: null,
+          roomUrl: null,
+          updatedAt: at,
+          auditLog: [...current.auditLog, auditEntry({
+            action: 'entry_player_state_cleared',
+            actor: String(actor || 'system'),
+            at,
+            details: { source },
+          })],
+        }));
+        result.cleared += 1;
+        result.entries.push({
+          entryId: updated.entryId,
+          status: updated.status,
+          selectedTable: updated.selectedTable,
+          cleared: true,
+        });
+      });
+
+    return result;
   }
 
   createEntry({ phone, selectedTable, source = 'whatsapp' }) {
