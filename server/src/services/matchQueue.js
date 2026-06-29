@@ -98,7 +98,7 @@ export class MatchQueue {
     return null;
   }
 
-  removeFromQueue(playerPhone) {
+  removeFromQueue(playerPhone, { cancelEntry = true, reason = 'queue_cancelled' } = {}) {
     const phone = normalizePhone(playerPhone);
     if (!phone) return { removed: false };
 
@@ -106,11 +106,28 @@ export class MatchQueue {
       const index = queue.findIndex((entry) => entry.playerPhone === phone);
       if (index >= 0) {
         const [entry] = queue.splice(index, 1);
+        if (cancelEntry && entry.entryId) {
+          try {
+            this.entryService?.cancelQueueEntry?.(entry.entryId, {
+              actor: phone,
+              source: reason,
+            });
+          } catch (error) {
+            this.logWarn('WHATSAPP_QUEUE_ENTRY_CANCEL_FAILED', {
+              tableId: queueId,
+              tableValue: entry.tableValue,
+              phone: entry.phoneMasked,
+              entryId: entry.entryId,
+              reason: error.message,
+            });
+          }
+        }
         this.logInfo('WHATSAPP_QUEUE_LEFT', {
           tableId: queueId,
           tableValue: entry.tableValue,
           phone: entry.phoneMasked,
           entryId: entry.entryId,
+          reason,
         });
         return { removed: true, entry };
       }

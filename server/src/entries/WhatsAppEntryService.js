@@ -253,6 +253,27 @@ export class WhatsAppEntryService {
     }));
   }
 
+  cancelQueueEntry(entryId, { actor = 'system', source = 'whatsapp-queue-cancel' } = {}) {
+    return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
+      if (current.status !== 'approved_for_queue') throw new Error('ENTRY_CANCEL_NOT_ALLOWED');
+      if (current.linkSentAt || current.linkedMatchId || current.roomUrl) throw new Error('ENTRY_ALREADY_LINKED');
+      const at = nowIso(this.clock);
+      return {
+        ...current,
+        status: 'expired',
+        accessTokenHash: null,
+        accessExpiresAt: null,
+        updatedAt: at,
+        auditLog: [...current.auditLog, auditEntry({
+          action: 'entry_queue_cancelled',
+          actor: String(actor || 'system'),
+          at,
+          details: { source },
+        })],
+      };
+    }));
+  }
+
   rollbackApprovalAfterDeliveryFailure(entryId, { error = null } = {}) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'approved_for_queue' || current.linkSentAt) throw new Error('ENTRY_APPROVAL_ROLLBACK_BLOCKED');

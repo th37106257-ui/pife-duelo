@@ -75,13 +75,18 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   const firstResult = await chooseTable(bot, firstPhone, '1', '1', firstReplyJid);
   assert.equal(firstResult.type, 'whatsapp_queue_joined');
   assert.equal(firstResult.selectedTable, 2);
-  assert.match(sentMessages.at(-1).text, /Você entrou na fila da mesa R\$2,00/);
+  assert.match(sentMessages.at(-1).text, /Você entrou na fila da Mesa R\$2/);
+  assert.match(sentMessages.at(-1).text, /Para cancelar, digite sair ou menu/);
   assert.doesNotMatch(sentMessages.at(-1).text, /Pix|chave|https?:\/\//i);
   assert.equal(matchQueue.getQueueStatus(2).waitingPlayers, 1);
 
   const duplicateResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
   assert.equal(duplicateResult.type, 'whatsapp_queue_duplicate');
   assert.equal(sentMessages.at(-1).text, '⏳ Você já está aguardando um adversário nesta mesa.');
+
+  const otherTableBlocked = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '2', firstReplyJid));
+  assert.equal(otherTableBlocked.type, 'whatsapp_queue_other_table_blocked');
+  assert.match(sentMessages.at(-1).text, /outra mesa/);
 
   const secondResult = await chooseTable(bot, secondPhone, '1', '1', secondReplyJid);
   assert.equal(secondResult.type, 'whatsapp_match_created');
@@ -92,6 +97,8 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$2')));
+  assert.ok(matchMessages.every((message) => message.text.includes('Entre na sala pelo link abaixo:')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
   assert.ok(matchMessages.every((message) => !/Pix|chave/i.test(message.text)));
 
@@ -107,6 +114,35 @@ async function chooseTable(bot, phone, menuOption = '1', tableOption = '1', repl
   const activeResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
   assert.equal(activeResult.type, 'whatsapp_queue_active_match_blocked');
   assert.equal(sentMessages.at(-1).text, '⚠️ Você já está em uma partida ativa.');
+}
+
+{
+  const { bot, store, matchQueue, sentMessages } = createBot();
+  const cancelPhone = '551188880010';
+  await chooseTable(bot, cancelPhone, '1', '3');
+  assert.equal(matchQueue.getQueueStatus(10).waitingPlayers, 1);
+
+  const cancelResult = await bot.handleConnectivityWebhook(createWebhook(cancelPhone, 'sair'));
+  assert.equal(cancelResult.type, 'whatsapp_queue_cancelled');
+  assert.equal(matchQueue.getQueueStatus(10).waitingPlayers, 0);
+  assert.match(sentMessages.at(-1).text, /Você saiu da fila/);
+  assert.match(sentMessages.at(-1).text, /Bem-vindo ao Pife Duelo/);
+  assert.equal(store.listEntries().at(-1).status, 'expired');
+  assert.ok(store.listEntries().at(-1).auditLog.some((item) => item.action === 'entry_queue_cancelled'));
+
+  await bot.handleConnectivityWebhook(createWebhook(cancelPhone, '1'));
+  const rejoinResult = await bot.handleConnectivityWebhook(createWebhook(cancelPhone, '4'));
+  assert.equal(rejoinResult.type, 'whatsapp_queue_joined');
+  assert.equal(rejoinResult.selectedTable, 20);
+  assert.equal(matchQueue.getQueueStatus(20).waitingPlayers, 1);
+
+  const menuCancel = await bot.handleConnectivityWebhook(createWebhook(cancelPhone, 'menu'));
+  assert.equal(menuCancel.type, 'whatsapp_queue_cancelled');
+  assert.equal(matchQueue.getQueueStatus(20).waitingPlayers, 0);
+
+  const emptyCancel = await bot.handleConnectivityWebhook(createWebhook('551188880011', 'cancelar'));
+  assert.equal(emptyCancel.type, 'whatsapp_queue_cancel_empty');
+  assert.match(sentMessages.at(-1).text, /não está aguardando/);
 }
 
 {
