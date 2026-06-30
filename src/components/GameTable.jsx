@@ -101,6 +101,7 @@ export default function GameTable() {
   const [dragDiscardState, setDragDiscardState] = useState({ active: false, over: false });
   const [handDragging, setHandDragging] = useState(false);
   const [isResolvingAction, setIsResolvingAction] = useState(false);
+  const [testMenuMode, setTestMenuMode] = useState(null);
   const currentTurn = game.currentTurn;
   const activeActor = currentTurn;
   const playerTurn = currentTurn === 'player';
@@ -534,6 +535,82 @@ export default function GameTable() {
   const goToPaidFlowFromTestMode = useCallback(() => {
     exitTestMode({ target: 'paid' });
   }, [exitTestMode]);
+
+  const openTestModeMenu = useCallback(() => {
+    if (!isTestMode) return;
+    console.info('TEST_MODE_MENU_OPEN', {
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    setTestMenuMode('menu');
+  }, [isTestMode, matchMeta.matchId]);
+
+  const closeTestModeMenu = useCallback(({ action = 'continue' } = {}) => {
+    if (!isTestMode) return;
+    console.info('TEST_MODE_MENU_ACTION', {
+      action,
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    console.info('TEST_MODE_MENU_CLOSE', {
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    setTestMenuMode(null);
+  }, [isTestMode, matchMeta.matchId]);
+
+  const showTestModeRules = useCallback(() => {
+    if (!isTestMode) return;
+    console.info('TEST_MODE_MENU_ACTION', {
+      action: 'rules',
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    setTestMenuMode('rules');
+  }, [isTestMode, matchMeta.matchId]);
+
+  const restartTestFromMenu = useCallback(() => {
+    if (!isTestMode) return;
+    console.info('TEST_MODE_MENU_ACTION', {
+      action: 'restart_test',
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    console.info('TEST_MODE_MENU_CLOSE', {
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    setTestMenuMode(null);
+    restart();
+  }, [isTestMode, matchMeta.matchId, restart]);
+
+  const goToPaidFlowFromTestMenu = useCallback(() => {
+    if (!isTestMode) return;
+    console.info('TEST_MODE_MENU_ACTION', {
+      action: 'go_paid',
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    console.info('TEST_MODE_MENU_CLOSE', {
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    goToPaidFlowFromTestMode();
+  }, [goToPaidFlowFromTestMode, isTestMode, matchMeta.matchId]);
+
+  const exitTestFromMenu = useCallback(() => {
+    if (!isTestMode) return;
+    console.info('TEST_MODE_MENU_ACTION', {
+      action: 'exit_test',
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    console.info('TEST_MODE_MENU_CLOSE', {
+      mode: 'test',
+      matchId: matchMeta.matchId,
+    });
+    exitTestMode({ target: 'menu' });
+  }, [exitTestMode, isTestMode, matchMeta.matchId]);
 
   useEffect(() => {
     if (!isTestMode || !result) return;
@@ -1188,7 +1265,7 @@ export default function GameTable() {
           type="button"
           className="chrome-button menu-button"
           aria-label="Menu"
-          onClick={isTestMode ? () => exitTestMode({ target: 'menu' }) : undefined}
+          onClick={isTestMode ? openTestModeMenu : undefined}
         >
           <span />
           <span />
@@ -1223,6 +1300,68 @@ export default function GameTable() {
             onExitToMenu={() => exitTestMode({ target: 'menu' })}
             onGoToPaidFlow={goToPaidFlowFromTestMode}
           />
+          {isTestMode && testMenuMode ? (
+            <div
+              className="match-menu-overlay"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Menu do modo teste"
+              onPointerDown={(event) => {
+                if (event.target === event.currentTarget) closeTestModeMenu({ action: 'continue' });
+              }}
+            >
+              {testMenuMode === 'menu' ? (
+                <aside className="match-menu-panel test-mode-menu-panel">
+                  <header>
+                    <div>
+                      <span>Pife Duelo — Modo Teste</span>
+                      <h2>Menu</h2>
+                    </div>
+                    <button
+                      type="button"
+                      className="test-mode-menu-close"
+                      onClick={() => closeTestModeMenu({ action: 'continue' })}
+                    >
+                      Fechar
+                    </button>
+                  </header>
+                  <div className="test-mode-menu-info">
+                    <span>Modo gratuito</span>
+                    <span>Sem Pix</span>
+                    <span>Sem aposta</span>
+                    <span>Sem prêmio</span>
+                    <span>Apenas para conhecer a gameplay</span>
+                    <span>18+ / jogue com responsabilidade</span>
+                  </div>
+                  <button type="button" className="test-mode-menu-primary" onClick={() => closeTestModeMenu({ action: 'continue' })}>Continuar jogando</button>
+                  <button type="button" onClick={showTestModeRules}>Regras rápidas</button>
+                  <button type="button" onClick={restartTestFromMenu}>Reiniciar teste</button>
+                  <button type="button" onClick={goToPaidFlowFromTestMenu}>Jogar valendo</button>
+                  <button type="button" className="danger" onClick={exitTestFromMenu}>Sair do teste / Voltar ao início</button>
+                </aside>
+              ) : null}
+
+              {testMenuMode === 'rules' ? (
+                <section className="match-rules-panel test-mode-rules-panel">
+                  <header>
+                    <button type="button" onClick={() => setTestMenuMode('menu')}>Voltar</button>
+                    <h2>Regras rápidas</h2>
+                  </header>
+                  <div className="match-rules-content">
+                    <ul>
+                      <li>Forme trincas ou sequências.</li>
+                      <li>Organize suas cartas.</li>
+                      <li>Compre do monte ou descarte.</li>
+                      <li>Descarte uma carta.</li>
+                      <li>Bata quando sua mão estiver completa.</li>
+                    </ul>
+                    <p>Modo gratuito, sem Pix, sem aposta e sem prêmio.</p>
+                    <p>🔞 Apenas para maiores de 18 anos. Jogue com responsabilidade.</p>
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          ) : null}
 
           <OpponentHand
             count={waitingCards.length}
