@@ -40,6 +40,7 @@ const connectivityBot = new WhatsAppPaymentBot({
     isConfigured: () => true,
     sendText: async (phone, text) => connectivityMessages.push({ phone, text }),
   },
+  publicGameUrl: 'https://pife-duelo.example',
 });
 
 function advance() {
@@ -79,7 +80,8 @@ const connectivityReply = await sendConnectivity('oi');
 assert.equal(connectivityReply.type, 'whatsapp_menu_sent');
 assert.equal(connectivityReply.state, 'idle');
 assert.match(connectivityMessages.at(-1).text, /Bem-vindo ao Pife Duelo/);
-assert.match(connectivityMessages.at(-1).text, /1\uFE0F\u20E3 Jogar/);
+assert.match(connectivityMessages.at(-1).text, /1\uFE0F\u20E3 Jogar valendo/);
+assert.match(connectivityMessages.at(-1).text, /2\uFE0F\u20E3 Modo teste gr/);
 
 const safeTables = await sendConnectivity('1');
 assert.equal(safeTables.type, 'whatsapp_tables_sent');
@@ -104,8 +106,12 @@ for (const [option, amount] of [['2', 5], ['3', 10], ['4', 20]]) {
 }
 
 await sendConnectivity('ol\u00e1');
-const tablesByOptionTwo = await sendConnectivity('2');
-assert.equal(tablesByOptionTwo.type, 'whatsapp_tables_sent');
+const testModeByOptionTwo = await sendConnectivity('2');
+assert.equal(testModeByOptionTwo.type, 'whatsapp_test_mode_link_sent');
+assert.equal(testModeByOptionTwo.testModeLink, 'https://pife-duelo.example/?mode=test');
+assert.match(connectivityMessages.at(-1).text, /Modo Teste gr/);
+assert.match(connectivityMessages.at(-1).text, /Sem Pix/);
+assert.match(connectivityMessages.at(-1).text, /https:\/\/pife-duelo\.example\/\?mode=test/);
 
 await sendConnectivity('come\u00e7ar');
 const safeRules = await sendConnectivity('3');
@@ -138,7 +144,7 @@ assert.equal(connectivityMessages.at(-1).phone, '210987654321@lid', 'Quando remo
 assert.equal(connectivityBot.getConversationState(playerPhone).state, 'idle');
 
 assert.equal(store.listPayments().length, 0, 'Menu seguro n\u00e3o cria pagamento.');
-assert.ok(connectivityMessages.every(({ text }) => !/chave pix|access=|https?:\/\//i.test(text)), 'Menu seguro n\u00e3o envia Pix nem link.');
+assert.ok(connectivityMessages.every(({ text }) => !/chave pix|access=/i.test(text)), 'Menu seguro n\u00e3o envia Pix nem link pago.');
 
 const outgoingDiagnostic = buildEvolutionMessageDiagnostic({
   ...webhook({ phone: playerPhone, id: 'outgoing-1', text: 'oi' }),

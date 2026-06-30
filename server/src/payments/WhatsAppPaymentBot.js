@@ -213,6 +213,7 @@ export class WhatsAppPaymentBot {
     pixKey,
     pixReceiver,
     adminNumbers = [],
+    publicGameUrl = '',
     clock = Date.now,
   } = {}) {
     this.paymentService = paymentService;
@@ -223,6 +224,7 @@ export class WhatsAppPaymentBot {
     this.pixKey = String(pixKey || '');
     this.pixReceiver = String(pixReceiver || '');
     this.adminNumbers = adminNumbers.map(normalizePhone).filter(Boolean);
+    this.publicGameUrl = String(publicGameUrl || '').replace(/\/$/, '');
     this.clock = clock;
     this.rateLimits = new Map();
     this.recentFingerprints = new Map();
@@ -274,10 +276,32 @@ export class WhatsAppPaymentBot {
       '',
       'Escolha uma op\u00e7\u00e3o:',
       '',
-      '1\uFE0F\u20E3 Jogar',
-      '2\uFE0F\u20E3 Ver mesas',
+      '1\uFE0F\u20E3 Jogar valendo',
+      '2\uFE0F\u20E3 Modo teste gr\u00e1tis',
       '3\uFE0F\u20E3 Regras',
       '4\uFE0F\u20E3 Suporte',
+    ].join('\n');
+  }
+
+  buildTestModeLink() {
+    if (!this.publicGameUrl) return '/?mode=test';
+    return `${this.publicGameUrl}/?mode=test`;
+  }
+
+  safeTestModeText(testModeLink = this.buildTestModeLink()) {
+    return [
+      '\u{1F3AE} Modo Teste gr\u00e1tis liberado!',
+      '',
+      'Aqui voc\u00ea pode conhecer o Pife Duelo sem pagar nada e sem pr\u00eamio.',
+      '',
+      '\u2705 Sem Pix',
+      '\u2705 Sem aposta',
+      '\u2705 Sem pr\u00eamio',
+      '\u2705 Apenas para testar a gameplay',
+      '',
+      'Clique no link abaixo para jogar no modo teste:',
+      '',
+      testModeLink,
     ].join('\n');
   }
 
@@ -719,10 +743,33 @@ export class WhatsAppPaymentBot {
       };
     }
 
-    if (command === '1' || command === '2') {
+    if (command === '1') {
       this.setConversationState(incoming.phone, 'choosing_table');
       await this.send(replyTo, this.safeTablesText());
       return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
+    }
+
+    if (command === '2') {
+      const testModeLink = this.buildTestModeLink();
+      this.matchQueue?.logInfo?.('WHATSAPP_TEST_MODE_REQUEST', {
+        playerId: maskPhone(incoming.phone),
+        phone: maskPhone(incoming.phone),
+        testModeLink,
+      });
+      this.setConversationState(incoming.phone, 'idle');
+      await this.send(replyTo, this.safeTestModeText(testModeLink));
+      this.matchQueue?.logInfo?.('WHATSAPP_TEST_MODE_LINK_SENT', {
+        playerId: maskPhone(incoming.phone),
+        link: testModeLink,
+      });
+      return {
+        type: 'whatsapp_test_mode_link_sent',
+        decision: 'reply_sent',
+        reason: 'test_mode_requested',
+        state: 'idle',
+        testModeLink,
+        originIp,
+      };
     }
 
     if (command === '3') {

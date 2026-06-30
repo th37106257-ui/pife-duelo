@@ -57,6 +57,7 @@ function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
       sendText: sendText ?? (async (phone, text) => sentMessages.push({ phone, text })),
     },
     adminNumbers: ['5511999990000'],
+    publicGameUrl: 'https://pife-duelo.example',
     clock: () => now,
   });
 
@@ -77,6 +78,36 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   await bot.handleConnectivityWebhook(createWebhook(phone, 'oi', replyJid, { senderJid, ownerJid }));
   await bot.handleConnectivityWebhook(createWebhook(phone, menuOption, replyJid, { senderJid, ownerJid }));
   return bot.handleConnectivityWebhook(createWebhook(phone, tableOption, replyJid, { senderJid, ownerJid }));
+}
+
+{
+  const { bot, store, matchQueue, sentMessages, logs } = createBot();
+  const testPhone = '551188889900';
+
+  const menuResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'menu'));
+  assert.equal(menuResult.type, 'whatsapp_menu_sent');
+  assert.match(sentMessages.at(-1).text, /Jogar valendo/);
+  assert.match(sentMessages.at(-1).text, /Modo teste gr/);
+
+  const testModeResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, '2'));
+  assert.equal(testModeResult.type, 'whatsapp_test_mode_link_sent');
+  assert.equal(testModeResult.testModeLink, 'https://pife-duelo.example/?mode=test');
+  assert.match(sentMessages.at(-1).text, /Modo Teste gr/);
+  assert.match(sentMessages.at(-1).text, /Sem Pix/);
+  assert.match(sentMessages.at(-1).text, /sem pagar nada/i);
+  assert.match(sentMessages.at(-1).text, /https:\/\/pife-duelo\.example\/\?mode=test/);
+  assert.equal(store.listEntries().length, 0);
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+  assert.ok(logs.some((log) => log.event === 'WHATSAPP_TEST_MODE_REQUEST'));
+  assert.ok(logs.some((log) => log.event === 'WHATSAPP_TEST_MODE_LINK_SENT'));
+
+  const paidTables = await bot.handleConnectivityWebhook(createWebhook(testPhone, '1'));
+  assert.equal(paidTables.type, 'whatsapp_tables_sent');
+  const paidQueue = await bot.handleConnectivityWebhook(createWebhook(testPhone, '2'));
+  assert.equal(paidQueue.type, 'whatsapp_queue_joined');
+  assert.equal(paidQueue.selectedTable, 5);
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 1);
+  assert.equal(store.listEntries().length, 1);
 }
 
 {
