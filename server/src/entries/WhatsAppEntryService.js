@@ -11,6 +11,12 @@ export const WHATSAPP_ENTRY_STATUSES = new Set([
   'finished',
   'rejected',
   'expired',
+  'cancelled_by_player',
+  'cancelled_by_admin',
+  'refund_pending',
+  'requeued_after_opponent_cancel',
+  'admin_review',
+  'abandoned_before_start',
 ]);
 
 const ACTIVE_STATUSES = new Set([
@@ -19,10 +25,35 @@ const ACTIVE_STATUSES = new Set([
   'queued',
   'linked',
   'playing',
+  'requeued_after_opponent_cancel',
+  'admin_review',
 ]);
 
-const TOKEN_VALID_STATUSES = new Set(['approved_for_queue', 'queued', 'linked', 'playing']);
+const TOKEN_VALID_STATUSES = new Set(['approved_for_queue', 'queued', 'linked', 'playing', 'requeued_after_opponent_cancel']);
 const CLEARABLE_STATUSES = new Set(['pending_admin_validation', 'approved_for_queue', 'queued']);
+
+function isPaidConfirmedLikeEntry(entry) {
+  const approvedBy = String(entry?.approvedBy || '');
+  const adminConfirmed = Boolean(
+    entry?.approvedAt
+    && approvedBy
+    && approvedBy !== 'whatsapp-queue'
+    && approvedBy !== 'test',
+  );
+  const matchLinkSent = Boolean(entry?.linkSentAt && entry?.whatsappMatchId);
+  return Boolean(
+    adminConfirmed
+    || matchLinkSent
+    || (
+      entry?.approvedAt
+      && (
+      entry.status === 'requeued_after_opponent_cancel'
+      || entry.status === 'linked'
+      || entry.status === 'playing'
+      )
+    ),
+  );
+}
 
 function nowIso(clock) {
   return new Date(clock()).toISOString();
@@ -150,12 +181,13 @@ export class WhatsAppEntryService {
 
   clearPlayerEntries(phone, { actor = 'system', source = 'clear-player-state' } = {}) {
     const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) return { cleared: 0, skipped: 0, entries: [] };
+    if (!normalizedPhone) return { cleared: 0, skipped: 0, paidEntryPreserved: false, entries: [] };
     this.expirePendingEntries();
     const at = nowIso(this.clock);
     const result = {
       cleared: 0,
       skipped: 0,
+      paidEntryPreserved: false,
       entries: [],
     };
 
@@ -163,6 +195,30 @@ export class WhatsAppEntryService {
       .filter((entry) => entry.phone === normalizedPhone && ACTIVE_STATUSES.has(entry.status))
       .forEach((entry) => {
         const isRealMatch = Boolean(entry.linkedMatchId || entry.playingAt || entry.status === 'playing' || entry.status === 'linked');
+        const paidConfirmed = isPaidConfirmedLikeEntry(entry);
+        if (paidConfirmed && !isRealMatch) {
+          result.skipped += 1;
+          result.paidEntryPreserved = true;
+          const updated = this.store.updateEntry(entry.entryId, (current) => ({
+            ...current,
+            updatedAt: at,
+            auditLog: [...current.auditLog, auditEntry({
+              action: 'paid_entry_preserved_on_clear_attempt',
+              actor: String(actor || 'system'),
+              at,
+              details: { source },
+            })],
+          }));
+          result.entries.push({
+            entryId: updated.entryId,
+            status: updated.status,
+            selectedTable: updated.selectedTable,
+            cleared: false,
+            paidConfirmed: true,
+            reason: 'paid_entry_requires_admin_review',
+          });
+          return;
+        }
         if (isRealMatch || !CLEARABLE_STATUSES.has(entry.status)) {
           result.skipped += 1;
           result.entries.push({
@@ -171,6 +227,7 @@ export class WhatsAppEntryService {
             selectedTable: entry.selectedTable,
             cleared: false,
             reason: isRealMatch ? 'real_match_not_cancelled' : 'status_not_clearable',
+            paidConfirmed,
           });
           return;
         }
@@ -203,6 +260,172 @@ export class WhatsAppEntryService {
       });
 
     return result;
+  }
+
+  cancelPreStartMatchForPhone(phone, { actor = 'system', source = 'opponent-cancel-before-start' } = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return { cancelled: false, reason: 'invalid_phone', requeued: [] };
+    this.expirePendingEntries();
+    const entries = this.store.listEntries();
+    const current = entries
+      .filter((entry) => (
+        entry.phone === normalizedPhone
+        && ACTIVE_STATUSES.has(entry.status)
+        && entry.whatsappMatchId
+        && entry.linkSentAt
+        && !entry.linkedMatchId
+        && !entry.queueSocketId
+        && !entry.playingAt
+      ))
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0];
+
+    if (!current) return { cancelled: false, reason: 'no_pre_start_match', requeued: [] };
+
+    const at = nowIso(this.clock);
+    const matchId = current.whatsappMatchId;
+    const table = current.selectedTable;
+    const paidConfirmed = isPaidConfirmedLikeEntry(current);
+    if (paidConfirmed) {
+      const updated = this.store.updateEntry(current.entryId, (entry) => ({
+        ...entry,
+        updatedAt: at,
+        auditLog: [...entry.auditLog, auditEntry({
+          action: 'player_cancel_blocked_after_payment',
+          actor: String(actor || normalizedPhone),
+          at,
+          details: { source, matchId, paidConfirmed: true },
+        })],
+      }));
+      return {
+        cancelled: false,
+        paidCancelBlocked: true,
+        reason: 'paid_entry_cannot_self_cancel',
+        matchId,
+        table,
+        entry: sanitizeWhatsAppEntry(updated),
+        requeued: [],
+      };
+    }
+    const cancelledStatus = paidConfirmed ? 'refund_pending' : 'cancelled_by_player';
+    const cancelled = sanitizeWhatsAppEntry(this.store.updateEntry(current.entryId, (entry) => ({
+      ...entry,
+      status: cancelledStatus,
+      accessTokenHash: null,
+      accessExpiresAt: null,
+      queuedAt: null,
+      queueSocketId: null,
+      updatedAt: at,
+      auditLog: [...entry.auditLog, auditEntry({
+        action: paidConfirmed ? 'entry_cancelled_by_player_admin_review' : 'entry_cancelled_by_player',
+        actor: String(actor || normalizedPhone),
+        at,
+        details: { source, matchId, paidConfirmed },
+      })],
+    })));
+
+    const requeued = entries
+      .filter((entry) => (
+        entry.entryId !== current.entryId
+        && entry.whatsappMatchId === matchId
+        && Number(entry.selectedTable) === Number(table)
+        && ACTIVE_STATUSES.has(entry.status)
+        && !entry.linkedMatchId
+        && !entry.queueSocketId
+        && !entry.playingAt
+      ))
+      .map((entry) => {
+        const updated = this.store.updateEntry(entry.entryId, (opponent) => ({
+          ...opponent,
+          status: 'requeued_after_opponent_cancel',
+          queuedAt: opponent.queuedAt || at,
+          queueSocketId: null,
+          whatsappMatchId: null,
+          roomUrl: null,
+          updatedAt: at,
+          auditLog: [...opponent.auditLog,
+            auditEntry({
+              action: 'entry_requeued_after_opponent_cancel',
+              actor: 'system',
+              at,
+              details: {
+                source,
+                previousMatchId: matchId,
+                cancelledEntryId: current.entryId,
+                paidConfirmed: isPaidConfirmedLikeEntry(opponent),
+              },
+            }),
+            auditEntry({
+              action: 'paid_entry_preserved',
+              actor: 'system',
+              at,
+              details: {
+                reason: 'opponent_cancelled_before_start',
+                previousMatchId: matchId,
+                paidConfirmed: isPaidConfirmedLikeEntry(opponent),
+              },
+            }),
+          ],
+        }));
+        return {
+          ...sanitizeWhatsAppEntry(updated),
+          notifyTo: updated.whatsappReplyTo || updated.phone || null,
+        };
+      });
+
+    return {
+      cancelled: true,
+      matchId,
+      table,
+      cancelledEntry: cancelled,
+      cancelledPaidConfirmed: paidConfirmed,
+      requeued,
+    };
+  }
+
+  adminDecidePaidEntryForPhone(phone, { actor = 'admin', decision, source = 'admin-whatsapp-command' } = {}) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return { updated: false, reason: 'invalid_phone', entry: null };
+    const safeDecision = String(decision || '').trim();
+    const statusByDecision = {
+      cancel: 'cancelled_by_admin',
+      refund: 'refund_pending',
+      requeue: 'requeued_after_opponent_cancel',
+    };
+    const nextStatus = statusByDecision[safeDecision];
+    if (!nextStatus) return { updated: false, reason: 'invalid_decision', entry: null };
+
+    this.expirePendingEntries();
+    const entry = this.store.listEntries()
+      .filter((item) => item.phone === normalizedPhone && ACTIVE_STATUSES.has(item.status))
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0];
+
+    if (!entry) return { updated: false, reason: 'no_active_entry', entry: null };
+    const paidConfirmed = isPaidConfirmedLikeEntry(entry);
+    if (!paidConfirmed) return { updated: false, reason: 'entry_not_paid_confirmed', entry: sanitizeWhatsAppEntry(entry) };
+
+    const at = nowIso(this.clock);
+    const updated = this.store.updateEntry(entry.entryId, (current) => ({
+      ...current,
+      status: nextStatus,
+      queuedAt: safeDecision === 'requeue' ? (current.queuedAt || at) : null,
+      queueSocketId: null,
+      linkedMatchId: safeDecision === 'requeue' ? null : current.linkedMatchId,
+      whatsappMatchId: safeDecision === 'requeue' ? null : current.whatsappMatchId,
+      roomUrl: safeDecision === 'requeue' ? null : current.roomUrl,
+      updatedAt: at,
+      auditLog: [...current.auditLog, auditEntry({
+        action: `admin_${safeDecision}_paid_entry`,
+        actor: String(actor || 'admin'),
+        at,
+        details: { source, paidConfirmed: true },
+      })],
+    }));
+
+    return {
+      updated: true,
+      decision: safeDecision,
+      entry: sanitizeWhatsAppEntry(updated),
+    };
   }
 
   createEntry({ phone, selectedTable, source = 'whatsapp' }) {
@@ -344,7 +567,7 @@ export class WhatsAppEntryService {
 
   markWhatsAppQueueWaiting(entryId, { actor = 'system', replyTo = null, source = 'whatsapp-queue' } = {}) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
-      if (current.status !== 'approved_for_queue') throw new Error('ENTRY_NOT_APPROVED');
+      if (!['approved_for_queue', 'requeued_after_opponent_cancel'].includes(current.status)) throw new Error('ENTRY_NOT_APPROVED');
       if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
       const at = nowIso(this.clock);
       const alreadyQueued = Boolean(current.queuedAt);
@@ -366,15 +589,18 @@ export class WhatsAppEntryService {
   listWhatsAppQueueEntries({ selectedTable = null, includeSecrets = false } = {}) {
     this.expirePendingEntries();
     const entries = this.store.listEntries()
-      .filter((entry) => (
-        entry.status === 'approved_for_queue'
-        && entry.queuedAt
-        && !entry.linkSentAt
-        && !entry.linkedMatchId
-        && !entry.queueSocketId
-        && !entry.playingAt
-        && (selectedTable === null || Number(entry.selectedTable) === Number(selectedTable))
-      ))
+      .filter((entry) => {
+        const isFreshApproved = entry.status === 'approved_for_queue' && !entry.linkSentAt;
+        const isRequeued = entry.status === 'requeued_after_opponent_cancel';
+        return (
+          (isFreshApproved || isRequeued)
+          && entry.queuedAt
+          && !entry.linkedMatchId
+          && !entry.queueSocketId
+          && !entry.playingAt
+          && (selectedTable === null || Number(entry.selectedTable) === Number(selectedTable))
+        );
+      })
       .sort((left, right) => Date.parse(left.queuedAt) - Date.parse(right.queuedAt));
     return includeSecrets ? entries : entries.map(sanitizeWhatsAppEntry);
   }
@@ -385,10 +611,11 @@ export class WhatsAppEntryService {
     const accessExpiresAt = new Date(this.clock() + this.accessTtlMs).toISOString();
     const safeMatchId = String(matchId || '').trim();
     const updated = this.store.updateEntry(entryId, (current) => {
-      if (current.status !== 'approved_for_queue') throw new Error('ENTRY_NOT_APPROVED');
+      if (!['approved_for_queue', 'requeued_after_opponent_cancel'].includes(current.status)) throw new Error('ENTRY_NOT_APPROVED');
       if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
       return {
         ...current,
+        status: 'approved_for_queue',
         accessTokenHash: this.hashToken(token),
         accessExpiresAt,
         whatsappMatchId: safeMatchId || current.whatsappMatchId || null,
@@ -466,7 +693,7 @@ export class WhatsAppEntryService {
 
   reserveQueueAccess({ entryId, socketId, selectedTable }) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
-      if (!['approved_for_queue', 'queued'].includes(current.status)) throw new Error('ENTRY_NOT_APPROVED');
+      if (!['approved_for_queue', 'queued', 'requeued_after_opponent_cancel'].includes(current.status)) throw new Error('ENTRY_NOT_APPROVED');
       if (current.accessExpiresAt && Date.parse(current.accessExpiresAt) <= this.clock()) throw new Error('ENTRY_ACCESS_EXPIRED');
       if (Number(selectedTable) !== Number(current.selectedTable)) throw new Error('ENTRY_TABLE_MISMATCH');
       if (current.queueSocketId && current.queueSocketId !== socketId) throw new Error('ENTRY_ACCESS_RESERVED');

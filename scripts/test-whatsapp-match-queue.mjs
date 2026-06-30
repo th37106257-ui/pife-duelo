@@ -161,11 +161,10 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(entries.every((entry) => entry.auditLog.some((item) => item.action === 'entry_approved_for_queue')));
   assert.ok(entries.every((entry) => entry.auditLog.some((item) => item.action === 'entry_link_sent')));
 
-  await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'menu', firstReplyJid));
-  await bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
-  const reservedLinkResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '1', firstReplyJid));
-  assert.equal(reservedLinkResult.type, 'whatsapp_queue_joined');
-  assert.notEqual(reservedLinkResult.type, 'whatsapp_queue_active_match_blocked');
+  const paidCancelBlocked = await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'menu', firstReplyJid));
+  assert.equal(paidCancelBlocked.type, 'whatsapp_paid_entry_preserved');
+  assert.equal(store.listEntries().find((entry) => entry.phone === firstPhone).status, 'approved_for_queue');
+  assert.ok(logs.some((log) => log.event === 'PLAYER_CANCEL_BLOCKED_AFTER_PAYMENT'));
 }
 
 {
@@ -467,6 +466,84 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(sentMessages.at(-1).text, '⚠️ Você já está em uma partida ativa.');
   assert.ok(logs.some((log) => log.event === 'PLAYER_BLOCKED_ACTIVE_MATCH'
     && log.payload.attemptedTable === 5));
+}
+
+{
+  const { bot, store, entryService, matchQueue, sentMessages, logs } = createBot();
+  const firstPhone = '551188881001';
+  const secondPhone = '551188881002';
+  const firstReplyJid = `${firstPhone}@s.whatsapp.net`;
+  const secondReplyJid = `${secondPhone}@s.whatsapp.net`;
+
+  await chooseTable(bot, firstPhone, '1', '2', firstReplyJid);
+  const firstPair = await chooseTable(bot, secondPhone, '1', '2', secondReplyJid);
+  assert.equal(firstPair.type, 'whatsapp_match_created');
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+
+  const firstMatchMessages = sentMessages.filter((message) => message.text.includes('Partida encontrada!'));
+  const secondOldLink = extractFirstUrl(firstMatchMessages.find((message) => message.phone === secondReplyJid)?.text);
+  assert.ok(secondOldLink);
+  const secondOldToken = new URL(secondOldLink).searchParams.get('entry');
+
+  const cancelResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'sair', firstReplyJid));
+  assert.equal(cancelResult.type, 'whatsapp_paid_entry_preserved');
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+
+  const firstEntry = store.listEntries().find((entry) => entry.phone === firstPhone);
+  const secondEntry = store.listEntries().find((entry) => entry.phone === secondPhone);
+  assert.equal(firstEntry.status, 'approved_for_queue');
+  assert.equal(secondEntry.status, 'approved_for_queue');
+  assert.ok(firstEntry.auditLog.some((item) => item.action === 'player_cancel_blocked_after_payment'));
+  assert.equal(entryService.validateAccessToken(secondOldToken)?.status, 'approved_for_queue');
+  assert.ok(logs.some((log) => log.event === 'PLAYER_CANCEL_BLOCKED_AFTER_PAYMENT'));
+  assert.ok(sentMessages.some((message) => (
+    message.phone === firstPhone
+    || message.phone === firstReplyJid
+  ) && message.text.includes('entrada paga ativa')));
+
+  const paidMenuResult = await bot.handleConnectivityWebhook(createWebhook(secondPhone, 'menu', secondReplyJid));
+  assert.equal(paidMenuResult.type, 'whatsapp_paid_entry_preserved');
+  assert.equal(store.listEntries().find((entry) => entry.phone === secondPhone).status, 'approved_for_queue');
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+}
+
+{
+  const { bot, store, entryService, sentMessages, logs } = createBot();
+  const adminPhone = '5511999990000';
+  const paidPhone = '551188881010';
+  const paidEntry = entryService.createEntry({ phone: paidPhone, selectedTable: 10, source: 'paid-reset-test' });
+  entryService.approveEntry({ entryId: paidEntry.entryId, actor: 'admin-test', source: 'paid-reset-test' });
+  entryService.markLinkDelivery(paidEntry.entryId, { sent: true });
+
+  const resetPaid = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `resetar ${paidPhone}`));
+  assert.equal(resetPaid.type, 'entry_admin_player_reset');
+  assert.equal(store.getEntry(paidEntry.entryId).status, 'approved_for_queue');
+  assert.ok(store.getEntry(paidEntry.entryId).auditLog.some((item) => item.action === 'paid_entry_preserved_on_clear_attempt'));
+  assert.ok(logs.some((log) => log.event === 'RESET_PAID_ENTRY_WARNING'));
+  assert.ok(sentMessages.some((message) => message.text.includes('RESET_PAID_ENTRY_WARNING')));
+
+  const paidCancelPhone = '551188881011';
+  const paidCancelEntry = entryService.createEntry({ phone: paidCancelPhone, selectedTable: 5, source: 'paid-cancel-test' });
+  entryService.approveEntry({ entryId: paidCancelEntry.entryId, actor: 'admin-test', source: 'paid-cancel-test' });
+  entryService.markLinkDelivery(paidCancelEntry.entryId, { sent: true });
+  const adminCancel = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `admin cancelar ${paidCancelPhone}`));
+  assert.equal(adminCancel.type, 'entry_admin_paid_decision');
+  assert.equal(store.getEntry(paidCancelEntry.entryId).status, 'cancelled_by_admin');
+  assert.ok(store.getEntry(paidCancelEntry.entryId).auditLog.some((item) => item.action === 'admin_cancel_paid_entry'));
+
+  const paidRefundPhone = '551188881012';
+  const paidRefundEntry = entryService.createEntry({ phone: paidRefundPhone, selectedTable: 20, source: 'paid-refund-test' });
+  entryService.approveEntry({ entryId: paidRefundEntry.entryId, actor: 'admin-test', source: 'paid-refund-test' });
+  entryService.markLinkDelivery(paidRefundEntry.entryId, { sent: true });
+  const adminRefund = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `admin reembolsar ${paidRefundPhone}`));
+  assert.equal(adminRefund.type, 'entry_admin_paid_decision');
+  assert.equal(store.getEntry(paidRefundEntry.entryId).status, 'refund_pending');
+  assert.ok(store.getEntry(paidRefundEntry.entryId).auditLog.some((item) => item.action === 'admin_refund_paid_entry'));
+
+  const adminRequeue = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `admin recolocar ${paidPhone}`));
+  assert.equal(adminRequeue.type, 'entry_admin_paid_decision');
+  assert.equal(store.getEntry(paidEntry.entryId).status, 'requeued_after_opponent_cancel');
+  assert.ok(store.getEntry(paidEntry.entryId).auditLog.some((item) => item.action === 'admin_requeue_paid_entry'));
 }
 
 {

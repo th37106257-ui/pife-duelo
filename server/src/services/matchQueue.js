@@ -226,6 +226,40 @@ export class MatchQueue {
       pendingEntries: beforeEntries.pendingEntries,
     });
 
+    const preStartCancellation = this.entryService?.cancelPreStartMatchForPhone?.(phone, {
+      actor: actor || phone,
+      source: reason,
+    });
+    if (preStartCancellation?.paidCancelBlocked) {
+      this.logWarn('PLAYER_CANCEL_BLOCKED_AFTER_PAYMENT', {
+        playerId: maskPhone(phone),
+        table: preStartCancellation.table,
+        entryId: preStartCancellation.entry?.entryId ?? null,
+        status: preStartCancellation.entry?.status ?? null,
+        matchId: preStartCancellation.matchId ?? null,
+        paidConfirmed: true,
+      });
+      this.logInfo('WHATSAPP_CLEAR_PLAYER_STATE_AFTER', {
+        playerId: maskPhone(phone),
+        filas: queueSnapshot(this.queues),
+        activeEntries: beforeEntries.activeEntries,
+        pendingEntries: beforeEntries.pendingEntries,
+        removedFromQueues: 0,
+        removedEntries: [],
+        paidCancelBlocked: true,
+        realMatchPreserved: true,
+      });
+      return {
+        cleared: false,
+        removedFromQueues: 0,
+        removedEntries: [],
+        paidEntryPreserved: true,
+        paidCancelBlocked: true,
+        blockedEntry: preStartCancellation.entry,
+        realMatchPreserved: true,
+        activeMatch: null,
+      };
+    }
     const realActiveMatch = this.findActiveMatch(phone);
     let removedFromQueues = 0;
     const removedEntries = [];
@@ -242,6 +276,66 @@ export class MatchQueue {
       }
     }
 
+    if (preStartCancellation?.cancelled) {
+      this.syncQueueFromStore(preStartCancellation.table);
+      preStartCancellation.requeued.forEach((entry) => {
+        this.logWarn('OPPONENT_CANCELLED_BEFORE_START', {
+          cancelledPlayerId: preStartCancellation.cancelledEntry?.phoneMasked ?? maskPhone(phone),
+          remainingPlayerId: entry.phoneMasked,
+          table: entry.selectedTable,
+          entryId: entry.entryId,
+          matchId: preStartCancellation.matchId,
+          remainingStatus: entry.status,
+          paidConfirmed: true,
+          action: 'requeued',
+        });
+        this.logInfo('PLAYER_REQUEUED_AFTER_OPPONENT_CANCEL', {
+          playerId: entry.phoneMasked,
+          table: entry.selectedTable,
+          entryId: entry.entryId,
+          paidConfirmed: true,
+        });
+        this.logInfo('PAID_ENTRY_PRESERVED', {
+          playerId: entry.phoneMasked,
+          table: entry.selectedTable,
+          entryId: entry.entryId,
+          reason: 'opponent_cancelled_before_start',
+        });
+      });
+      this.logInfo('PLAYER_CANCELLED_BEFORE_MATCH_START', {
+        playerId: preStartCancellation.cancelledEntry?.phoneMasked ?? maskPhone(phone),
+        table: preStartCancellation.table,
+        entryId: preStartCancellation.cancelledEntry?.entryId ?? null,
+        matchId: preStartCancellation.matchId,
+        status: preStartCancellation.cancelledEntry?.status ?? null,
+        paidConfirmed: preStartCancellation.cancelledPaidConfirmed,
+      });
+      const afterEntries = this.entryService?.getClearableStateForPhone?.(phone) ?? {
+        activeEntries: [],
+        pendingEntries: [],
+      };
+      this.logInfo('WHATSAPP_CLEAR_PLAYER_STATE_AFTER', {
+        playerId: maskPhone(phone),
+        filas: queueSnapshot(this.queues),
+        activeEntries: afterEntries.activeEntries,
+        pendingEntries: afterEntries.pendingEntries,
+        removedFromQueues,
+        removedEntries,
+        preStartCancellation,
+        realMatchPreserved: false,
+      });
+      return {
+        cleared: true,
+        removedFromQueues,
+        removedEntries,
+        preStartCancellation,
+        requeuedOpponents: preStartCancellation.requeued,
+        paidEntryPreserved: preStartCancellation.requeued.length > 0,
+        realMatchPreserved: false,
+        activeMatch: null,
+      };
+    }
+
     let clearedEntries = { cleared: 0, skipped: 0, entries: [] };
     if (!realActiveMatch) {
       this.activeMatchesByPhone.delete(phone);
@@ -249,6 +343,16 @@ export class MatchQueue {
         actor: actor || phone,
         source: reason,
       }) ?? clearedEntries;
+      if (clearedEntries.paidEntryPreserved) {
+        this.syncQueueFromStore();
+        this.logWarn('RESET_PAID_ENTRY_WARNING', {
+          playerId: maskPhone(phone),
+          actor: actor ? maskPhone(actor) : null,
+          reason,
+          entries: clearedEntries.entries,
+          action: 'admin_review_required',
+        });
+      }
     }
 
     const afterEntries = this.entryService?.getClearableStateForPhone?.(phone) ?? {
@@ -271,6 +375,7 @@ export class MatchQueue {
       removedFromQueues,
       removedEntries,
       clearedEntries,
+      paidEntryPreserved: Boolean(clearedEntries.paidEntryPreserved),
       realMatchPreserved: Boolean(realActiveMatch),
       activeMatch: realActiveMatch,
     };
@@ -353,6 +458,37 @@ export class MatchQueue {
         actor: 'whatsapp-queue',
         source: 'whatsapp-queue-auto-match-without-pix',
       });
+    }
+
+    if (
+      entry.status === 'approved_for_queue'
+      && (entry.linkSentAt || entry.whatsappMatchId || entry.roomUrl)
+      && !entry.linkedMatchId
+      && !entry.queueSocketId
+      && !entry.playingAt
+    ) {
+      this.logInfo('PAID_ENTRY_PRESERVED', {
+        playerId: maskPhone(phone),
+        table: tableValue,
+        entryId: entry.entryId,
+        reason: 'reuse_valid_manual_entry_waiting_opponent',
+      });
+      return {
+        entry,
+        accessLink: entry.roomUrl || null,
+      };
+    }
+
+    if (
+      entry.status === 'requeued_after_opponent_cancel'
+      && !entry.linkedMatchId
+      && !entry.queueSocketId
+      && !entry.playingAt
+    ) {
+      return {
+        entry,
+        accessLink: entry.roomUrl || null,
+      };
     }
 
     if (

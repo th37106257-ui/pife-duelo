@@ -56,6 +56,15 @@ const SAFE_TABLES = new Map([
 const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
 
+function isAdminCommandText(command) {
+  return (
+    command.startsWith('/admin')
+    || command.startsWith('admin ')
+    || command.startsWith('resetar ')
+    || /^(cancelar|reembolsar|recolocar)\s+\d{8,15}$/i.test(command)
+  );
+}
+
 function getOwnerJid(payload = {}) {
   const candidates = [
     payload.ownerJid,
@@ -396,24 +405,67 @@ export class WhatsAppPaymentBot {
       return { type: 'entry_admin_pending_list', decision: 'reply_sent', reason: 'pending_entries_listed' };
     }
 
-    const resetMatch = text.match(/^(?:\/admin\s+)?resetar\s+(\d{8,15})$/i);
+    const resetMatch = text.match(/^(?:(?:\/admin|admin)\s+)?resetar\s+(\d{8,15})$/i);
     if (resetMatch) {
       const targetPhone = normalizePhone(resetMatch[1]);
       const result = this.matchQueue?.clearPlayerState?.(targetPhone, {
         actor: phone,
         reason: 'whatsapp_admin_reset',
       });
+      const paidWarning = result?.paidEntryPreserved
+        ? '⚠️ RESET_PAID_ENTRY_WARNING: existe entrada paga/validada preservada. Decida manualmente: requeue, refund ou cancel.'
+        : null;
       await this.send(replyTo, [
         `✅ Estado limpo para ${maskPhone(targetPhone)}.`,
         `Filas removidas: ${result?.removedFromQueues ?? 0}`,
         `Entradas canceladas: ${result?.clearedEntries?.cleared ?? 0}`,
         result?.realMatchPreserved ? 'Partida real preservada.' : 'Nenhuma partida real foi cancelada.',
       ].join('\n'));
+      if (paidWarning) await this.send(replyTo, paidWarning);
       return {
         type: 'entry_admin_player_reset',
         decision: 'reply_sent',
         reason: 'player_state_reset_by_admin',
         targetPhone: maskPhone(targetPhone),
+      };
+    }
+
+    const paidDecisionMatch = text.match(/^(?:(?:\/admin|admin)\s+)?(cancelar|reembolsar|recolocar)\s+(\d{8,15})$/i);
+    if (paidDecisionMatch) {
+      const decisionByCommand = {
+        cancelar: 'cancel',
+        reembolsar: 'refund',
+        recolocar: 'requeue',
+      };
+      const command = paidDecisionMatch[1].toLowerCase();
+      const targetPhone = normalizePhone(paidDecisionMatch[2]);
+      const result = this.entryService.adminDecidePaidEntryForPhone(targetPhone, {
+        actor: phone,
+        decision: decisionByCommand[command],
+        source: `whatsapp_admin_${command}`,
+      });
+      if (!result.updated) {
+        await this.send(replyTo, `Não foi possível aplicar ${command}: ${result.reason}`);
+        return {
+          type: 'entry_admin_paid_decision_failed',
+          decision: 'reply_sent',
+          reason: result.reason,
+          targetPhone: maskPhone(targetPhone),
+        };
+      }
+      await this.send(replyTo, [
+        `✅ Decisão registrada para ${maskPhone(targetPhone)}.`,
+        `Ação: ${command}`,
+        `Entrada: #${result.entry.entryId}`,
+        `Status: ${result.entry.status}`,
+        'Histórico preservado.',
+      ].join('\n'));
+      return {
+        type: 'entry_admin_paid_decision',
+        decision: 'reply_sent',
+        reason: `paid_entry_${decisionByCommand[command]}`,
+        targetPhone: maskPhone(targetPhone),
+        entryId: result.entry.entryId,
       };
     }
 
@@ -504,6 +556,22 @@ export class WhatsAppPaymentBot {
     return '\u2705 Sua entrada foi cancelada. Voc\u00ea voltou ao menu.';
   }
 
+  safePaidEntryActiveText(entry = null) {
+    const amount = entry?.selectedTable ? ` na Mesa R$${Number(entry.selectedTable).toFixed(0)}` : '';
+    return [
+      `✅ Você possui uma entrada paga ativa${amount}.`,
+      'Aguarde o início da partida ou fale com o suporte/admin.',
+    ].join('\n');
+  }
+
+  safeOpponentCancelledRequeuedText(amount) {
+    return [
+      '⚠️ O outro jogador cancelou antes da partida começar.',
+      'Sua entrada continua válida.',
+      `Você voltou para a fila da Mesa R$${Number(amount).toFixed(0)} e estamos aguardando um novo adversário.`,
+    ].join('\n');
+  }
+
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
     if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
@@ -521,19 +589,54 @@ export class WhatsAppPaymentBot {
 
     const command = normalizeCommand(incoming.text);
     const replyTo = incoming.replyTo || incoming.phone;
-    if (command.startsWith('/admin') || command.startsWith('resetar ')) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
+    if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
     if (MENU_COMMANDS.has(command) || CANCEL_QUEUE_COMMANDS.has(command)) {
       const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {
         actor: incoming.phone,
         reason: `whatsapp_${command}`,
       });
       this.setConversationState(incoming.phone, 'idle');
-      if (clearResult?.realMatchPreserved && !clearResult.cleared) {
+      if (clearResult?.realMatchPreserved && !clearResult.cleared && !clearResult?.paidEntryPreserved) {
         await this.send(replyTo, this.safeActiveMatchText());
         return {
           type: 'whatsapp_queue_cancel_real_match_preserved',
           decision: 'reply_sent',
           reason: 'real_match_not_cancelled',
+          state: 'idle',
+          originIp,
+        };
+      }
+      if (clearResult?.preStartCancellation?.cancelled) {
+        for (const entry of clearResult.requeuedOpponents ?? []) {
+          if (entry.notifyTo) {
+            await this.send(entry.notifyTo, this.safeOpponentCancelledRequeuedText(entry.selectedTable));
+          }
+        }
+        await this.send(replyTo, [
+          '✅ Sua solicitação de cancelamento foi registrada.',
+          'Se sua entrada já estava paga/validada, o admin deverá revisar o caso.',
+          '',
+          this.safeMenuText(),
+        ].join('\n'));
+        return {
+          type: 'whatsapp_pre_start_cancelled_requeued_opponent',
+          decision: 'reply_sent',
+          reason: 'opponent_cancelled_before_start',
+          state: 'idle',
+          requeuedOpponents: clearResult.requeuedOpponents?.length ?? 0,
+          originIp,
+        };
+      }
+      if (clearResult?.paidEntryPreserved) {
+        const preserved = clearResult.clearedEntries?.entries?.find((entry) => entry.paidConfirmed)
+          ?? clearResult.clearedEntries?.entries?.[0]
+          ?? clearResult.blockedEntry
+          ?? null;
+        await this.send(replyTo, this.safePaidEntryActiveText(preserved));
+        return {
+          type: 'whatsapp_paid_entry_preserved',
+          decision: 'reply_sent',
+          reason: 'paid_entry_requires_admin_review',
           state: 'idle',
           originIp,
         };
