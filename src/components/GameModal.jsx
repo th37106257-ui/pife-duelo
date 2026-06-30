@@ -1,11 +1,28 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { formatMoney } from '../shared/economy.js';
 
-export default function GameModal({ result, onRestart }) {
+export default function GameModal({
+  result,
+  onRestart,
+  isTestMode = false,
+  onExitToMenu,
+  onGoToPaidFlow,
+}) {
   const winner = result?.winner ?? (result?.type === 'win' ? 'player' : 'bot');
   const economy = result?.economy;
   const economicResult = result?.economicResult;
-  const showEconomy = Boolean(economy || economicResult);
+  const showEconomy = !isTestMode && Boolean(economy || economicResult);
+  const testModeWon = isTestMode && (result?.type === 'win' || winner === 'player');
+  const title = isTestMode
+    ? testModeWon
+      ? '🎉 Parabéns, você venceu!'
+      : '😅 Quase lá!'
+    : result?.title ?? (result?.type === 'win' ? 'Vitoria' : 'Derrota');
+  const message = isTestMode
+    ? testModeWon
+      ? 'Você já entendeu como o Pife Duelo funciona.\nAgora, se quiser, volte ao WhatsApp e entre em uma mesa valendo.\n\n💰 Jogue com responsabilidade.\n🔞 Apenas para maiores de 18 anos.'
+      : 'Você perdeu essa, mas já pegou o jeito do jogo.\nTreine mais uma rodada grátis ou volte ao WhatsApp para jogar valendo quando se sentir pronto.\n\n💰 Jogue com responsabilidade.\n🔞 Apenas para maiores de 18 anos.'
+    : result?.message;
 
   return (
     <AnimatePresence>
@@ -34,9 +51,9 @@ export default function GameModal({ result, onRestart }) {
             <span className="modal-emblem" aria-hidden="true">
               {result.emblem ?? (result.type === 'win' ? '\u2666' : '\u2660')}
             </span>
-            <p className="modal-kicker">Pife Duelo V1</p>
-            <h2>{result.title ?? (result.type === 'win' ? 'Vitoria' : 'Derrota')}</h2>
-            <p className="modal-copy">{result.message}</p>
+            <p className="modal-kicker">{isTestMode ? 'Modo Teste grátis' : 'Pife Duelo V1'}</p>
+            <h2>{title}</h2>
+            <p className="modal-copy">{message}</p>
             {showEconomy ? (
               <div className="modal-economy-summary">
                 <span>Mesa: {formatMoney(economicResult?.tableValue ?? economy?.tableValue)}</span>
@@ -50,9 +67,23 @@ export default function GameModal({ result, onRestart }) {
                 )}
               </div>
             ) : null}
-            <button type="button" onClick={onRestart}>
-              Jogar novamente
-            </button>
+            {isTestMode ? (
+              <div className="modal-actions">
+                <button type="button" onClick={onRestart}>
+                  {testModeWon ? 'Jogar teste novamente' : 'Tentar novamente grátis'}
+                </button>
+                <button type="button" className="modal-secondary-action" onClick={onGoToPaidFlow}>
+                  Jogar valendo
+                </button>
+                <button type="button" className="modal-ghost-action" onClick={onExitToMenu}>
+                  Voltar ao menu
+                </button>
+              </div>
+            ) : (
+              <button type="button" onClick={onRestart}>
+                Jogar novamente
+              </button>
+            )}
           </motion.div>
         </motion.div>
       ) : null}

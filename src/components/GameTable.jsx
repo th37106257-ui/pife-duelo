@@ -62,12 +62,19 @@ function readPlayMode() {
   return mode === 'local-2p' || multiplayer === 'local' || local === '2p' ? 'local-2p' : 'bot';
 }
 
+function readIsTestMode() {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.get('mode') === 'test';
+}
+
 function getSeatName(actor) {
   return actor === 'player' ? 'JOGADOR A' : 'JOGADOR B';
 }
 
 export default function GameTable() {
   const playMode = useMemo(() => readPlayMode(), []);
+  const isTestMode = useMemo(() => readIsTestMode(), []);
   const isLocalMultiplayer = playMode === 'local-2p';
   const debugScenarioKey = useMemo(() => readDebugScenarioKey(), []);
   const debugConfig = useMemo(() => getDebugScenarioConfig(debugScenarioKey), [debugScenarioKey]);
@@ -132,6 +139,7 @@ export default function GameTable() {
   const previousHumanTurnRef = useRef(Boolean(activeHumanTurn && !result));
   const alertTurnRef = useRef(null);
   const resultSoundRef = useRef(null);
+  const resultScreenLogRef = useRef(null);
 
   useEffect(() => {
     gameRef.current = game;
@@ -437,8 +445,10 @@ export default function GameTable() {
 
   const restart = useCallback(() => {
     clearBotSequence();
+    const oldMatchId = matchMeta.matchId;
     const nextMatch = restartMatch({ scenarioKey: debugScenarioKey });
     startedLogRef.current = true;
+    resultScreenLogRef.current = null;
     setGame(nextMatch.game);
     setMatchMeta(nextMatch.meta);
     setSelectedCardId(null);
@@ -473,8 +483,70 @@ export default function GameTable() {
         players: ['player', 'bot'],
       },
     });
+    if (isTestMode) {
+      console.info('TEST_MODE_RESTART', {
+        oldMatchId,
+        newMatchId: nextMatch.meta.matchId,
+      });
+    }
     showToast(debugScenarioKey ? `Cenario ${debugScenarioKey} reiniciado` : 'Nova rodada iniciada');
-  }, [clearBotSequence, debugScenarioKey, showToast, turnSeconds]);
+  }, [clearBotSequence, debugScenarioKey, isTestMode, matchMeta.matchId, showToast, turnSeconds]);
+
+  const clearTestModeRuntimeState = useCallback(() => {
+    clearBotSequence();
+    [
+      beatImpactTimeoutRef,
+      recycleTimeoutRef,
+      turnTimeoutRef,
+      resultTimeoutRef,
+      flightCommitTimeoutRef,
+      flightClearTimeoutRef,
+      handReorderTimeoutRef,
+      turnCueTimeoutRef,
+      opponentThinkingFallbackRef,
+    ].forEach((ref) => {
+      if (ref.current) {
+        window.clearTimeout(ref.current);
+        ref.current = null;
+      }
+    });
+    window.__PIFE_DUELO_PHASE3_STATE__ = null;
+    resolvingActionRef.current = false;
+  }, [clearBotSequence]);
+
+  const exitTestMode = useCallback(({ target = 'menu' } = {}) => {
+    if (!isTestMode) return;
+    const currentMatchId = matchMeta.matchId;
+    clearTestModeRuntimeState();
+    if (target === 'paid') {
+      console.info('TEST_MODE_GO_TO_PAID_FLOW', {
+        from: 'test_mode_result',
+      });
+    } else {
+      console.info('TEST_MODE_EXIT_TO_MENU', {
+        matchId: currentMatchId,
+        cleared: true,
+      });
+    }
+    window.location.href = '/?online=1';
+  }, [clearTestModeRuntimeState, isTestMode, matchMeta.matchId]);
+
+  const goToPaidFlowFromTestMode = useCallback(() => {
+    exitTestMode({ target: 'paid' });
+  }, [exitTestMode]);
+
+  useEffect(() => {
+    if (!isTestMode || !result) return;
+    const logKey = `${matchMeta.matchId}:${result.winner}:${result.type}`;
+    if (resultScreenLogRef.current === logKey) return;
+    resultScreenLogRef.current = logKey;
+    console.info('TEST_MODE_RESULT_SCREEN', {
+      result: result.type,
+      winner: result.winner,
+      player: 'player',
+      matchId: matchMeta.matchId,
+    });
+  }, [isTestMode, matchMeta.matchId, result]);
 
   const drawCardForPlayer = useCallback(() => {
     if (!activeHumanTurn || turnTransitioning || result) {
@@ -1112,7 +1184,12 @@ export default function GameTable() {
   return (
     <main className="game-shell">
       <section className="phone-table wood-frame" aria-label="Pife Duelo V1">
-        <button type="button" className="chrome-button menu-button" aria-label="Menu">
+        <button
+          type="button"
+          className="chrome-button menu-button"
+          aria-label="Menu"
+          onClick={isTestMode ? () => exitTestMode({ target: 'menu' }) : undefined}
+        >
           <span />
           <span />
           <span />
@@ -1139,7 +1216,13 @@ export default function GameTable() {
           {turnCue ? <span key={turnCue.id} className="turn-ripple" aria-hidden="true" /> : null}
           <CardFlightLayer flight={flight} />
           <ActionHistory actions={actionHistory} />
-          <GameModal result={result} onRestart={restart} />
+          <GameModal
+            result={result}
+            onRestart={restart}
+            isTestMode={isTestMode}
+            onExitToMenu={() => exitTestMode({ target: 'menu' })}
+            onGoToPaidFlow={goToPaidFlowFromTestMode}
+          />
 
           <OpponentHand
             count={waitingCards.length}
