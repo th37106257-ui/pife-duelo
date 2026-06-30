@@ -51,6 +51,7 @@ export const config = {
   EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY || '',
   EVOLUTION_INSTANCE_NAME: process.env.EVOLUTION_INSTANCE_NAME || '',
   EVOLUTION_WEBHOOK_SECRET: process.env.EVOLUTION_WEBHOOK_SECRET || '',
+  WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER || '',
   PIX_KEY: process.env.PIX_KEY || '',
   PIX_RECEIVER: process.env.PIX_RECEIVER || '',
   ROOM_MODE: 'duel_1v1',

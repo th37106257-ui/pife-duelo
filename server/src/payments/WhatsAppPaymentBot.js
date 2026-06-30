@@ -55,6 +55,7 @@ const SAFE_TABLES = new Map([
 
 const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
+const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
 
 function isAdminCommandText(command) {
   return (
@@ -705,6 +706,26 @@ export class WhatsAppPaymentBot {
 
     const command = normalizeCommand(incoming.text);
     const replyTo = incoming.replyTo || incoming.phone;
+    if (IDENTIFY_COMMANDS.has(command)) {
+      const isAdmin = Boolean(
+        incoming.phone
+        && (
+          this.adminNumbers.includes(incoming.phone)
+          || this.entryService?.isAdmin?.(incoming.phone)
+        ),
+      );
+      await this.send(replyTo, [
+        `Seu número: ${incoming.phone}`,
+        `Admin autorizado: ${isAdmin ? 'sim' : 'não'}`,
+      ].join('\n'));
+      return {
+        type: 'whatsapp_identity_sent',
+        decision: 'reply_sent',
+        reason: 'identity_command',
+        state: this.getConversationState(incoming.phone),
+        originIp,
+      };
+    }
     if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
     if (MENU_COMMANDS.has(command) || CANCEL_QUEUE_COMMANDS.has(command)) {
       const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {

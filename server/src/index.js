@@ -17,7 +17,7 @@ import { listAdminLogs, recordAdminLog } from './adminStore.js';
 import { logError, logInfo, logWarn } from './utils/logger.js';
 import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js';
 import { PaymentStore } from './payments/PaymentStore.js';
-import { PaymentService } from './payments/PaymentService.js';
+import { maskPhone, PaymentService } from './payments/PaymentService.js';
 import { EvolutionClient } from './payments/EvolutionClient.js';
 import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
 import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
@@ -441,6 +441,9 @@ app.get('/health', (request, response) => {
       safeEntryConfigured: getWhatsAppEntryConfigurationErrors().length === 0,
       entryStorePersisted: Boolean(config.WHATSAPP_ENTRY_STORE_PATH),
       publicGameUrlConfigured: Boolean(config.PUBLIC_GAME_URL),
+      instanceName: config.EVOLUTION_INSTANCE_NAME || null,
+      botNumberConfigured: Boolean(config.WHATSAPP_BOT_NUMBER),
+      botNumberMasked: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,
@@ -494,12 +497,30 @@ app.post('/api/webhooks/evolution', async (request, response) => {
   }
 
   try {
+    const eventName = String(request.body?.event || '').toUpperCase().replace('.', '_');
+    if (/CONNECTION|STATUS/.test(eventName)) {
+      logInfo('EVOLUTION_INSTANCE_CONNECTED', {
+        originIp,
+        event: request.body?.event ?? null,
+        instanceName: request.body?.instance ?? config.EVOLUTION_INSTANCE_NAME,
+        botNumber: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
+        state: request.body?.data?.state ?? request.body?.state ?? request.body?.data?.status ?? null,
+      });
+    }
     const messageDiagnostic = buildEvolutionMessageDiagnostic(request.body ?? {});
     logInfo('EVOLUTION_MESSAGE_DIAGNOSTIC', messageDiagnostic);
     logInfo('EVOLUTION_MESSAGE_RECEIVED', {
       originIp,
       event: request.body?.event ?? null,
       mode: paymentSystemEnabled ? 'payments' : (whatsappSafeEntryEnabled ? 'safe-entry-without-pix' : 'connectivity-test'),
+    });
+    logInfo('WHATSAPP_MESSAGE_RECEIVED', {
+      originIp,
+      event: request.body?.event ?? null,
+      instanceName: request.body?.instance ?? config.EVOLUTION_INSTANCE_NAME,
+      senderPhone: messageDiagnostic.playerPhone,
+      remoteJid: messageDiagnostic.remoteJid,
+      playerPhoneSource: messageDiagnostic.playerPhoneSource,
     });
     const result = paymentSystemEnabled
       ? await whatsappPaymentBot.handleWebhook(request.body ?? {}, { originIp })

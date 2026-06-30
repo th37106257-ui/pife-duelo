@@ -114,6 +114,22 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
+  const { bot, sentMessages } = createBot();
+  const adminPhone = '5511999990000';
+  const playerPhone = '551188889901';
+
+  const adminIdentity = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'meu numero'));
+  assert.equal(adminIdentity.type, 'whatsapp_identity_sent');
+  assert.ok(sentMessages.at(-1).text.includes(`Seu número: ${adminPhone}`));
+  assert.ok(sentMessages.at(-1).text.includes('Admin autorizado: sim'));
+
+  const playerIdentity = await bot.handleConnectivityWebhook(createWebhook(playerPhone, 'meu número'));
+  assert.equal(playerIdentity.type, 'whatsapp_identity_sent');
+  assert.ok(sentMessages.at(-1).text.includes(`Seu número: ${playerPhone}`));
+  assert.ok(sentMessages.at(-1).text.includes('Admin autorizado: não'));
+}
+
+{
   const { bot, sentMessages, logs } = createBot();
   const adminPhone = '5511999990000';
   const unauthorizedPhone = '551177770000';
