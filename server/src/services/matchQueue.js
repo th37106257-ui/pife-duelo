@@ -503,6 +503,19 @@ export class MatchQueue {
       entryId: queueEntry.entryId,
       queueSize: queue.length,
     });
+    this.logInfo('WHATSAPP_QUEUE_JOIN', {
+      tableId: queueId,
+      tableValue,
+      phone: queueEntry.phoneMasked,
+      entryId: queueEntry.entryId,
+      queueSize: queue.length,
+    });
+    this.logInfo('WHATSAPP_QUEUE_STATE', {
+      tableId: queueId,
+      tableValue,
+      queues: queueSnapshot(this.queues),
+      queueSize: queue.length,
+    });
 
     const match = this.tryCreateMatch(tableValue);
     if (!match) {
@@ -632,6 +645,21 @@ export class MatchQueue {
       accessLinksGenerated: players.every((player) => Boolean(player.accessLink)),
       entryIds: players.map((player) => player.entryId),
       players: players.map((player) => player.phoneMasked),
+    });
+    this.logInfo('MATCH_CREATED', {
+      matchId,
+      roomId: match.roomId,
+      table: tableValue,
+      tableId: queueId,
+      players: players.map((player) => player.phoneMasked),
+      links: players.map((player) => maskAccessLink(player.accessLink)),
+      queueSizeAfterMatch: queue.length,
+    });
+    this.logInfo('WHATSAPP_QUEUE_STATE', {
+      tableId: queueId,
+      tableValue,
+      queues: queueSnapshot(this.queues),
+      queueSize: queue.length,
     });
 
     return match;

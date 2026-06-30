@@ -627,6 +627,7 @@ export class WhatsAppPaymentBot {
                 roomId: queueResult.match.roomId ?? queueResult.match.matchId,
                 tableValue: matchTable,
                 entryId: player.entryId,
+                playerLabel,
                 phone: player.phoneMasked,
                 sendTargetsMasked: sendTargets.map(maskPhone),
                 linkGenerated: Boolean(player.accessLink),

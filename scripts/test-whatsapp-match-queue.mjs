@@ -39,9 +39,13 @@ function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`, { send
 
 function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
   const entryService = createEntryService(store);
+  const logs = [];
   const matchQueue = new MatchQueue({
     entryService,
     clock: () => now,
+    logInfo: (event, payload) => logs.push({ level: 'info', event, payload }),
+    logWarn: (event, payload) => logs.push({ level: 'warn', event, payload }),
+    logError: (event, payload) => logs.push({ level: 'error', event, payload }),
   });
   const sentMessages = [];
   const bot = new WhatsAppPaymentBot({
@@ -56,7 +60,7 @@ function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
     clock: () => now,
   });
 
-  return { bot, store, entryService, matchQueue, sentMessages };
+  return { bot, store, entryService, matchQueue, sentMessages, logs };
 }
 
 function extractFirstUrl(text) {
@@ -131,7 +135,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
-  const { bot, matchQueue, sentMessages } = createBot();
+  const { bot, matchQueue, sentMessages, logs } = createBot();
   const botJid = '5521999974561@s.whatsapp.net';
   const firstPhone = '551188880080';
   const secondPhone = '551188880081';
@@ -156,6 +160,14 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const matchUrls = matchMessages.map((message) => new URL(extractFirstUrl(message.text)));
   assert.ok(matchUrls.every((url) => url.pathname.startsWith('/join/whatsapp_match-')));
   assert.equal(matchUrls[0].pathname, matchUrls[1].pathname);
+  assert.ok(logs.some((log) => log.event === 'WHATSAPP_QUEUE_JOIN'));
+  assert.ok(logs.some((log) => log.event === 'WHATSAPP_QUEUE_STATE'));
+  assert.ok(logs.some((log) => log.event === 'MATCH_CREATED'
+    && log.payload.matchId === secondResult.matchId
+    && log.payload.table === 5
+    && log.payload.players.length === 2));
+  assert.equal(logs.filter((log) => log.event === 'WHATSAPP_MATCH_LINK_SENT'
+    && log.payload.matchId === secondResult.matchId).length, 2);
 }
 
 {
