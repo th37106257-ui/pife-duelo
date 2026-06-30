@@ -370,6 +370,50 @@ function emitMatchToPlayers(gameState, eventName = 'matchFinished') {
   });
 }
 
+function buildMatchFinishedLog(gameState, reason = null) {
+  const finishedAt = gameState?.finishedAt || gameState?.result?.finishedAt || new Date().toISOString();
+  const startedAt = gameState?.startedAt || null;
+  const duration = startedAt
+    ? Math.max(0, Math.round((Date.parse(finishedAt) - Date.parse(startedAt)) / 1000))
+    : null;
+  return {
+    matchId: gameState?.matchId ?? null,
+    roomId: gameState?.roomId ?? null,
+    table: gameState?.tableValue ?? gameState?.economy?.tableValue ?? null,
+    winner: gameState?.result?.winnerId ?? null,
+    loser: gameState?.result?.loserId ?? null,
+    finishedAt,
+    startedAt,
+    reason: reason || gameState?.result?.reason || null,
+    duration,
+    players: (gameState?.players ?? []).map((player) => ({
+      playerId: player.id,
+      name: player.name ?? player.playerName ?? null,
+    })),
+  };
+}
+
+function releaseWhatsAppEntriesAfterMatch(gameState, reason = 'match_finished') {
+  if (!gameState?.matchId || !whatsappEntryService?.finishEntriesForMatch) return [];
+  const released = whatsappEntryService.finishEntriesForMatch({
+    matchId: gameState.matchId,
+    winnerId: gameState.result?.winnerId ?? null,
+    loserId: gameState.result?.loserId ?? null,
+    reason,
+  });
+  released.forEach((entry) => {
+    logInfo('PLAYER_RELEASED_AFTER_MATCH', {
+      playerId: entry.phoneMasked ?? entry.entryId,
+      entryId: entry.entryId,
+      matchId: gameState.matchId,
+      table: entry.selectedTable ?? gameState.tableValue ?? null,
+      status: entry.status,
+      reason,
+    });
+  });
+  return released;
+}
+
 app.get('/health', (request, response) => {
   const metrics = getProductionMetrics();
   const memory = process.memoryUsage();
@@ -841,6 +885,8 @@ app.post('/api/admin/matches/:matchId/end', (request, response) => {
     roomId: result.gameState?.roomId,
     reason,
   });
+  releaseWhatsAppEntriesAfterMatch(result.gameState, reason);
+  logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, reason));
 
   emitMatchToPlayers(result.gameState);
   response.json({ match: result.gameState });
@@ -870,6 +916,8 @@ app.post('/api/admin/matches/:matchId/force-winner', (request, response) => {
     winnerId,
     reason,
   });
+  releaseWhatsAppEntriesAfterMatch(result.gameState, 'admin_decision');
+  logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'admin_decision'));
 
   emitMatchToPlayers(result.gameState);
   response.json({ match: result.gameState });

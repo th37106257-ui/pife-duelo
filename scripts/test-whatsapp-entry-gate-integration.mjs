@@ -142,6 +142,7 @@ try {
   const duplicateQueue = await joinQueue(duplicate.socket, 5, 'Duplicado');
   assert.equal(duplicateQueue.ok, false);
   assert.equal(duplicateQueue.reason, 'ENTRY_ACCESS_RESERVED');
+  assert.equal(duplicateQueue.message, 'Você já possui uma sessão ativa nesta partida/fila.');
   duplicate.socket.close();
 
   const second = await connectClient(secondToken);
@@ -160,9 +161,42 @@ try {
     assert.equal(entry.linkedMatchId, firstMatch.matchId);
   });
 
+  const firstFinished = once(first.socket, 'matchFinished');
+  const secondFinished = once(second.socket, 'matchFinished');
+  const finishResponse = await fetch(`${baseUrl}/api/admin/matches/${firstMatch.matchId}/force-winner`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-admin-password': 'entry-gate-test',
+    },
+    body: JSON.stringify({
+      winnerId: firstMatch.you.playerId,
+      reason: 'fase_5_4_test',
+    }),
+  });
+  assert.equal(finishResponse.ok, true);
+  await Promise.all([firstFinished, secondFinished]);
+
+  const finishedStore = new WhatsAppEntryStore({ filePath: entryStorePath });
+  [firstApproval.entry.entryId, secondApproval.entry.entryId].forEach((entryId) => {
+    const entry = finishedStore.getEntry(entryId);
+    assert.equal(entry.status, 'finished');
+    assert.equal(entry.finishedAt !== null, true);
+    assert.ok(entry.auditLog.some((item) => item.action === 'entry_finished'));
+  });
+
+  const postMatchService = new WhatsAppEntryService({
+    store: finishedStore,
+    accessSecret,
+    publicGameUrl: baseUrl,
+  });
+  const postMatchEntry = postMatchService.createEntry({ phone: '5511888880000', selectedTable: 10, source: 'post-match-test' });
+  assert.equal(postMatchEntry.status, 'pending_admin_validation');
+  assert.equal(postMatchEntry.selectedTable, 10);
+
   first.socket.close();
   second.socket.close();
-  console.log('Entrada WhatsApp: fallback preservado, token invalido bloqueado e dois links aprovados iniciaram partida.');
+  console.log('Entrada WhatsApp: token seguro, duplicidade bloqueada, partida iniciada e jogadores liberados apos finalizacao.');
 } finally {
   server.kill();
   rmSync(temporaryDirectory, { recursive: true, force: true });

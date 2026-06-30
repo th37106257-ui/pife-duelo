@@ -141,6 +141,50 @@ export function setupSocketServer(httpServer, {
     uptime: Math.round(process.uptime()),
   });
 
+  const buildMatchFinishedLog = (gameState, reason = null) => {
+    const finishedAt = gameState?.finishedAt || gameState?.result?.finishedAt || new Date().toISOString();
+    const startedAt = gameState?.startedAt || null;
+    const duration = startedAt
+      ? Math.max(0, Math.round((Date.parse(finishedAt) - Date.parse(startedAt)) / 1000))
+      : null;
+    return {
+      matchId: gameState?.matchId ?? null,
+      roomId: gameState?.roomId ?? null,
+      table: gameState?.tableValue ?? gameState?.economy?.tableValue ?? null,
+      winner: gameState?.result?.winnerId ?? null,
+      loser: gameState?.result?.loserId ?? null,
+      finishedAt,
+      startedAt,
+      reason: reason || gameState?.result?.reason || gameState?.finishReason || null,
+      duration,
+      players: (gameState?.players ?? []).map((player) => ({
+        playerId: player.id,
+        name: player.name ?? player.playerName ?? null,
+      })),
+    };
+  };
+
+  const releaseWhatsAppEntriesAfterMatch = (gameState, reason = 'match_finished') => {
+    if (!gameState?.matchId || !entryService?.finishEntriesForMatch) return [];
+    const released = entryService.finishEntriesForMatch({
+      matchId: gameState.matchId,
+      winnerId: gameState.result?.winnerId ?? null,
+      loserId: gameState.result?.loserId ?? null,
+      reason,
+    });
+    released.forEach((entry) => {
+      logInfo('PLAYER_RELEASED_AFTER_MATCH', {
+        playerId: entry.phoneMasked ?? entry.entryId,
+        entryId: entry.entryId,
+        matchId: gameState.matchId,
+        table: entry.selectedTable ?? gameState.tableValue ?? null,
+        status: entry.status,
+        reason,
+      });
+    });
+    return released;
+  };
+
   const broadcastServerStatus = () => {
     io.emit('serverStatus', buildServerStatus());
   };
@@ -179,13 +223,8 @@ export function setupSocketServer(httpServer, {
       sendClientGameState(gameState);
     },
     onDisconnectTimeout: (gameState) => {
-      logInfo('MATCH_FINISHED', {
-        matchId: gameState.matchId,
-        roomId: gameState.roomId,
-        winnerId: gameState.result?.winnerId ?? null,
-        loserId: gameState.result?.loserId ?? null,
-        reason: 'disconnect',
-      });
+      releaseWhatsAppEntriesAfterMatch(gameState, 'disconnect');
+      logInfo('MATCH_FINISHED', buildMatchFinishedLog(gameState, 'disconnect'));
       sendClientGameState(gameState, 'matchFinished');
     },
   });
@@ -309,6 +348,12 @@ export function setupSocketServer(httpServer, {
     logInfo('MATCH_STARTED', {
       matchId: onlineMatch.matchId,
       roomId: room.roomId,
+      table: room.tableValue,
+      players: onlineMatch.players.map((item) => ({
+        playerId: item.id,
+        name: item.name ?? item.playerName ?? null,
+      })),
+      startedAt: onlineMatch.startedAt ?? null,
       currentTurnPlayerId: onlineMatch.currentTurnPlayerId,
     });
     entries.forEach((entry, index) => {
@@ -547,8 +592,18 @@ export function setupSocketServer(httpServer, {
             tableValue,
             reason: error.message,
           });
+          if (error.message === 'ENTRY_ACCESS_RESERVED') {
+            logWarn('PLAYER_BLOCKED_ACTIVE_QUEUE', {
+              playerId: socket.entryAccess.entryId,
+              currentTable: socket.entryAccess.selectedTable,
+              attemptedTable: tableValue,
+              reason: 'ENTRY_ACCESS_RESERVED',
+            });
+          }
           const message = error.message === 'ENTRY_TABLE_MISMATCH'
             ? 'Use a mesma mesa liberada pelo admin.'
+            : error.message === 'ENTRY_ACCESS_RESERVED'
+              ? 'Você já possui uma sessão ativa nesta partida/fila.'
             : 'Esta entrada nao esta disponivel para a fila.';
           socket.emit('matchmakingError', { reason: error.message, message });
           ack?.({ ok: false, reason: error.message, message, serverNow: Date.now() });
@@ -593,6 +648,13 @@ export function setupSocketServer(httpServer, {
           reason: queueResult.reason,
           tableValue,
         });
+        if (queueResult.reason === 'player-already-queued') {
+          logWarn('PLAYER_BLOCKED_ACTIVE_QUEUE', {
+            playerId: player.id,
+            currentTable: queueResult.entry?.tableValue ?? null,
+            attemptedTable: tableValue,
+          });
+        }
         socket.emit('matchmakingError', {
           reason: queueResult.reason,
           message: 'Voce ja esta na fila ou a entrada nao e valida.',
@@ -718,6 +780,7 @@ export function setupSocketServer(httpServer, {
         playerId: savedPlayerId,
         matchId: match.matchId,
         roomId: match.roomId,
+        table: match.tableValue ?? match.economy?.tableValue ?? null,
       });
       logInfo('CLIENT_STATE_SENT', {
         eventName: 'resumeOnlineMatch',
@@ -840,12 +903,8 @@ export function setupSocketServer(httpServer, {
         roomId: result.gameState.roomId,
         playerId: activePlayerId,
       });
-      logInfo('MATCH_FINISHED', {
-        matchId: result.gameState.matchId,
-        roomId: result.gameState.roomId,
-        winnerId: activePlayerId,
-        reason: 'knock',
-      });
+      releaseWhatsAppEntriesAfterMatch(result.gameState, 'knock');
+      logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'knock'));
       acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState, 'matchFinished');
     };
@@ -862,13 +921,8 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
-      logInfo('MATCH_FINISHED', {
-        matchId: result.gameState.matchId,
-        roomId: result.gameState.roomId,
-        winnerId: result.gameState.result?.winnerId ?? null,
-        loserId: activePlayerId,
-        reason: 'surrender',
-      });
+      releaseWhatsAppEntriesAfterMatch(result.gameState, 'surrender');
+      logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'surrender'));
       acknowledgeAction(ack, payload, result);
       sendClientGameState(result.gameState, 'matchFinished');
     });
@@ -900,12 +954,18 @@ export function setupSocketServer(httpServer, {
         });
       }
       playerManager.setPlayerConnected(activePlayerId, false);
-      matchManager.handleOnlineDisconnect(activePlayerId);
+      const disconnectedMatch = matchManager.handleOnlineDisconnect(activePlayerId);
       socketManager.removeSocket(socket.id);
       broadcastServerStatus();
 
       logInfo('SOCKET_DISCONNECTED', { socketId: socket.id, playerId: activePlayerId, reason });
-      logInfo('PLAYER_DISCONNECTED', { socketId: socket.id, playerId: activePlayerId, reason });
+      logInfo('PLAYER_DISCONNECTED', {
+        socketId: socket.id,
+        playerId: activePlayerId,
+        matchId: disconnectedMatch?.matchId ?? null,
+        table: disconnectedMatch?.tableValue ?? disconnectedMatch?.economy?.tableValue ?? null,
+        reason,
+      });
     });
   });
 

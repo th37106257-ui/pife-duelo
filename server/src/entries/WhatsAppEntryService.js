@@ -519,6 +519,34 @@ export class WhatsAppEntryService {
     }));
   }
 
+  finishEntriesForMatch({ matchId, winnerId = null, loserId = null, reason = 'match_finished' }) {
+    const safeMatchId = String(matchId || '').trim();
+    if (!safeMatchId) return [];
+
+    const at = nowIso(this.clock);
+    return this.store.listEntries()
+      .filter((entry) => entry.linkedMatchId === safeMatchId && ['linked', 'playing'].includes(entry.status))
+      .map((entry) => sanitizeWhatsAppEntry(this.store.updateEntry(entry.entryId, (current) => ({
+        ...current,
+        status: 'finished',
+        queueSocketId: null,
+        queuedAt: null,
+        finishedAt: current.finishedAt || at,
+        updatedAt: at,
+        auditLog: [...current.auditLog, auditEntry({
+          action: 'entry_finished',
+          actor: 'system',
+          at,
+          details: {
+            matchId: safeMatchId,
+            winnerId: winnerId || null,
+            loserId: loserId || null,
+            reason: String(reason || 'match_finished').slice(0, 80),
+          },
+        })],
+      }))));
+  }
+
   assertValidStatus(status) {
     return WHATSAPP_ENTRY_STATUSES.has(status);
   }

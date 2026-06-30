@@ -111,7 +111,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
-  const { bot, store, matchQueue, sentMessages } = createBot();
+  const { bot, store, matchQueue, sentMessages, logs } = createBot();
   const firstPhone = '551188880001';
   const secondPhone = '551188880002';
   const firstReplyJid = `${firstPhone}000@lid`;
@@ -132,6 +132,9 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const otherTableBlocked = await bot.handleConnectivityWebhook(createWebhook(firstPhone, '2', firstReplyJid));
   assert.equal(otherTableBlocked.type, 'whatsapp_queue_other_table_blocked');
   assert.match(sentMessages.at(-1).text, /outra mesa/);
+  assert.ok(logs.some((log) => log.event === 'PLAYER_BLOCKED_ACTIVE_QUEUE'
+    && log.payload.currentTable === 2
+    && log.payload.attemptedTable === 5));
 
   const secondResult = await chooseTable(bot, secondPhone, '1', '1', secondReplyJid);
   assert.equal(secondResult.type, 'whatsapp_match_created');
@@ -443,7 +446,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
-  const { bot, entryService, sentMessages } = createBot();
+  const { bot, entryService, sentMessages, logs } = createBot();
   const activePhone = '551188880030';
   const activeEntry = entryService.createEntry({ phone: activePhone, selectedTable: 5, source: 'active-test' });
   entryService.approveEntry({
@@ -462,6 +465,8 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const activeBlocked = await bot.handleConnectivityWebhook(createWebhook(activePhone, '2'));
   assert.equal(activeBlocked.type, 'whatsapp_queue_active_match_blocked');
   assert.equal(sentMessages.at(-1).text, '⚠️ Você já está em uma partida ativa.');
+  assert.ok(logs.some((log) => log.event === 'PLAYER_BLOCKED_ACTIVE_MATCH'
+    && log.payload.attemptedTable === 5));
 }
 
 {

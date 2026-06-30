@@ -447,6 +447,14 @@ export class MatchQueue {
         currentTable: existingQueue.tableValue,
         entryId: existingQueue.entry.entryId,
       });
+      if (existingQueue.tableValue !== tableValue) {
+        this.logWarn('PLAYER_BLOCKED_ACTIVE_QUEUE', {
+          playerId: maskPhone(phone),
+          currentTable: existingQueue.tableValue,
+          attemptedTable: tableValue,
+          entryId: existingQueue.entry.entryId,
+        });
+      }
       return {
         blocked: true,
         reason: existingQueue.tableValue === tableValue ? 'already_in_queue' : 'already_in_other_queue',
@@ -461,6 +469,13 @@ export class MatchQueue {
         tableValue,
         entryId: activeMatch.entryId ?? null,
         matchId: activeMatch.matchId ?? null,
+        status: activeMatch.status ?? null,
+      });
+      this.logWarn('PLAYER_BLOCKED_ACTIVE_MATCH', {
+        playerId: maskPhone(phone),
+        matchId: activeMatch.matchId ?? null,
+        attemptedTable: tableValue,
+        entryId: activeMatch.entryId ?? null,
         status: activeMatch.status ?? null,
       });
       return { blocked: true, reason: 'already_in_active_match', activeMatch };

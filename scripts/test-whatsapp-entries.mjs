@@ -75,6 +75,17 @@ assert.throws(
   () => service.reserveQueueAccess({ entryId: pending.entryId, socketId: 'socket-1', selectedTable: 5 }),
   /ENTRY_NOT_APPROVED/,
 );
+const finishedEntries = service.finishEntriesForMatch({
+  matchId: 'match-safe-1',
+  winnerId: 'player-a',
+  loserId: 'player-b',
+  reason: 'knock',
+});
+assert.equal(finishedEntries.length, 1);
+assert.equal(finishedEntries[0].status, 'finished');
+assert.equal(finishedEntries[0].finishedAt !== null, true);
+assert.equal(service.getActiveEntryForPhone('5511888880000'), null);
+assert.ok(store.getEntry(pending.entryId).auditLog.some((item) => item.action === 'entry_finished'));
 
 const rejectedPending = service.createEntry({ phone: '5511666660000', selectedTable: 2 });
 const rejected = service.rejectEntry({ entryId: rejectedPending.entryId, actor: 'admin-panel', reason: 'teste rejeitado' });
