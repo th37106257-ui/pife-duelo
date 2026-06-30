@@ -65,6 +65,31 @@ function isAdminCommandText(command) {
   );
 }
 
+function maskDigitsInText(value) {
+  return String(value || '').replace(/\d{8,15}/g, (digits) => maskPhone(digits));
+}
+
+function defaultLogInfo(event, payload) {
+  console.log(`[PIFE_SERVER][${event}]`, {
+    timestamp: new Date().toISOString(),
+    ...(payload || {}),
+  });
+}
+
+function defaultLogWarn(event, payload) {
+  console.warn(`[PIFE_SERVER][${event}]`, {
+    timestamp: new Date().toISOString(),
+    ...(payload || {}),
+  });
+}
+
+function defaultLogError(event, payload) {
+  console.error(`[PIFE_SERVER][${event}]`, {
+    timestamp: new Date().toISOString(),
+    ...(payload || {}),
+  });
+}
+
 function getOwnerJid(payload = {}) {
   const candidates = [
     payload.ownerJid,
@@ -224,6 +249,9 @@ export class WhatsAppPaymentBot {
     adminNumbers = [],
     publicGameUrl = '',
     clock = Date.now,
+    logInfo = defaultLogInfo,
+    logWarn = defaultLogWarn,
+    logError = defaultLogError,
   } = {}) {
     this.paymentService = paymentService;
     this.entryService = entryService;
@@ -235,6 +263,9 @@ export class WhatsAppPaymentBot {
     this.adminNumbers = adminNumbers.map(normalizePhone).filter(Boolean);
     this.publicGameUrl = String(publicGameUrl || '').replace(/\/$/, '');
     this.clock = clock;
+    this.logInfo = logInfo;
+    this.logWarn = logWarn;
+    this.logError = logError;
     this.rateLimits = new Map();
     this.recentFingerprints = new Map();
     this.conversationStates = new Map();
@@ -395,10 +426,70 @@ export class WhatsAppPaymentBot {
   }
 
   async handleSafeEntryAdminCommand(phone, text, { replyTo = phone } = {}) {
-    if (!this.safeEntryEnabled || !this.entryService?.isConfigured() || !this.entryService.isAdmin(phone)) {
-      await this.send(replyTo, 'Comando n\u00e3o autorizado.');
+    const senderPhone = normalizePhone(phone);
+    const rawText = sanitizeText(text);
+    const normalizedText = normalizeCommand(rawText).replace(/\s+/g, ' ');
+    this.logInfo('ADMIN_COMMAND_RECEIVED', {
+      rawText: maskDigitsInText(rawText),
+      senderPhone: maskPhone(senderPhone),
+    });
+    const isAdmin = Boolean(
+      senderPhone
+      && (
+        this.adminNumbers.includes(senderPhone)
+        || this.entryService?.isAdmin?.(senderPhone)
+      ),
+    );
+    this.logInfo('ADMIN_COMMAND_AUTH_CHECK', {
+      senderPhone: maskPhone(senderPhone),
+      configuredAdmins: this.adminNumbers.map(maskPhone),
+      isAdmin,
+    });
+    if (!isAdmin) {
+      this.logWarn('ADMIN_COMMAND_DENIED', {
+        senderPhone: maskPhone(senderPhone),
+        reason: 'admin_not_authorized',
+      });
+      await this.send(replyTo, '❌ Comando admin não autorizado para este número.');
       return { type: 'entry_admin_unauthorized', decision: 'reply_sent', reason: 'admin_not_authorized' };
     }
+
+    if (normalizedText === 'admin ping' || normalizedText === '/admin ping') {
+      await this.send(replyTo, '✅ Admin ativo.');
+      this.logInfo('ADMIN_COMMAND_EXECUTED', {
+        command: 'ping',
+        adminPhone: maskPhone(senderPhone),
+        targetPhone: null,
+        result: 'ok',
+      });
+      return { type: 'entry_admin_ping', decision: 'reply_sent', reason: 'admin_ping_ok' };
+    }
+
+    if (normalizedText === 'admin status' || normalizedText === '/admin status') {
+      await this.send(replyTo, [
+        '✅ Admin reconhecido.',
+        `Seu número: ${senderPhone}`,
+        'Comandos disponíveis:',
+        'admin recolocar NUMERO',
+        'admin cancelar NUMERO',
+        'admin reembolsar NUMERO',
+      ].join('\n'));
+      this.logInfo('ADMIN_COMMAND_EXECUTED', {
+        command: 'status',
+        adminPhone: maskPhone(senderPhone),
+        targetPhone: null,
+        result: 'ok',
+      });
+      return { type: 'entry_admin_status', decision: 'reply_sent', reason: 'admin_status_ok' };
+    }
+
+    const invalidFormatText = [
+      '❌ Formato inválido.',
+      'Use:',
+      'admin recolocar 5521999999999',
+      'admin cancelar 5521999999999',
+      'admin reembolsar 5521999999999',
+    ].join('\n');
 
     if (/^\/admin\s+entradas$/i.test(text)) {
       await this.send(replyTo, this.pendingEntriesText());
@@ -430,7 +521,7 @@ export class WhatsAppPaymentBot {
       };
     }
 
-    const paidDecisionMatch = text.match(/^(?:(?:\/admin|admin)\s+)?(cancelar|reembolsar|recolocar)\s+(\d{8,15})$/i);
+    const paidDecisionMatch = rawText.match(/^(?:(?:\/admin|admin)\s+)?(cancelar|reembolsar|recolocar)(?:\s+(.+))?$/i);
     if (paidDecisionMatch) {
       const decisionByCommand = {
         cancelar: 'cancel',
@@ -439,13 +530,27 @@ export class WhatsAppPaymentBot {
       };
       const command = paidDecisionMatch[1].toLowerCase();
       const targetPhone = normalizePhone(paidDecisionMatch[2]);
-      const result = this.entryService.adminDecidePaidEntryForPhone(targetPhone, {
-        actor: phone,
+      if (!targetPhone) {
+        this.logWarn('ADMIN_COMMAND_INVALID_FORMAT', {
+          senderPhone: maskPhone(senderPhone),
+          rawText: maskDigitsInText(rawText),
+        });
+        await this.send(replyTo, invalidFormatText);
+        return { type: 'entry_admin_invalid_format', decision: 'reply_sent', reason: 'invalid_target_phone' };
+      }
+      const result = this.entryService?.adminDecidePaidEntryForPhone?.(targetPhone, {
+        actor: senderPhone,
         decision: decisionByCommand[command],
         source: `whatsapp_admin_${command}`,
-      });
+      }) ?? { updated: false, reason: 'entry_service_unavailable' };
       if (!result.updated) {
-        await this.send(replyTo, `Não foi possível aplicar ${command}: ${result.reason}`);
+        this.logWarn('ADMIN_COMMAND_EXECUTED', {
+          command,
+          adminPhone: maskPhone(senderPhone),
+          targetPhone: maskPhone(targetPhone),
+          result: result.reason,
+        });
+        await this.send(replyTo, '⚠️ Jogador não encontrado ou sem entrada ativa.');
         return {
           type: 'entry_admin_paid_decision_failed',
           decision: 'reply_sent',
@@ -453,13 +558,24 @@ export class WhatsAppPaymentBot {
           targetPhone: maskPhone(targetPhone),
         };
       }
+      const successText = {
+        cancelar: '✅ Entrada cancelada pelo admin.',
+        reembolsar: '✅ Entrada marcada para reembolso/admin review.',
+        recolocar: '✅ Jogador recolocado com sucesso.',
+      };
       await this.send(replyTo, [
-        `✅ Decisão registrada para ${maskPhone(targetPhone)}.`,
-        `Ação: ${command}`,
+        successText[command],
+        `Jogador: ${maskPhone(targetPhone)}`,
         `Entrada: #${result.entry.entryId}`,
         `Status: ${result.entry.status}`,
         'Histórico preservado.',
       ].join('\n'));
+      this.logInfo('ADMIN_COMMAND_EXECUTED', {
+        command,
+        adminPhone: maskPhone(senderPhone),
+        targetPhone: maskPhone(targetPhone),
+        result: result.entry.status,
+      });
       return {
         type: 'entry_admin_paid_decision',
         decision: 'reply_sent',

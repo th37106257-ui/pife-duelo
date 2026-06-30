@@ -80,6 +80,9 @@ const whatsappPaymentBot = new WhatsAppPaymentBot({
   pixReceiver: config.PIX_RECEIVER,
   adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
   publicGameUrl: config.PUBLIC_GAME_URL,
+  logInfo,
+  logWarn,
+  logError,
 });
 const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
   && config.PAYMENT_GATE_ENABLED

@@ -161,7 +161,7 @@ assert.equal(botStore.getEntry('E2000').selectedTable, 2);
 
 const unauthorizedAdmin = await bot.handleConnectivityWebhook(entryWebhook('5511222220000', '/admin entradas'));
 assert.equal(unauthorizedAdmin.type, 'entry_admin_unauthorized');
-assert.equal(botMessages.at(-1).text, 'Comando não autorizado.');
+assert.ok(botMessages.at(-1).text.includes('Comando admin'));
 
 const adminList = await bot.handleConnectivityWebhook(entryWebhook('5511999990000', '/admin entradas'));
 assert.equal(adminList.type, 'entry_admin_pending_list');

@@ -59,6 +59,9 @@ function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
     adminNumbers: ['5511999990000'],
     publicGameUrl: 'https://pife-duelo.example',
     clock: () => now,
+    logInfo: (event, payload) => logs.push({ level: 'info', event, payload }),
+    logWarn: (event, payload) => logs.push({ level: 'warn', event, payload }),
+    logError: (event, payload) => logs.push({ level: 'error', event, payload }),
   });
 
   return { bot, store, entryService, matchQueue, sentMessages, logs };
@@ -108,6 +111,39 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(paidQueue.selectedTable, 5);
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 1);
   assert.equal(store.listEntries().length, 1);
+}
+
+{
+  const { bot, sentMessages, logs } = createBot();
+  const adminPhone = '5511999990000';
+  const unauthorizedPhone = '551177770000';
+
+  const ping = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'admin ping'));
+  assert.equal(ping.type, 'entry_admin_ping');
+  assert.equal(sentMessages.at(-1).text, '✅ Admin ativo.');
+
+  const status = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'admin status'));
+  assert.equal(status.type, 'entry_admin_status');
+  assert.ok(sentMessages.at(-1).text.includes('Admin reconhecido'));
+  assert.ok(sentMessages.at(-1).text.includes(adminPhone));
+
+  const denied = await bot.handleConnectivityWebhook(createWebhook(unauthorizedPhone, 'admin ping'));
+  assert.equal(denied.type, 'entry_admin_unauthorized');
+  assert.equal(sentMessages.at(-1).text, '❌ Comando admin não autorizado para este número.');
+
+  const invalid = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'admin recolocar'));
+  assert.equal(invalid.type, 'entry_admin_invalid_format');
+  assert.ok(sentMessages.at(-1).text.includes('Formato inválido'));
+
+  const notFound = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'admin recolocar +55 21 99999-9999'));
+  assert.equal(notFound.type, 'entry_admin_paid_decision_failed');
+  assert.equal(notFound.targetPhone, '*********9999');
+  assert.ok(sentMessages.at(-1).text.includes('Jogador'));
+  assert.ok(logs.some((log) => log.event === 'ADMIN_COMMAND_RECEIVED'));
+  assert.ok(logs.some((log) => log.event === 'ADMIN_COMMAND_AUTH_CHECK' && log.payload.isAdmin === true));
+  assert.ok(logs.some((log) => log.event === 'ADMIN_COMMAND_DENIED'));
+  assert.ok(logs.some((log) => log.event === 'ADMIN_COMMAND_INVALID_FORMAT'));
+  assert.ok(logs.some((log) => log.event === 'ADMIN_COMMAND_EXECUTED'));
 }
 
 {
