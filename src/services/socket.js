@@ -4,6 +4,7 @@ import { getServerUrl } from './serverUrl.js';
 
 const CONNECTION_TIMEOUT_MS = 30000;
 const connectionSubscribers = new Set();
+const FRIENDLY_ENTRY_ACCESS_MESSAGE = '✅ Sua partida anterior foi encerrada. Você já pode escolher uma mesa novamente.';
 
 let socket = null;
 let socketConnectPromise = null;
@@ -145,7 +146,7 @@ function createSocket() {
       status: paymentDenied || entryDenied ? 'error' : 'reconnecting',
       connected: false,
       message: entryDenied
-        ? 'Esta entrada nao foi liberada, expirou ou nao e valida.'
+        ? FRIENDLY_ENTRY_ACCESS_MESSAGE
         : paymentDenied
           ? 'Pagamento confirmado necessario. Use o link recebido no WhatsApp.'
           : 'Reconectando ao servidor...',
@@ -244,7 +245,7 @@ export async function connectSocket() {
 
     const onConnectError = (error) => {
       if (isEntryAccessError(error)) {
-        fail('Esta entrada nao foi liberada, expirou ou nao e valida.');
+        fail(FRIENDLY_ENTRY_ACCESS_MESSAGE);
         return;
       }
       if (isPaymentAccessError(error)) {

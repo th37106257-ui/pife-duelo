@@ -153,6 +153,8 @@ export default function MatchmakingScreen() {
     status: payload.status,
     result: payload.result,
     matchLog: payload.matchLog ?? [],
+    entryAccess: payload.entryAccess ?? activeSessionRef.current?.entryAccess ?? null,
+    fromWhatsAppEntry: Boolean(payload.entryAccess?.entryId || activeSessionRef.current?.entryAccess?.entryId || hasDirectEntryLink),
   });
 
   const rememberOnlineState = (nextState) => {
@@ -169,6 +171,8 @@ export default function MatchmakingScreen() {
       roomId: nextState.roomId,
       playerId: nextState.playerId,
       tableValue: nextState.tableValue,
+      entryAccess: nextState.entryAccess ?? null,
+      fromWhatsAppEntry: Boolean(nextState.fromWhatsAppEntry),
       savedAt: Date.now(),
     };
     activeSessionRef.current = session;

@@ -464,6 +464,7 @@ export class WhatsAppEntryService {
       whatsappReplyTo: null,
       linkedMatchId: null,
       whatsappMatchId: null,
+      playerId: null,
       roomUrl: null,
       linkSentAt: null,
       playingAt: null,
@@ -727,7 +728,7 @@ export class WhatsAppEntryService {
     }));
   }
 
-  linkToMatch({ entryId, socketId, matchId }) {
+  linkToMatch({ entryId, socketId, matchId, playerId = null }) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'queued') throw new Error('ENTRY_NOT_QUEUED');
       if (current.queueSocketId !== socketId) throw new Error('ENTRY_ACCESS_NOT_RESERVED');
@@ -736,42 +737,57 @@ export class WhatsAppEntryService {
         ...current,
         status: 'playing',
         linkedMatchId: matchId,
+        playerId: playerId || current.playerId || null,
         playingAt: at,
         updatedAt: at,
         auditLog: [...current.auditLog,
-          auditEntry({ action: 'entry_linked', actor: 'system', at, details: { matchId } }),
+          auditEntry({ action: 'entry_linked', actor: 'system', at, details: { matchId, playerId: playerId || null } }),
           auditEntry({ action: 'entry_playing', actor: 'system', at, details: { matchId } }),
         ],
       };
     }));
   }
 
-  finishEntriesForMatch({ matchId, winnerId = null, loserId = null, reason = 'match_finished' }) {
+  finishEntriesForMatch({
+    matchId,
+    winnerId = null,
+    loserId = null,
+    reason = 'match_finished',
+    includeNotificationTarget = false,
+  }) {
     const safeMatchId = String(matchId || '').trim();
     if (!safeMatchId) return [];
 
     const at = nowIso(this.clock);
     return this.store.listEntries()
       .filter((entry) => entry.linkedMatchId === safeMatchId && ['linked', 'playing'].includes(entry.status))
-      .map((entry) => sanitizeWhatsAppEntry(this.store.updateEntry(entry.entryId, (current) => ({
-        ...current,
-        status: 'finished',
-        queueSocketId: null,
-        queuedAt: null,
-        finishedAt: current.finishedAt || at,
-        updatedAt: at,
-        auditLog: [...current.auditLog, auditEntry({
-          action: 'entry_finished',
-          actor: 'system',
-          at,
-          details: {
-            matchId: safeMatchId,
-            winnerId: winnerId || null,
-            loserId: loserId || null,
-            reason: String(reason || 'match_finished').slice(0, 80),
-          },
-        })],
-      }))));
+      .map((entry) => {
+        const updated = this.store.updateEntry(entry.entryId, (current) => ({
+          ...current,
+          status: 'finished',
+          queueSocketId: null,
+          queuedAt: null,
+          finishedAt: current.finishedAt || at,
+          updatedAt: at,
+          auditLog: [...current.auditLog, auditEntry({
+            action: 'entry_finished',
+            actor: 'system',
+            at,
+            details: {
+              matchId: safeMatchId,
+              winnerId: winnerId || null,
+              loserId: loserId || null,
+              reason: String(reason || 'match_finished').slice(0, 80),
+            },
+          })],
+        }));
+        const safe = sanitizeWhatsAppEntry(updated);
+        if (!includeNotificationTarget) return safe;
+        return {
+          ...safe,
+          notifyTo: updated.whatsappReplyTo || updated.phone || null,
+        };
+      });
   }
 
   assertValidStatus(status) {

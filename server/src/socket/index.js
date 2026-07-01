@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { buildClientGameState } from '../game/clientState.js';
 import { logError, logInfo, logWarn } from '../utils/logger.js';
 import { recordClientError } from '../observabilityStore.js';
+import { createPostMatchFlow } from '../services/postMatchFlow.js';
 
 export function setupSocketServer(httpServer, {
   roomManager,
@@ -14,6 +15,8 @@ export function setupSocketServer(httpServer, {
   paymentGateEnabled = false,
   entryService = null,
   safeEntryEnabled = false,
+  whatsappBot = null,
+  whatsappMatchQueue = null,
   corsOptions,
 } = {}) {
   const io = new Server(httpServer, {
@@ -118,6 +121,15 @@ export function setupSocketServer(httpServer, {
       if (!targetSocket) return;
 
       const payload = buildClientGameState(gameState, player.id);
+      if (targetSocket.entryAccess) {
+        payload.entryAccess = {
+          entryId: targetSocket.entryAccess.entryId,
+          selectedTable: targetSocket.entryAccess.selectedTable,
+          whatsappMatchId: targetSocket.entryAccess.whatsappMatchId,
+          requestedMatchId: targetSocket.entryAccess.requestedMatchId,
+          linkedMatchId: targetSocket.entryAccess.linkedMatchId,
+        };
+      }
       targetSocket.emit(eventName, payload);
       targetSocket.emit('time_sync', buildTimeSync(gameState));
       logInfo('CLIENT_STATE_SENT', {
@@ -164,26 +176,20 @@ export function setupSocketServer(httpServer, {
     };
   };
 
-  const releaseWhatsAppEntriesAfterMatch = (gameState, reason = 'match_finished') => {
-    if (!gameState?.matchId || !entryService?.finishEntriesForMatch) return [];
-    const released = entryService.finishEntriesForMatch({
-      matchId: gameState.matchId,
-      winnerId: gameState.result?.winnerId ?? null,
-      loserId: gameState.result?.loserId ?? null,
-      reason,
-    });
-    released.forEach((entry) => {
-      logInfo('PLAYER_RELEASED_AFTER_MATCH', {
-        playerId: entry.phoneMasked ?? entry.entryId,
-        entryId: entry.entryId,
-        matchId: gameState.matchId,
-        table: entry.selectedTable ?? gameState.tableValue ?? null,
-        status: entry.status,
-        reason,
-      });
-    });
-    return released;
-  };
+  const postMatchFlow = createPostMatchFlow({
+    entryService,
+    whatsappBot,
+    whatsappMatchQueue,
+    logInfo,
+    logWarn,
+    logError,
+  });
+
+  const finishMatchAndNotify = (gameState, reason = 'match_finished') => postMatchFlow.finishMatchAndNotify(
+    gameState,
+    reason,
+    { emitResult: sendClientGameState },
+  );
 
   const broadcastServerStatus = () => {
     io.emit('serverStatus', buildServerStatus());
@@ -223,9 +229,8 @@ export function setupSocketServer(httpServer, {
       sendClientGameState(gameState);
     },
     onDisconnectTimeout: (gameState) => {
-      releaseWhatsAppEntriesAfterMatch(gameState, 'disconnect');
       logInfo('MATCH_FINISHED', buildMatchFinishedLog(gameState, 'disconnect'));
-      sendClientGameState(gameState, 'matchFinished');
+      void finishMatchAndNotify(gameState, 'disconnect');
     },
   });
 
@@ -324,6 +329,7 @@ export function setupSocketServer(httpServer, {
         entryId: entry.entryId,
         socketId: entry.socketId,
         matchId: onlineMatch.matchId,
+        playerId: entry.playerId,
       });
     });
     if (entries.some((entry) => entry.entryId)) {
@@ -604,7 +610,7 @@ export function setupSocketServer(httpServer, {
             ? 'Use a mesma mesa liberada pelo admin.'
             : error.message === 'ENTRY_ACCESS_RESERVED'
               ? 'Você já possui uma sessão ativa nesta partida/fila.'
-            : 'Esta entrada nao esta disponivel para a fila.';
+            : '⚠️ Não encontrei uma entrada ativa para esta mesa. Digite 2 para ver as mesas disponíveis.';
           socket.emit('matchmakingError', { reason: error.message, message });
           ack?.({ ok: false, reason: error.message, message, serverNow: Date.now() });
           return;
@@ -903,10 +909,9 @@ export function setupSocketServer(httpServer, {
         roomId: result.gameState.roomId,
         playerId: activePlayerId,
       });
-      releaseWhatsAppEntriesAfterMatch(result.gameState, 'knock');
       logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'knock'));
       acknowledgeAction(ack, payload, result);
-      sendClientGameState(result.gameState, 'matchFinished');
+      void finishMatchAndNotify(result.gameState, 'knock');
     };
 
     onSafe('playerKnock', handlePlayerKnock);
@@ -921,10 +926,9 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
-      releaseWhatsAppEntriesAfterMatch(result.gameState, 'surrender');
       logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'surrender'));
       acknowledgeAction(ack, payload, result);
-      sendClientGameState(result.gameState, 'matchFinished');
+      void finishMatchAndNotify(result.gameState, 'surrender');
     });
 
     socket.on('disconnect', (reason) => {

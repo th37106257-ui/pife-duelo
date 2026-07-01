@@ -56,6 +56,9 @@ const SAFE_TABLES = new Map([
 const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
 const SUPPORT_COMMANDS = new Set(['4', 'suporte', 'atendimento', 'ajuda']);
+const PLAY_COMMANDS = new Set(['1', 'jogar', 'jogar valendo', 'valendo', 'ver mesas', 'mesas', 'mesa']);
+const TEST_MODE_COMMANDS = new Set(['2', 'modo teste', 'modo teste gratis', 'teste', 'testar', 'gratis', 'gratuito']);
+const RULES_COMMANDS = new Set(['3', 'regras', 'regra', 'como jogar']);
 const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
 
 function isAdminCommandText(command) {
@@ -1070,13 +1073,13 @@ export class WhatsAppPaymentBot {
       };
     }
 
-    if (command === '1') {
+    if (PLAY_COMMANDS.has(command)) {
       this.setConversationState(incoming.phone, 'choosing_table');
       await this.send(replyTo, this.safeTablesText());
       return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
     }
 
-    if (command === '2') {
+    if (TEST_MODE_COMMANDS.has(command)) {
       const testModeLink = this.buildTestModeLink();
       this.matchQueue?.logInfo?.('WHATSAPP_TEST_MODE_REQUEST', {
         playerId: maskPhone(incoming.phone),
@@ -1099,7 +1102,7 @@ export class WhatsAppPaymentBot {
       };
     }
 
-    if (command === '3') {
+    if (RULES_COMMANDS.has(command)) {
       this.setConversationState(incoming.phone, 'idle');
       await this.send(replyTo, this.safeRulesText());
       return { type: 'whatsapp_rules_sent', decision: 'reply_sent', reason: 'rules_requested', state: 'idle', originIp };

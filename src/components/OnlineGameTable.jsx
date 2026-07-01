@@ -50,6 +50,12 @@ function buildOnlineResult(onlineGameState) {
   };
 }
 
+function buildWhatsAppReturnLink() {
+  const botNumber = String(import.meta.env.VITE_WHATSAPP_BOT_NUMBER || '').replace(/\D/g, '');
+  const text = encodeURIComponent('menu');
+  return botNumber ? `https://wa.me/${botNumber}?text=${text}` : `https://wa.me/?text=${text}`;
+}
+
 function syncOnlineVisualHand(currentHand, serverHand) {
   const serverCardsById = new Map(serverHand.map((card) => [card.id, card]));
   const keptCards = currentHand
@@ -213,6 +219,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const canBeat = handValidation.canBeat && canAct;
   const result = buildOnlineResult(onlineGameState);
   const showKnockReveal = onlineGameState.result?.reason === 'knock';
+  const hasWhatsAppReturn = Boolean(onlineGameState.fromWhatsAppEntry || onlineGameState.entryAccess?.entryId);
   const turnDurationSeconds = onlineGameState.turnDurationSeconds ?? 60;
   const playerTurnStatus = onlineGameState.isYourTurn ? 'Sua vez' : 'Aguarde';
   const opponentTurnStatus = onlineGameState.isYourTurn ? 'Aguarde' : 'Adversario';
@@ -355,6 +362,10 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     onlineGameState.matchId,
     onlineGameState.turnNumber,
   ]);
+
+  const handleOpenWhatsApp = useCallback(() => {
+    window.location.href = buildWhatsAppReturnLink();
+  }, []);
 
   useEffect(() => {
     if (!onlineGameState.result) return;
@@ -535,12 +546,21 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
             <small>ONLINE</small>
           </div>
 
-          <GameModal result={showKnockReveal ? null : result} onRestart={onLeaveOnline} />
+          <GameModal
+            result={showKnockReveal ? null : result}
+            onRestart={onLeaveOnline}
+            isOnlinePostMatch={Boolean(result)}
+            hasWhatsAppReturn={hasWhatsAppReturn}
+            onOpenWhatsApp={handleOpenWhatsApp}
+          />
           <EndGameReveal
             isOpen={showKnockReveal}
             result={onlineGameState.result}
             currentPlayerId={onlineGameState.playerId}
             onNewMatch={onLeaveOnline}
+            isOnlinePostMatch={showKnockReveal}
+            hasWhatsAppReturn={hasWhatsAppReturn}
+            onOpenWhatsApp={handleOpenWhatsApp}
           />
           {economy ? (
             <div className="match-economy-chip" aria-label="Mesa e premio">

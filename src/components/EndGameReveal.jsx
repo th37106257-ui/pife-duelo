@@ -12,6 +12,9 @@ export default function EndGameReveal({
   result,
   currentPlayerId,
   onNewMatch,
+  isOnlinePostMatch = false,
+  hasWhatsAppReturn = false,
+  onOpenWhatsApp,
 }) {
   const won = result?.winnerId === currentPlayerId;
   const groups = result?.winningGroups ?? [];
@@ -94,6 +97,13 @@ export default function EndGameReveal({
             <p className="endgame-footer">
               {won ? 'Voce venceu por batida.' : 'Voce perdeu por batida.'}
             </p>
+            {isOnlinePostMatch ? (
+              <p className="endgame-footer">
+                {hasWhatsAppReturn
+                  ? 'O resultado foi enviado para seu WhatsApp. Volte para o WhatsApp para jogar novamente.'
+                  : 'Sua partida foi encerrada. Você já pode escolher uma mesa novamente.'}
+              </p>
+            ) : null}
             {economy || economicResult ? (
               <div className="endgame-economy-summary">
                 <span>Mesa: {formatMoney(economicResult?.tableValue ?? economy?.tableValue)}</span>
@@ -107,9 +117,31 @@ export default function EndGameReveal({
                 )}
               </div>
             ) : null}
-            <button type="button" className="endgame-button" onClick={onNewMatch}>
-              Nova partida
-            </button>
+            {isOnlinePostMatch ? (
+              <div className="modal-actions">
+                {hasWhatsAppReturn ? (
+                  <button type="button" className="endgame-button" onClick={onOpenWhatsApp}>
+                    Abrir WhatsApp
+                  </button>
+                ) : (
+                  <>
+                    <button type="button" className="endgame-button" onClick={onNewMatch}>
+                      Jogar novamente
+                    </button>
+                    <button type="button" className="modal-secondary-action" onClick={onNewMatch}>
+                      Ver mesas
+                    </button>
+                  </>
+                )}
+                <button type="button" className="modal-ghost-action" onClick={onNewMatch}>
+                  Voltar ao lobby
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="endgame-button" onClick={onNewMatch}>
+                Nova partida
+              </button>
+            )}
           </motion.section>
         </motion.div>
       ) : null}

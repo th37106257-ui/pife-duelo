@@ -815,6 +815,29 @@ export class MatchQueue {
 
     return match;
   }
+
+  releaseActiveMatch(matchId) {
+    const safeMatchId = String(matchId || '').trim();
+    if (!safeMatchId) return [];
+
+    const released = [];
+    for (const [phone, activeMatch] of this.activeMatchesByPhone.entries()) {
+      if (String(activeMatch?.matchId || '') !== safeMatchId) continue;
+      this.activeMatchesByPhone.delete(phone);
+      const item = {
+        playerId: maskPhone(phone),
+        phoneMasked: maskPhone(phone),
+        matchId: safeMatchId,
+        table: activeMatch.tableValue ?? null,
+        entryId: activeMatch.entryId ?? null,
+        status: activeMatch.status ?? null,
+      };
+      released.push(item);
+      this.logInfo('PLAYER_QUEUE_REMOVED_AFTER_MATCH', item);
+    }
+
+    return released;
+  }
 }
 
 export { TABLE_QUEUE_IDS, tableQueueId };

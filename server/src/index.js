@@ -23,6 +23,7 @@ import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/
 import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
 import { MatchQueue } from './services/matchQueue.js';
+import { createPostMatchFlow } from './services/postMatchFlow.js';
 import {
   getDailyObservabilityMetrics,
   getErrorCountSince,
@@ -81,6 +82,14 @@ const whatsappPaymentBot = new WhatsAppPaymentBot({
   adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
   supportNumber: config.WHATSAPP_SUPPORT_NUMBER,
   publicGameUrl: config.PUBLIC_GAME_URL,
+  logInfo,
+  logWarn,
+  logError,
+});
+const postMatchFlow = createPostMatchFlow({
+  entryService: whatsappEntryService,
+  whatsappBot: whatsappPaymentBot,
+  whatsappMatchQueue,
   logInfo,
   logWarn,
   logError,
@@ -910,10 +919,8 @@ app.post('/api/admin/matches/:matchId/end', (request, response) => {
     roomId: result.gameState?.roomId,
     reason,
   });
-  releaseWhatsAppEntriesAfterMatch(result.gameState, reason);
   logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, reason));
-
-  emitMatchToPlayers(result.gameState);
+  void postMatchFlow.finishMatchAndNotify(result.gameState, reason, { emitResult: emitMatchToPlayers });
   response.json({ match: result.gameState });
 });
 
@@ -941,10 +948,8 @@ app.post('/api/admin/matches/:matchId/force-winner', (request, response) => {
     winnerId,
     reason,
   });
-  releaseWhatsAppEntriesAfterMatch(result.gameState, 'admin_decision');
   logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'admin_decision'));
-
-  emitMatchToPlayers(result.gameState);
+  void postMatchFlow.finishMatchAndNotify(result.gameState, 'admin_decision', { emitResult: emitMatchToPlayers });
   response.json({ match: result.gameState });
 });
 
@@ -1113,6 +1118,8 @@ const io = setupSocketServer(server, {
   paymentGateEnabled: paymentSystemEnabled,
   entryService: whatsappEntryService,
   safeEntryEnabled: whatsappSafeEntryEnabled,
+  whatsappBot: whatsappPaymentBot,
+  whatsappMatchQueue,
 });
 
 const stuckMatchMonitor = setInterval(() => {
