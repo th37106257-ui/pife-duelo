@@ -9,16 +9,57 @@ function sanitizeText(value) {
 }
 
 function getMessageText(message = {}) {
+  if (typeof message === 'string') return sanitizeText(message);
+  const wrappedMessage = message.ephemeralMessage?.message
+    || message.viewOnceMessage?.message
+    || message.viewOnceMessageV2?.message
+    || message.viewOnceMessageV2Extension?.message
+    || message.documentWithCaptionMessage?.message
+    || message.editedMessage?.message
+    || message.protocolMessage?.editedMessage
+    || null;
+  if (wrappedMessage) {
+    const nestedText = getMessageText(wrappedMessage);
+    if (nestedText) return nestedText;
+  }
+
+  let interactiveText = '';
+  const nativeFlowParams = message.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
+  if (nativeFlowParams) {
+    try {
+      const parsed = JSON.parse(nativeFlowParams);
+      interactiveText = parsed?.id || parsed?.display_text || parsed?.title || parsed?.name || '';
+    } catch {
+      interactiveText = '';
+    }
+  }
+
   return sanitizeText(
     message.conversation
     || message.extendedTextMessage?.text
     || message.imageMessage?.caption
     || message.documentMessage?.caption
+    || message.videoMessage?.caption
     || message.buttonsResponseMessage?.selectedDisplayText
     || message.buttonsResponseMessage?.selectedButtonId
+    || message.buttonReplyMessage?.selectedDisplayText
+    || message.buttonReplyMessage?.selectedId
+    || message.templateButtonReplyMessage?.selectedDisplayText
+    || message.templateButtonReplyMessage?.selectedId
     || message.listResponseMessage?.singleSelectReply?.selectedRowId
+    || message.listResponseMessage?.singleSelectReply?.title
+    || message.interactiveResponseMessage?.body?.text
+    || interactiveText
+    || message.text
+    || message.body
+    || message.caption
     || '',
   );
+}
+
+function listTechnicalKeys(value) {
+  if (!value || typeof value !== 'object') return [];
+  return Object.keys(value).slice(0, 12);
 }
 
 function maskTechnicalIdentity(value) {
@@ -171,7 +212,7 @@ function parseIncomingMessage(payload = {}) {
     messageType: String(data.messageType || Object.keys(message)[0] || ''),
     sender: data.sender || payload.sender || null,
     pushName: data.pushName || payload.pushName || null,
-    text: getMessageText(message),
+    text: getMessageText(message) || getMessageText(data) || getMessageText(payload),
     hasReceiptMedia: Boolean(message.imageMessage || message.documentMessage),
   };
 }
@@ -202,6 +243,8 @@ export function buildEvolutionMessageDiagnostic(payload = {}) {
     event: String(payload?.event || ''),
     instance: String(payload?.instance || ''),
     messageType: incoming.messageType || null,
+    dataKeys: listTechnicalKeys(payload.data ?? payload),
+    messageKeys: listTechnicalKeys((payload.data ?? payload).message),
     keyFromMe: incoming.rawFromMe ?? null,
     remoteJid: maskTechnicalIdentity(incoming.remoteJid),
     remoteJidAlt: maskTechnicalIdentity(incoming.remoteJidAlt),
