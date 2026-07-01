@@ -55,6 +55,7 @@ const SAFE_TABLES = new Map([
 
 const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
+const SUPPORT_COMMANDS = new Set(['4', 'suporte', 'atendimento', 'ajuda']);
 const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
 
 function isAdminCommandText(command) {
@@ -248,6 +249,7 @@ export class WhatsAppPaymentBot {
     pixKey,
     pixReceiver,
     adminNumbers = [],
+    supportNumber = '',
     publicGameUrl = '',
     clock = Date.now,
     logInfo = defaultLogInfo,
@@ -262,6 +264,7 @@ export class WhatsAppPaymentBot {
     this.pixKey = String(pixKey || '');
     this.pixReceiver = String(pixReceiver || '');
     this.adminNumbers = adminNumbers.map(normalizePhone).filter(Boolean);
+    this.supportNumber = normalizePhone(supportNumber) || this.adminNumbers[0] || '';
     this.publicGameUrl = String(publicGameUrl || '').replace(/\/$/, '');
     this.clock = clock;
     this.logInfo = logInfo;
@@ -374,12 +377,92 @@ export class WhatsAppPaymentBot {
     ].join('\n');
   }
 
-  safeSupportText() {
-    return [
-      '\u{1F6E0}\uFE0F Suporte Pife Duelo',
+  buildSupportLink() {
+    if (!this.supportNumber) return '';
+    return `https://wa.me/${this.supportNumber}?text=Ol%C3%A1,%20preciso%20de%20suporte%20no%20Pife%20Duelo`;
+  }
+
+  safeSupportText({ activeContext = null } = {}) {
+    const supportLink = this.buildSupportLink();
+    const lines = [
+      '\u{1F4DE} Suporte Pife Duelo',
       '',
-      'Envie sua d\u00favida aqui e aguarde atendimento.',
-    ].join('\n');
+      'Para falar com o suporte, toque no link abaixo:',
+      '',
+      supportLink || 'Suporte temporariamente indispon\u00edvel. Responda aqui descrevendo o problema.',
+      '',
+      'Se voc\u00ea j\u00e1 pagou ou est\u00e1 com problema em uma partida, envie:',
+      '\u2022 seu n\u00famero',
+      '\u2022 mesa escolhida',
+      '\u2022 print do erro',
+      '\u2022 comprovante, se houver pagamento',
+      '',
+      'Tamb\u00e9m pode responder aqui descrevendo o problema.',
+    ];
+
+    if (activeContext) {
+      lines.push(
+        '',
+        'Identificamos que voc\u00ea pode ter uma entrada ativa. Fale com o suporte antes de cancelar ou sair.',
+      );
+    }
+
+    return lines.join('\n');
+  }
+
+  getSupportContext(phone) {
+    const activeMatch = this.matchQueue?.findActiveMatch?.(phone) ?? null;
+    const activeEntry = this.entryService?.getActiveEntryForPhone?.(phone) ?? null;
+    const activeQueue = this.matchQueue?.findPlayerQueue?.(phone) ?? null;
+    const status = activeMatch?.status
+      ?? activeEntry?.status
+      ?? (activeQueue ? 'queued' : null);
+    const table = activeMatch?.tableValue
+      ?? activeEntry?.selectedTable
+      ?? activeQueue?.tableValue
+      ?? null;
+    const matchId = activeMatch?.matchId
+      ?? activeEntry?.linkedMatchId
+      ?? null;
+
+    return {
+      status,
+      table,
+      matchId,
+      hasActiveContext: Boolean(activeMatch || activeEntry || activeQueue),
+    };
+  }
+
+  async handleSupportRequest(incoming, { replyTo, originIp } = {}) {
+    const context = this.getSupportContext(incoming.phone);
+    this.logInfo('WHATSAPP_SUPPORT_REQUEST', {
+      playerId: maskPhone(incoming.phone),
+      phone: maskPhone(incoming.phone),
+      status: context.status,
+      table: context.table,
+      matchId: context.matchId,
+      originIp,
+    });
+
+    await this.send(replyTo, this.safeSupportText({
+      activeContext: context.hasActiveContext ? context : null,
+    }));
+
+    this.logInfo('WHATSAPP_SUPPORT_LINK_SENT', {
+      playerId: maskPhone(incoming.phone),
+      supportNumber: maskPhone(this.supportNumber),
+    });
+
+    return {
+      type: 'whatsapp_support_sent',
+      decision: 'reply_sent',
+      reason: 'support_requested',
+      state: this.getConversationState(incoming.phone).state,
+      status: context.status,
+      table: context.table,
+      matchId: context.matchId,
+      originIp,
+    };
   }
 
   safeTableSelectedText(amount, { entryRegistered = false } = {}) {
@@ -727,6 +810,11 @@ export class WhatsAppPaymentBot {
       };
     }
     if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
+    const currentState = this.getConversationState(incoming.phone);
+    const isTableSelectionInProgress = currentState.state === 'choosing_table' && SAFE_TABLES.has(command);
+    if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) {
+      return this.handleSupportRequest(incoming, { replyTo, originIp });
+    }
     if (MENU_COMMANDS.has(command) || CANCEL_QUEUE_COMMANDS.has(command)) {
       const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {
         actor: incoming.phone,
@@ -803,7 +891,6 @@ export class WhatsAppPaymentBot {
       ].join('\n'));
       return { type: 'whatsapp_queue_cancel_empty', decision: 'reply_sent', reason: 'player_not_in_queue', state: 'idle', originIp };
     }
-    const currentState = this.getConversationState(incoming.phone);
     if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
       const selectedTable = SAFE_TABLES.get(command);
       if (this.safeEntryEnabled && this.matchQueue?.isConfigured?.()) {
@@ -1018,11 +1105,7 @@ export class WhatsAppPaymentBot {
       return { type: 'whatsapp_rules_sent', decision: 'reply_sent', reason: 'rules_requested', state: 'idle', originIp };
     }
 
-    if (command === '4') {
-      this.setConversationState(incoming.phone, 'idle');
-      await this.send(replyTo, this.safeSupportText());
-      return { type: 'whatsapp_support_sent', decision: 'reply_sent', reason: 'support_requested', state: 'idle', originIp };
-    }
+    if (SUPPORT_COMMANDS.has(command)) return this.handleSupportRequest(incoming, { replyTo, originIp });
 
     this.setConversationState(incoming.phone, 'idle');
     await this.send(replyTo, 'Op\u00e7\u00e3o inv\u00e1lida. Digite menu para ver as op\u00e7\u00f5es.');

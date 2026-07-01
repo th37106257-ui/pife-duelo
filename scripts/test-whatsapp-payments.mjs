@@ -40,6 +40,8 @@ const connectivityBot = new WhatsAppPaymentBot({
     isConfigured: () => true,
     sendText: async (phone, text) => connectivityMessages.push({ phone, text }),
   },
+  adminNumbers: [adminPhone],
+  supportNumber: '55 11 99999-1111',
   publicGameUrl: 'https://pife-duelo.example',
 });
 
@@ -121,7 +123,12 @@ assert.match(connectivityMessages.at(-1).text, /Tempo por jogada: 60 segundos/);
 await sendConnectivity('iniciar');
 const safeSupport = await sendConnectivity('4');
 assert.equal(safeSupport.type, 'whatsapp_support_sent');
-assert.match(connectivityMessages.at(-1).text, /aguarde atendimento/);
+assert.match(connectivityMessages.at(-1).text, /Suporte Pife Duelo/);
+assert.match(connectivityMessages.at(-1).text, /https:\/\/wa\.me\/5511999991111\?text=Ol%C3%A1,%20preciso%20de%20suporte%20no%20Pife%20Duelo/);
+
+const safeSupportByText = await sendConnectivity('ajuda');
+assert.equal(safeSupportByText.type, 'whatsapp_support_sent');
+assert.match(connectivityMessages.at(-1).text, /print do erro/);
 
 const invalidSafeOption = await sendConnectivity('qualquer coisa');
 assert.equal(invalidSafeOption.type, 'whatsapp_invalid_option');

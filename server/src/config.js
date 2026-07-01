@@ -34,6 +34,7 @@ export const config = {
     ...parseList(process.env.ADMIN_WHATSAPP_NUMBERS),
     ...parseList(process.env.WHATSAPP_ADMIN_NUMBERS),
   ],
+  WHATSAPP_SUPPORT_NUMBER: process.env.WHATSAPP_SUPPORT_NUMBER || '',
   WHATSAPP_PAYMENTS_ENABLED: parseBoolean(process.env.WHATSAPP_PAYMENTS_ENABLED),
   PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
   WHATSAPP_CONNECTIVITY_TEST_ENABLED: parseBoolean(process.env.WHATSAPP_CONNECTIVITY_TEST_ENABLED),

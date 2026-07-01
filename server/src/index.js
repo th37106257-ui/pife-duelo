@@ -79,6 +79,7 @@ const whatsappPaymentBot = new WhatsAppPaymentBot({
   pixKey: config.PIX_KEY,
   pixReceiver: config.PIX_RECEIVER,
   adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
+  supportNumber: config.WHATSAPP_SUPPORT_NUMBER,
   publicGameUrl: config.PUBLIC_GAME_URL,
   logInfo,
   logWarn,

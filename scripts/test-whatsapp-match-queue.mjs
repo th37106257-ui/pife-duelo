@@ -57,6 +57,7 @@ function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
       sendText: sendText ?? (async (phone, text) => sentMessages.push({ phone, text })),
     },
     adminNumbers: ['5511999990000'],
+    supportNumber: '+55 11 99999-2222',
     publicGameUrl: 'https://pife-duelo.example',
     clock: () => now,
     logInfo: (event, payload) => logs.push({ level: 'info', event, payload }),
@@ -187,6 +188,17 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(logs.some((log) => log.event === 'PLAYER_BLOCKED_ACTIVE_QUEUE'
     && log.payload.currentTable === 2
     && log.payload.attemptedTable === 5));
+
+  const supportWhileQueued = await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'suporte', firstReplyJid));
+  assert.equal(supportWhileQueued.type, 'whatsapp_support_sent');
+  assert.equal(matchQueue.getQueueStatus(2).waitingPlayers, 1);
+  assert.match(sentMessages.at(-1).text, /https:\/\/wa\.me\/5511999992222/);
+  assert.match(sentMessages.at(-1).text, /entrada ativa/);
+  assert.ok(logs.some((log) => log.event === 'WHATSAPP_SUPPORT_REQUEST'
+    && log.payload.status === 'approved_for_queue'
+    && log.payload.table === 2));
+  assert.ok(logs.some((log) => log.event === 'WHATSAPP_SUPPORT_LINK_SENT'
+    && log.payload.supportNumber === '*********2222'));
 
   const secondResult = await chooseTable(bot, secondPhone, '1', '1', secondReplyJid);
   assert.equal(secondResult.type, 'whatsapp_match_created');
