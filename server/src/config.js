@@ -18,6 +18,13 @@ const allowedClientUrls = [
   .filter(Boolean);
 const parseList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const parseBoolean = (value) => String(value || '').toLowerCase() === 'true';
+const normalizePhoneConfig = (value) => {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length >= 10 && digits.length <= 15 ? digits : '';
+};
+const parsePhoneList = (...values) => [
+  ...new Set(values.flatMap(parseList).map(normalizePhoneConfig).filter(Boolean)),
+];
 
 export const config = {
   PORT: Number(process.env.PORT || 3000),
@@ -30,12 +37,12 @@ export const config = {
   QUEUE_TIMEOUT_SECONDS: 120,
   DISCONNECT_GRACE_SECONDS: Number(process.env.DISCONNECT_GRACE_SECONDS || 60),
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
-  ADMIN_WHATSAPP_NUMBERS: [
-    ...parseList(process.env.WHATSAPP_ADMIN_NUMBER),
-    ...parseList(process.env.ADMIN_WHATSAPP_NUMBER),
-    ...parseList(process.env.ADMIN_WHATSAPP_NUMBERS),
-    ...parseList(process.env.WHATSAPP_ADMIN_NUMBERS),
-  ],
+  ADMIN_WHATSAPP_NUMBERS: parsePhoneList(
+    process.env.WHATSAPP_ADMIN_NUMBER,
+    process.env.ADMIN_WHATSAPP_NUMBER,
+    process.env.ADMIN_WHATSAPP_NUMBERS,
+    process.env.WHATSAPP_ADMIN_NUMBERS,
+  ),
   WHATSAPP_SUPPORT_NUMBER: process.env.WHATSAPP_SUPPORT_NUMBER || '',
   WHATSAPP_PAYMENTS_ENABLED: parseBoolean(process.env.WHATSAPP_PAYMENTS_ENABLED),
   PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
