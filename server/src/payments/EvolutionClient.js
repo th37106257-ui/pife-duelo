@@ -4,6 +4,31 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function maskTechnicalIdentity(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const [id, suffix] = raw.split('@');
+  const digits = id.replace(/\D/g, '');
+  if (digits.length >= 4) {
+    const masked = `${'*'.repeat(Math.max(4, digits.length - 4))}${digits.slice(-4)}`;
+    return suffix ? `${masked}@${suffix}` : masked;
+  }
+  if (raw.length <= 4) return '****';
+  return `${'*'.repeat(Math.max(4, raw.length - 4))}${raw.slice(-4)}`;
+}
+
+function summarizeEvolutionResponse(responseBody) {
+  if (!responseBody || typeof responseBody !== 'object') return { type: typeof responseBody };
+  const key = responseBody.key || responseBody.message?.key || responseBody.data?.key || {};
+  return {
+    ok: responseBody.ok ?? null,
+    status: responseBody.status ?? responseBody.data?.status ?? null,
+    messageId: maskTechnicalIdentity(key.id || responseBody.id || responseBody.messageId || responseBody.data?.id),
+    remoteJid: maskTechnicalIdentity(key.remoteJid || responseBody.remoteJid || responseBody.data?.remoteJid),
+    fromMe: key.fromMe ?? null,
+  };
+}
+
 function normalizeRecipient(value) {
   const raw = String(value || '').trim();
   if (/@(?:s\.whatsapp\.net|lid)$/i.test(raw)) return raw;
@@ -35,6 +60,13 @@ export class EvolutionClient {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
+        console.log('EVOLUTION_SEND_TEXT_REQUEST', {
+          instanceName: this.instanceName,
+          attempt,
+          inputTarget: maskTechnicalIdentity(phone),
+          normalizedTarget: maskTechnicalIdentity(number),
+          textLength: safeText.length,
+        });
         const response = await this.fetchImpl(
           `${this.baseUrl}/message/sendText/${encodeURIComponent(this.instanceName)}`,
           {
@@ -50,10 +82,25 @@ export class EvolutionClient {
             signal: controller.signal,
           },
         );
+        const responseBody = await response.json().catch(() => ({ ok: true }));
+        console.log('EVOLUTION_SEND_TEXT_RESPONSE', {
+          instanceName: this.instanceName,
+          attempt,
+          normalizedTarget: maskTechnicalIdentity(number),
+          responseOk: response.ok,
+          httpStatus: response.status ?? null,
+          response: summarizeEvolutionResponse(responseBody),
+        });
         if (!response.ok) throw new Error(`EVOLUTION_SEND_FAILED_${response.status}`);
-        return await response.json().catch(() => ({ ok: true }));
+        return responseBody;
       } catch (error) {
         lastError = error;
+        console.error('EVOLUTION_SEND_TEXT_ERROR', {
+          instanceName: this.instanceName,
+          attempt,
+          normalizedTarget: maskTechnicalIdentity(number),
+          message: error.message,
+        });
         if (attempt < 3) await delay(attempt * 300);
       } finally {
         clearTimeout(timeout);
