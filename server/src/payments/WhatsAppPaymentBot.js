@@ -191,11 +191,13 @@ function parseIncomingMessage(payload = {}) {
     ownerJid,
   });
   const phone = normalizePhone(phoneJid.split('@')[0]);
-  const replyTo = [keyRemoteJid, keyRemoteJidAlt, participant, participantAlt, senderJid]
-    .find((jid) => isWhatsappJid(jid, 'lid'))
+  const canReplyToPhone = Boolean(phone && phoneJid && !isWhatsappJid(phoneJid, 'lid'));
+  const replyTo = (canReplyToPhone ? phone : '')
     || keyRemoteJid
     || senderJid
-    || phone;
+    || [keyRemoteJid, keyRemoteJidAlt, participant, participantAlt, senderJid]
+      .find((jid) => isWhatsappJid(jid, 'lid'))
+    || '';
   return {
     phone,
     phoneSource,
@@ -344,8 +346,34 @@ export class WhatsAppPaymentBot {
     return now - previous >= 3000;
   }
 
-  async send(phone, text) {
-    return this.evolutionClient.sendText(phone, text);
+  async send(phone, text, metadata = {}) {
+    const targetMasked = maskTechnicalIdentity(phone) || maskPhone(phone);
+    const textLength = String(text || '').length;
+    this.logInfo('BOT_REPLY_ATTEMPT', {
+      target: targetMasked,
+      textLength,
+      replyType: metadata.replyType ?? null,
+      reason: metadata.reason ?? null,
+    });
+    try {
+      const result = await this.evolutionClient.sendText(phone, text);
+      this.logInfo('BOT_REPLY_SENT', {
+        target: targetMasked,
+        textLength,
+        replyType: metadata.replyType ?? null,
+        reason: metadata.reason ?? null,
+      });
+      return result;
+    } catch (error) {
+      this.logError('BOT_REPLY_FAILED', {
+        target: targetMasked,
+        textLength,
+        replyType: metadata.replyType ?? null,
+        reason: metadata.reason ?? null,
+        message: error.message,
+      });
+      throw error;
+    }
   }
 
   getConversationState(phone) {
@@ -820,13 +848,31 @@ export class WhatsAppPaymentBot {
 
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
+    this.logInfo('WHATSAPP_WEBHOOK_RECEIVED', {
+      originIp,
+      event: payload?.event ?? null,
+      instance: payload?.instance ?? null,
+    });
     if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
+    this.logInfo('MESSAGES_UPSERT_RECEIVED', {
+      originIp,
+      event: payload?.event ?? null,
+      instance: payload?.instance ?? null,
+    });
 
     const incoming = parseIncomingMessage(payload);
-    if (incoming.fromMe) return { ignored: true, decision: 'ignored_from_me', reason: 'key_from_me_true' };
+    if (incoming.fromMe) {
+      this.logInfo('MESSAGE_FROM_ME_IGNORED', {
+        originIp,
+        playerPhone: maskPhone(incoming.phone),
+        remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+        replyTo: maskTechnicalIdentity(incoming.replyTo),
+        reason: 'key_from_me_true',
+      });
+      return { ignored: true, decision: 'ignored_from_me', reason: 'key_from_me_true' };
+    }
     if (incoming.isGroup) return { ignored: true, decision: 'ignored_invalid', reason: 'group_not_supported' };
     if (!incoming.phone || !incoming.remoteJid) return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
-    if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
 
     if (this.safeEntryEnabled && incoming.messageId && this.entryService?.store?.hasProcessedMessage(incoming.messageId)) {
       return { ignored: true, decision: 'ignored_invalid', reason: 'duplicate_message' };
@@ -835,6 +881,28 @@ export class WhatsAppPaymentBot {
 
     const command = normalizeCommand(incoming.text);
     const replyTo = incoming.replyTo || incoming.phone;
+    this.logInfo('MESSAGE_TEXT_PARSED', {
+      originIp,
+      playerPhone: maskPhone(incoming.phone),
+      phoneSource: incoming.phoneSource,
+      remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+      replyTo: maskTechnicalIdentity(replyTo),
+      messageType: incoming.messageType || null,
+      hasText: Boolean(incoming.text),
+      textLength: incoming.text.length,
+      knownCommand: Boolean(
+        MENU_COMMANDS.has(command)
+        || CANCEL_QUEUE_COMMANDS.has(command)
+        || SUPPORT_COMMANDS.has(command)
+        || PLAY_COMMANDS.has(command)
+        || TEST_MODE_COMMANDS.has(command)
+        || RULES_COMMANDS.has(command)
+        || IDENTIFY_COMMANDS.has(command)
+        || SAFE_TABLES.has(command)
+        || isAdminCommandText(command)
+      ),
+    });
+    if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
     if (IDENTIFY_COMMANDS.has(command)) {
       const isAdmin = Boolean(
         incoming.phone

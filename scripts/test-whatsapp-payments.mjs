@@ -139,7 +139,7 @@ lidPayload.data.key.remoteJid = '123456789012@lid';
 lidPayload.data.sender = `${playerPhone}@s.whatsapp.net`;
 const lidReply = await connectivityBot.handleConnectivityWebhook(lidPayload, { originIp: '127.0.0.1' });
 assert.equal(lidReply.type, 'whatsapp_menu_sent');
-assert.equal(connectivityMessages.at(-1).phone, '123456789012@lid', 'Mensagens recebidas por @lid devem ser respondidas no mesmo chat.');
+assert.equal(connectivityMessages.at(-1).phone, playerPhone, 'Mensagens recebidas por @lid devem ser respondidas no numero real do jogador.');
 assert.equal(connectivityBot.getConversationState(playerPhone).state, 'idle', 'O estado interno continua vinculado ao número real do jogador.');
 
 const lidAltPayload = webhook({ phone: playerPhone, id: 'lid-alt-1', text: 'oi' });
@@ -147,7 +147,7 @@ lidAltPayload.data.key.remoteJid = `${playerPhone}@s.whatsapp.net`;
 lidAltPayload.data.key.remoteJidAlt = '210987654321@lid';
 const lidAltReply = await connectivityBot.handleConnectivityWebhook(lidAltPayload, { originIp: '127.0.0.1' });
 assert.equal(lidAltReply.type, 'whatsapp_menu_sent');
-assert.equal(connectivityMessages.at(-1).phone, '210987654321@lid', 'Quando remoteJidAlt trouxer @lid, a resposta deve usar o @lid.');
+assert.equal(connectivityMessages.at(-1).phone, playerPhone, 'Quando remoteJidAlt trouxer @lid, a resposta deve priorizar o numero real do jogador.');
 assert.equal(connectivityBot.getConversationState(playerPhone).state, 'idle');
 
 assert.equal(store.listPayments().length, 0, 'Menu seguro n\u00e3o cria pagamento.');

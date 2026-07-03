@@ -491,6 +491,11 @@ app.get('/api/status', (request, response) => {
 
 app.post('/api/webhooks/evolution', async (request, response) => {
   const originIp = request.ip || request.get('x-forwarded-for') || null;
+  logInfo('WHATSAPP_WEBHOOK_RECEIVED', {
+    originIp,
+    event: request.body?.event ?? null,
+    instance: request.body?.instance ?? null,
+  });
   if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled && !whatsappSafeEntryEnabled) {
     response.status(503).json({ error: 'whatsapp-disabled' });
     return;
@@ -508,6 +513,13 @@ app.post('/api/webhooks/evolution', async (request, response) => {
 
   try {
     const eventName = String(request.body?.event || '').toUpperCase().replace('.', '_');
+    if (eventName === 'MESSAGES_UPSERT') {
+      logInfo('MESSAGES_UPSERT_RECEIVED', {
+        originIp,
+        event: request.body?.event ?? null,
+        instance: request.body?.instance ?? null,
+      });
+    }
     if (/CONNECTION|STATUS/.test(eventName)) {
       logInfo('EVOLUTION_INSTANCE_CONNECTED', {
         originIp,

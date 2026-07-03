@@ -207,8 +207,8 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 
   const matchMessages = sentMessages.filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
-  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
+  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$2')));
   assert.ok(matchMessages.every((message) => message.text.includes('Entre na sala pelo link abaixo:')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
@@ -284,7 +284,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
     && entry.selectedTable === 10
     && entry.status === 'approved_for_queue'
     && entry.queuedAt
-    && entry.whatsappReplyTo === firstReplyJid
+    && entry.whatsappReplyTo === firstPhone
   )));
 
   const secondRuntimeAfterMemoryLoss = createBot(sharedStore);
@@ -297,8 +297,8 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const matchMessages = secondRuntimeAfterMemoryLoss.sentMessages
     .filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
-  assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
+  assert.ok(matchMessages.some((message) => message.phone === secondPhone));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$10')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
   assert.ok(sharedStore.listEntries()
@@ -369,7 +369,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const matchMessages = retryRuntime.sentMessages
     .filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$10')));
 }
@@ -410,7 +410,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const matchMessages = retryRuntime.sentMessages
     .filter((message) => message.text.includes('🎮 Partida encontrada!'));
   assert.equal(matchMessages.length, 2);
-  assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
+  assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$20')));
 }
@@ -545,7 +545,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
 
   const firstMatchMessages = sentMessages.filter((message) => message.text.includes('Partida encontrada!'));
-  const secondOldLink = extractFirstUrl(firstMatchMessages.find((message) => message.phone === secondReplyJid)?.text);
+  const secondOldLink = extractFirstUrl(firstMatchMessages.find((message) => message.phone === secondPhone)?.text);
   assert.ok(secondOldLink);
   const secondOldToken = new URL(secondOldLink).searchParams.get('entry');
 
