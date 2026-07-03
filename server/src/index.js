@@ -108,6 +108,21 @@ const whatsappConnectivityTestEnabled = config.WHATSAPP_CONNECTIVITY_TEST_ENABLE
 const whatsappSafeEntryEnabled = config.WHATSAPP_SAFE_ENTRY_ENABLED
   && getWhatsAppEntryConfigurationErrors().length === 0;
 
+logInfo('EVOLUTION_INSTANCE_USED', {
+  instanceName: config.EVOLUTION_INSTANCE_NAME || null,
+  apiUrlConfigured: Boolean(config.EVOLUTION_API_URL),
+  apiKeyConfigured: Boolean(config.EVOLUTION_API_KEY),
+});
+logInfo('BOT_OFFICIAL_NUMBER', {
+  botNumber: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
+  source: 'WHATSAPP_BOT_NUMBER',
+});
+logInfo('ADMIN_NUMBER', {
+  adminNumbers: config.ADMIN_WHATSAPP_NUMBERS.map(maskPhone),
+  count: config.ADMIN_WHATSAPP_NUMBERS.length,
+  source: 'WHATSAPP_ADMIN_NUMBER/ADMIN_WHATSAPP_NUMBERS/WHATSAPP_ADMIN_NUMBERS',
+});
+
 function getPaymentConfigurationErrors() {
   const required = {
     PAYMENT_STORE_PATH: config.PAYMENT_STORE_PATH,
@@ -454,6 +469,8 @@ app.get('/health', (request, response) => {
       instanceName: config.EVOLUTION_INSTANCE_NAME || null,
       botNumberConfigured: Boolean(config.WHATSAPP_BOT_NUMBER),
       botNumberMasked: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
+      adminNumbersConfigured: config.ADMIN_WHATSAPP_NUMBERS.length,
+      adminNumbersMasked: config.ADMIN_WHATSAPP_NUMBERS.map(maskPhone),
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,
@@ -495,6 +512,12 @@ app.post('/api/webhooks/evolution', async (request, response) => {
     originIp,
     event: request.body?.event ?? null,
     instance: request.body?.instance ?? null,
+  });
+  logInfo('WEBHOOK_INSTANCE_RECEIVED', {
+    originIp,
+    receivedInstance: request.body?.instance ?? null,
+    configuredInstance: config.EVOLUTION_INSTANCE_NAME || null,
+    accepted: !request.body?.instance || request.body.instance === config.EVOLUTION_INSTANCE_NAME,
   });
   if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled && !whatsappSafeEntryEnabled) {
     response.status(503).json({ error: 'whatsapp-disabled' });

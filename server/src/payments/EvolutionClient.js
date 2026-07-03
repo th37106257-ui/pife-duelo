@@ -64,6 +64,10 @@ export class EvolutionClient {
           attempt,
           textLength: safeText.length,
         });
+        console.log('SEND_INSTANCE_USED', {
+          instanceName: this.instanceName,
+          configured: this.isConfigured(),
+        });
         console.log('WHATSAPP_SEND_DESTINATION', {
           instanceName: this.instanceName,
           inputTarget: maskTechnicalIdentity(phone),

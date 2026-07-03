@@ -31,6 +31,8 @@ export const config = {
   DISCONNECT_GRACE_SECONDS: Number(process.env.DISCONNECT_GRACE_SECONDS || 60),
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
   ADMIN_WHATSAPP_NUMBERS: [
+    ...parseList(process.env.WHATSAPP_ADMIN_NUMBER),
+    ...parseList(process.env.ADMIN_WHATSAPP_NUMBER),
     ...parseList(process.env.ADMIN_WHATSAPP_NUMBERS),
     ...parseList(process.env.WHATSAPP_ADMIN_NUMBERS),
   ],
@@ -50,7 +52,7 @@ export const config = {
   PUBLIC_GAME_URL: process.env.PUBLIC_GAME_URL || frontendUrl,
   EVOLUTION_API_URL: process.env.EVOLUTION_API_URL || '',
   EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY || '',
-  EVOLUTION_INSTANCE_NAME: process.env.EVOLUTION_INSTANCE_NAME || '',
+  EVOLUTION_INSTANCE_NAME: process.env.EVOLUTION_INSTANCE_NAME || process.env.EVOLUTION_INSTANCE || '',
   EVOLUTION_WEBHOOK_SECRET: process.env.EVOLUTION_WEBHOOK_SECRET || '',
   WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER || '',
   PIX_KEY: process.env.PIX_KEY || '',
