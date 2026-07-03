@@ -32,8 +32,7 @@ function summarizeEvolutionResponse(responseBody) {
 function normalizeRecipient(value) {
   const raw = String(value || '').trim();
   if (/@(?:s\.whatsapp\.net|lid)$/i.test(raw)) return raw;
-  const phone = normalizePhone(raw);
-  return phone ? `${phone}@s.whatsapp.net` : '';
+  return normalizePhone(raw);
 }
 
 export class EvolutionClient {
@@ -60,6 +59,23 @@ export class EvolutionClient {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
+        console.log('WHATSAPP_SEND_START', {
+          instanceName: this.instanceName,
+          attempt,
+          textLength: safeText.length,
+        });
+        console.log('WHATSAPP_SEND_DESTINATION', {
+          instanceName: this.instanceName,
+          inputTarget: maskTechnicalIdentity(phone),
+          normalizedTarget: maskTechnicalIdentity(number),
+        });
+        console.log('WHATSAPP_SEND_PAYLOAD', {
+          endpoint: `/message/sendText/${this.instanceName}`,
+          payload: {
+            number: maskTechnicalIdentity(number),
+            textLength: safeText.length,
+          },
+        });
         console.log('EVOLUTION_SEND_TEXT_REQUEST', {
           instanceName: this.instanceName,
           attempt,
@@ -83,6 +99,17 @@ export class EvolutionClient {
           },
         );
         const responseBody = await response.json().catch(() => ({ ok: true }));
+        console.log('WHATSAPP_SEND_STATUS', {
+          instanceName: this.instanceName,
+          attempt,
+          responseOk: response.ok,
+          httpStatus: response.status ?? null,
+        });
+        console.log('WHATSAPP_SEND_RESPONSE', {
+          instanceName: this.instanceName,
+          normalizedTarget: maskTechnicalIdentity(number),
+          response: summarizeEvolutionResponse(responseBody),
+        });
         console.log('EVOLUTION_SEND_TEXT_RESPONSE', {
           instanceName: this.instanceName,
           attempt,
@@ -95,6 +122,12 @@ export class EvolutionClient {
         return responseBody;
       } catch (error) {
         lastError = error;
+        console.error('WHATSAPP_SEND_ERROR', {
+          instanceName: this.instanceName,
+          attempt,
+          normalizedTarget: maskTechnicalIdentity(number),
+          message: error.message,
+        });
         console.error('EVOLUTION_SEND_TEXT_ERROR', {
           instanceName: this.instanceName,
           attempt,

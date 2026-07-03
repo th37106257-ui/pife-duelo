@@ -111,6 +111,25 @@ function isAdminCommandText(command) {
   );
 }
 
+function selectBotHandler(command, incoming = {}, currentState = null) {
+  if (!incoming.text) return 'empty_text';
+  if (incoming.fromMe) return 'ignored_from_me';
+  if (incoming.isGroup) return 'ignored_group';
+  if (IDENTIFY_COMMANDS.has(command)) return 'identify';
+  if (isAdminCommandText(command)) return 'admin_command';
+  const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
+  if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
+  if (MENU_COMMANDS.has(command)) return 'menu';
+  if (CANCEL_QUEUE_COMMANDS.has(command)) return 'cancel_queue';
+  if (isTableSelectionInProgress) return 'table_selection';
+  if (PLAY_COMMANDS.has(command)) return 'play_or_tables';
+  if (TEST_MODE_COMMANDS.has(command)) return 'test_mode';
+  if (RULES_COMMANDS.has(command)) return 'rules';
+  if (SUPPORT_COMMANDS.has(command)) return 'support';
+  if (incoming.hasReceiptMedia) return 'receipt_media';
+  return 'fallback_invalid';
+}
+
 function maskDigitsInText(value) {
   return String(value || '').replace(/\d{8,15}/g, (digits) => maskPhone(digits));
 }
@@ -881,6 +900,7 @@ export class WhatsAppPaymentBot {
 
     const command = normalizeCommand(incoming.text);
     const replyTo = incoming.replyTo || incoming.phone;
+    const currentState = this.getConversationState(incoming.phone);
     this.logInfo('MESSAGE_TEXT_PARSED', {
       originIp,
       playerPhone: maskPhone(incoming.phone),
@@ -901,6 +921,28 @@ export class WhatsAppPaymentBot {
         || SAFE_TABLES.has(command)
         || isAdminCommandText(command)
       ),
+    });
+    this.logInfo('WHATSAPP_MESSAGE_REMOTE_JID', {
+      originIp,
+      remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+      replyTo: maskTechnicalIdentity(replyTo),
+      playerPhone: maskPhone(incoming.phone),
+    });
+    this.logInfo('WHATSAPP_MESSAGE_FROM_ME', {
+      originIp,
+      fromMe: incoming.fromMe,
+      rawFromMe: incoming.rawFromMe ?? null,
+      messageType: incoming.messageType || null,
+    });
+    this.logInfo('WHATSAPP_MESSAGE_TEXT', {
+      originIp,
+      textLength: incoming.text.length,
+      command: maskDigitsInText(command).slice(0, 120),
+    });
+    this.logInfo('BOT_HANDLER_SELECTED', {
+      originIp,
+      handler: selectBotHandler(command, incoming, currentState),
+      conversationState: currentState.state ?? null,
     });
     if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
     if (IDENTIFY_COMMANDS.has(command)) {
@@ -924,7 +966,6 @@ export class WhatsAppPaymentBot {
       };
     }
     if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
-    const currentState = this.getConversationState(incoming.phone);
     const isTableSelectionInProgress = currentState.state === 'choosing_table' && SAFE_TABLES.has(command);
     if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) {
       return this.handleSupportRequest(incoming, { replyTo, originIp });
