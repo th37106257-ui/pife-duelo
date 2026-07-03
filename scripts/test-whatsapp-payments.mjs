@@ -309,7 +309,7 @@ await contractClient.sendText(playerPhone, 'teste');
 assert.equal(requestCapture[0].url, 'https://evolution.example/message/sendText/pife-duelo');
 assert.equal(requestCapture[0].options.headers.apikey, 'backend-only-key');
 assert.deepEqual(JSON.parse(requestCapture[0].options.body), {
-  number: playerPhone,
+  number: `${playerPhone}@s.whatsapp.net`,
   text: 'teste',
 });
 await contractClient.sendText('123456789012@lid', 'teste lid');

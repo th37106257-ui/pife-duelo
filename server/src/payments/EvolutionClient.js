@@ -7,7 +7,8 @@ function delay(ms) {
 function normalizeRecipient(value) {
   const raw = String(value || '').trim();
   if (/@(?:s\.whatsapp\.net|lid)$/i.test(raw)) return raw;
-  return normalizePhone(raw);
+  const phone = normalizePhone(raw);
+  return phone ? `${phone}@s.whatsapp.net` : '';
 }
 
 export class EvolutionClient {
