@@ -137,6 +137,7 @@ export function createPostMatchFlow({
   entryService = null,
   whatsappBot = null,
   whatsappMatchQueue = null,
+  whatsappEnabled = true,
   logInfo = () => {},
   logWarn = () => {},
   logError = () => {},
@@ -230,6 +231,39 @@ export function createPostMatchFlow({
 
     const report = buildReport(gameState, reason);
     if (typeof emitResult === 'function') emitResult(gameState, 'matchFinished');
+
+    if (!whatsappEnabled) {
+      logWarn('POST_MATCH_WHATSAPP_DISABLED', {
+        matchId,
+        table: report.table,
+        reason,
+      });
+      logInfo('MATCH_FINISH_COMPLETED', {
+        matchId,
+        table: report.table,
+        winnerId: report.winnerId,
+        loserId: report.loserId,
+        reason: report.reason,
+        duration: report.durationSeconds,
+        releasedEntries: releasedEntries.length,
+        queueRemoved: queueCleanup.length,
+        winnerSent,
+        loserSent,
+        adminSent,
+        whatsappDisabled: true,
+      });
+      return {
+        ok: true,
+        alreadyProcessed: false,
+        report,
+        releasedEntries,
+        queueCleanup,
+        winnerSent,
+        loserSent,
+        adminSent,
+        whatsappDisabled: true,
+      };
+    }
 
     try {
       const winnerEntry = entryForPlayer(releasedEntries, report.winnerId);

@@ -90,6 +90,7 @@ const postMatchFlow = createPostMatchFlow({
   entryService: whatsappEntryService,
   whatsappBot: whatsappPaymentBot,
   whatsappMatchQueue,
+  whatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
   logInfo,
   logWarn,
   logError,
@@ -458,6 +459,7 @@ app.get('/health', (request, response) => {
       configured: getPaymentConfigurationErrors().length === 0,
       whatsappPaymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED,
       gateEnabled: config.PAYMENT_GATE_ENABLED,
+      postMatchWhatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
     },
     whatsapp: {
       connectivityTestEnabled: whatsappConnectivityTestEnabled,

@@ -18,6 +18,12 @@ const allowedClientUrls = [
   .filter(Boolean);
 const parseList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const parseBoolean = (value) => String(value || '').toLowerCase() === 'true';
+const parseBooleanDefault = (value, defaultValue) => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return defaultValue;
+};
 const normalizePhoneConfig = (value) => {
   const digits = String(value || '').replace(/\D/g, '');
   return digits.length >= 10 && digits.length <= 15 ? digits : '';
@@ -46,6 +52,7 @@ export const config = {
   WHATSAPP_SUPPORT_NUMBER: process.env.WHATSAPP_SUPPORT_NUMBER || '',
   WHATSAPP_PAYMENTS_ENABLED: parseBoolean(process.env.WHATSAPP_PAYMENTS_ENABLED),
   PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
+  POST_MATCH_WHATSAPP_ENABLED: parseBooleanDefault(process.env.POST_MATCH_WHATSAPP_ENABLED, true),
   WHATSAPP_CONNECTIVITY_TEST_ENABLED: parseBoolean(process.env.WHATSAPP_CONNECTIVITY_TEST_ENABLED),
   WHATSAPP_SAFE_ENTRY_ENABLED: parseBoolean(process.env.WHATSAPP_SAFE_ENTRY_ENABLED),
   WHATSAPP_ENTRY_STORE_PATH: process.env.WHATSAPP_ENTRY_STORE_PATH || defaultWhatsappEntryStorePath,

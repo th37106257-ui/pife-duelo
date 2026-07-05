@@ -180,6 +180,7 @@ export function setupSocketServer(httpServer, {
     entryService,
     whatsappBot,
     whatsappMatchQueue,
+    whatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
     logInfo,
     logWarn,
     logError,
