@@ -340,6 +340,14 @@ export class WhatsAppPaymentBot {
     this.rateLimits = new Map();
     this.recentFingerprints = new Map();
     this.conversationStates = new Map();
+    this.webhookDiagnostics = {
+      lastWebhookReceivedAt: null,
+      lastWebhookEvent: null,
+      lastWebhookInstance: null,
+      lastMessageProcessedAt: null,
+      lastMessageFrom: null,
+      lastInvalidPayloadReason: null,
+    };
   }
 
   isConfigured() {
@@ -375,7 +383,28 @@ export class WhatsAppPaymentBot {
       reason: metadata.reason ?? null,
     });
     try {
-      const result = await this.evolutionClient.sendText(phone, text);
+      const result = this.evolutionClient?.sendWhatsAppMessage
+        ? await this.evolutionClient.sendWhatsAppMessage(phone, text, {
+          checkStatus: metadata.checkStatus ?? true,
+          throwOnFailure: false,
+        })
+        : await this.evolutionClient.sendText(phone, text);
+      if (result?.ok === false) {
+        this.logError('BOT_REPLY_FAILED', {
+          target: targetMasked,
+          textLength,
+          replyType: metadata.replyType ?? null,
+          reason: metadata.reason ?? null,
+          message: result.reason || result.error || 'WHATSAPP_SEND_FAILED',
+          httpStatus: result.httpStatus ?? null,
+        });
+        if (metadata.throwOnFailure) {
+          const error = new Error(result.reason || result.error || 'WHATSAPP_SEND_FAILED');
+          error.result = result;
+          throw error;
+        }
+        return result;
+      }
       this.logInfo('BOT_REPLY_SENT', {
         target: targetMasked,
         textLength,
@@ -391,8 +420,85 @@ export class WhatsAppPaymentBot {
         reason: metadata.reason ?? null,
         message: error.message,
       });
-      throw error;
+      if (metadata.throwOnFailure) throw error;
+      return {
+        ok: false,
+        sent: false,
+        reason: error.message,
+      };
     }
+  }
+
+  async getWhatsAppStatusText() {
+    const status = this.evolutionClient?.checkInstanceStatus
+      ? await this.evolutionClient.checkInstanceStatus()
+      : { state: 'unknown', isOpen: null, reason: 'status_check_unavailable' };
+    const diagnostics = this.evolutionClient?.getDiagnostics?.() ?? {};
+    const reconnectNeeded = Boolean(diagnostics.reconnectNeeded || status.isOpen === false);
+    const openLabel = status.isOpen === true ? 'sim' : (status.isOpen === false ? 'n\u00e3o' : 'desconhecido');
+    return [
+      '\u{1F4E1} Status WhatsApp/Evolution',
+      '',
+      `Inst\u00e2ncia: ${diagnostics.instanceName || this.evolutionClient?.instanceName || 'n\u00e3o configurada'}`,
+      `Status: ${status.state || diagnostics.lastStatus || 'desconhecido'}`,
+      `Inst\u00e2ncia aberta/conectada: ${openLabel}`,
+      `HTTP status check: ${status.httpStatus ?? diagnostics.lastStatusHttpStatus ?? 'n/a'}`,
+      '',
+      `\u00daltimo webhook recebido: ${diagnostics.lastWebhookReceivedAt || this.webhookDiagnostics.lastWebhookReceivedAt || 'n/a'}`,
+      `\u00daltima mensagem processada: ${diagnostics.lastMessageProcessedAt || this.webhookDiagnostics.lastMessageProcessedAt || 'n/a'}`,
+      `\u00daltima tentativa de envio: ${diagnostics.lastSendAttemptAt || 'n/a'}`,
+      `\u00daltimo envio com sucesso: ${diagnostics.lastSendSuccessAt || 'n/a'}`,
+      `\u00daltimo erro: ${diagnostics.lastError || this.webhookDiagnostics.lastInvalidPayloadReason || 'nenhum'}`,
+      `Precisa reconectar: ${reconnectNeeded ? 'sim' : 'n\u00e3o'}`,
+    ].join('\n');
+  }
+
+  async handleAdminTestSend({ adminPhone, replyTo, rawText }) {
+    const testSendMatch = rawText.match(/^(?:\/admin|admin)\s+teste\s+envio\s+(.+)$/i);
+    const targetPhone = normalizePhone(testSendMatch?.[1]);
+    if (!targetPhone) {
+      return {
+        ok: false,
+        targetPhone: null,
+        error: 'invalid_target_phone',
+      };
+    }
+    const testMessage = `Teste Evolution Pife Duelo - ${new Date(this.clock()).toISOString()}`;
+    const payloadPreview = this.evolutionClient?.buildSendPayloadPreview?.(targetPhone, testMessage) ?? {
+      target: maskPhone(targetPhone),
+      payload: { textLength: testMessage.length },
+    };
+    const result = this.evolutionClient?.sendWhatsAppMessage
+      ? await this.evolutionClient.sendWhatsAppMessage(targetPhone, testMessage, {
+        attempts: 1,
+        checkStatus: true,
+        throwOnFailure: false,
+      })
+      : await this.send(targetPhone, testMessage);
+    this.logInfo('ADMIN_COMMAND_EXECUTED', {
+      command: 'teste_envio',
+      adminPhone: maskPhone(adminPhone),
+      targetPhone: maskPhone(targetPhone),
+      result: result?.ok === false ? 'failed' : 'ok',
+      httpStatus: result?.httpStatus ?? null,
+    });
+    await this.send(replyTo, [
+      '\u{1F9EA} Teste de envio WhatsApp',
+      '',
+      `Destino: ${maskPhone(targetPhone)}`,
+      `Payload: endpoint ${payloadPreview.endpoint || '/message/sendText'}`,
+      `N\u00famero no payload: ${payloadPreview.payload?.number || payloadPreview.target || maskPhone(targetPhone)}`,
+      `Texto: ${payloadPreview.payload?.textLength ?? testMessage.length} caracteres`,
+      `HTTP status: ${result?.httpStatus ?? 'n/a'}`,
+      `Resultado: ${result?.ok === false ? 'falha' : 'sucesso/aceito pela Evolution'}`,
+      `Resposta: ${JSON.stringify(result?.response ?? result?.rawResponse ?? {}).slice(0, 700)}`,
+      result?.ok === false ? `Erro: ${result.reason || result.error || 'desconhecido'}` : '',
+    ].filter(Boolean).join('\n'));
+    return {
+      ok: result?.ok !== false,
+      targetPhone: maskPhone(targetPhone),
+      result,
+    };
   }
 
   getConversationState(phone) {
@@ -642,11 +748,24 @@ export class WhatsAppPaymentBot {
       return { type: 'entry_admin_ping', decision: 'reply_sent', reason: 'admin_ping_ok' };
     }
 
+    if (normalizedText === 'admin status whatsapp' || normalizedText === '/admin status whatsapp') {
+      await this.send(replyTo, await this.getWhatsAppStatusText());
+      this.logInfo('ADMIN_COMMAND_EXECUTED', {
+        command: 'status_whatsapp',
+        adminPhone: maskPhone(senderPhone),
+        targetPhone: null,
+        result: 'ok',
+      });
+      return { type: 'entry_admin_status_whatsapp', decision: 'reply_sent', reason: 'admin_status_whatsapp_ok' };
+    }
+
     if (normalizedText === 'admin status' || normalizedText === '/admin status') {
       await this.send(replyTo, [
         '✅ Admin reconhecido.',
         `Seu número: ${senderPhone}`,
         'Comandos disponíveis:',
+        'admin status whatsapp',
+        'admin teste envio NUMERO',
         'admin recolocar NUMERO',
         'admin cancelar NUMERO',
         'admin reembolsar NUMERO',
@@ -660,9 +779,21 @@ export class WhatsAppPaymentBot {
       return { type: 'entry_admin_status', decision: 'reply_sent', reason: 'admin_status_ok' };
     }
 
+    if (/^(?:\/admin|admin)\s+teste\s+envio\s+/i.test(rawText)) {
+      const testResult = await this.handleAdminTestSend({ adminPhone: senderPhone, replyTo, rawText });
+      return {
+        type: 'entry_admin_test_send',
+        decision: 'reply_sent',
+        reason: testResult.ok ? 'admin_test_send_ok' : testResult.error,
+        targetPhone: testResult.targetPhone,
+      };
+    }
+
     const invalidFormatText = [
       '❌ Formato inválido.',
       'Use:',
+      'admin status whatsapp',
+      'admin teste envio 5521999999999',
       'admin recolocar 5521999999999',
       'admin cancelar 5521999999999',
       'admin reembolsar 5521999999999',
@@ -867,12 +998,25 @@ export class WhatsAppPaymentBot {
 
   async handleConnectivityWebhook(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
+    this.webhookDiagnostics.lastWebhookReceivedAt = new Date(this.clock()).toISOString();
+    this.webhookDiagnostics.lastWebhookEvent = payload?.event ?? null;
+    this.webhookDiagnostics.lastWebhookInstance = payload?.instance ?? null;
+    this.evolutionClient?.recordWebhookReceived?.(payload);
     this.logInfo('WHATSAPP_WEBHOOK_RECEIVED', {
       originIp,
       event: payload?.event ?? null,
       instance: payload?.instance ?? null,
     });
-    if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
+    if (event !== 'MESSAGES_UPSERT') {
+      this.webhookDiagnostics.lastInvalidPayloadReason = 'unsupported-event';
+      this.logWarn('WHATSAPP_WEBHOOK_INVALID_PAYLOAD', {
+        originIp,
+        event: payload?.event ?? null,
+        instance: payload?.instance ?? null,
+        reason: 'unsupported-event',
+      });
+      return { ignored: true, reason: 'unsupported-event' };
+    }
     this.logInfo('MESSAGES_UPSERT_RECEIVED', {
       originIp,
       event: payload?.event ?? null,
@@ -881,6 +1025,12 @@ export class WhatsAppPaymentBot {
 
     const incoming = parseIncomingMessage(payload);
     if (incoming.fromMe) {
+      this.logInfo('WHATSAPP_WEBHOOK_IGNORED_FROM_ME', {
+        originIp,
+        playerPhone: maskPhone(incoming.phone),
+        remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+        replyTo: maskTechnicalIdentity(incoming.replyTo),
+      });
       this.logInfo('MESSAGE_FROM_ME_IGNORED', {
         originIp,
         playerPhone: maskPhone(incoming.phone),
@@ -890,8 +1040,25 @@ export class WhatsAppPaymentBot {
       });
       return { ignored: true, decision: 'ignored_from_me', reason: 'key_from_me_true' };
     }
-    if (incoming.isGroup) return { ignored: true, decision: 'ignored_invalid', reason: 'group_not_supported' };
-    if (!incoming.phone || !incoming.remoteJid) return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
+    if (incoming.isGroup) {
+      this.webhookDiagnostics.lastInvalidPayloadReason = 'group_not_supported';
+      this.logWarn('WHATSAPP_WEBHOOK_INVALID_PAYLOAD', {
+        originIp,
+        reason: 'group_not_supported',
+        remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+      });
+      return { ignored: true, decision: 'ignored_invalid', reason: 'group_not_supported' };
+    }
+    if (!incoming.phone || !incoming.remoteJid) {
+      this.webhookDiagnostics.lastInvalidPayloadReason = 'missing_remote_jid';
+      this.logWarn('WHATSAPP_WEBHOOK_INVALID_PAYLOAD', {
+        originIp,
+        reason: 'missing_remote_jid',
+        remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+        sender: maskTechnicalIdentity(incoming.sender),
+      });
+      return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
+    }
 
     if (this.safeEntryEnabled && incoming.messageId && this.entryService?.store?.hasProcessedMessage(incoming.messageId)) {
       return { ignored: true, decision: 'ignored_invalid', reason: 'duplicate_message' };
@@ -944,7 +1111,19 @@ export class WhatsAppPaymentBot {
       handler: selectBotHandler(command, incoming, currentState),
       conversationState: currentState.state ?? null,
     });
-    if (!incoming.text) return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
+    if (!incoming.text) {
+      this.webhookDiagnostics.lastInvalidPayloadReason = 'empty_text';
+      this.logWarn('WHATSAPP_WEBHOOK_INVALID_PAYLOAD', {
+        originIp,
+        reason: 'empty_text',
+        playerPhone: maskPhone(incoming.phone),
+        messageType: incoming.messageType || null,
+      });
+      return { ignored: true, decision: 'ignored_invalid', reason: 'empty_text' };
+    }
+    this.webhookDiagnostics.lastMessageProcessedAt = new Date(this.clock()).toISOString();
+    this.webhookDiagnostics.lastMessageFrom = maskPhone(incoming.phone);
+    this.evolutionClient?.recordMessageProcessed?.({ phone: incoming.phone });
     if (IDENTIFY_COMMANDS.has(command)) {
       const isAdmin = Boolean(
         incoming.phone
@@ -1384,9 +1563,41 @@ export class WhatsAppPaymentBot {
 
   async handleWebhook(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
-    if (event !== 'MESSAGES_UPSERT') return { ignored: true, reason: 'unsupported-event' };
+    this.webhookDiagnostics.lastWebhookReceivedAt = new Date(this.clock()).toISOString();
+    this.webhookDiagnostics.lastWebhookEvent = payload?.event ?? null;
+    this.webhookDiagnostics.lastWebhookInstance = payload?.instance ?? null;
+    this.evolutionClient?.recordWebhookReceived?.(payload);
+    if (event !== 'MESSAGES_UPSERT') {
+      this.webhookDiagnostics.lastInvalidPayloadReason = 'unsupported-event';
+      this.logWarn('WHATSAPP_WEBHOOK_INVALID_PAYLOAD', {
+        originIp,
+        event: payload?.event ?? null,
+        instance: payload?.instance ?? null,
+        reason: 'unsupported-event',
+      });
+      return { ignored: true, reason: 'unsupported-event' };
+    }
     const incoming = parseIncomingMessage(payload);
-    if (!incoming.phone || incoming.fromMe) return { ignored: true, reason: 'invalid-or-outgoing-message' };
+    if (incoming.fromMe) {
+      this.logInfo('WHATSAPP_WEBHOOK_IGNORED_FROM_ME', {
+        originIp,
+        playerPhone: maskPhone(incoming.phone),
+        remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+      });
+      return { ignored: true, reason: 'invalid-or-outgoing-message' };
+    }
+    if (!incoming.phone) {
+      this.webhookDiagnostics.lastInvalidPayloadReason = 'missing_phone';
+      this.logWarn('WHATSAPP_WEBHOOK_INVALID_PAYLOAD', {
+        originIp,
+        reason: 'missing_phone',
+        remoteJid: maskTechnicalIdentity(incoming.remoteJid),
+      });
+      return { ignored: true, reason: 'invalid-or-outgoing-message' };
+    }
+    this.webhookDiagnostics.lastMessageProcessedAt = new Date(this.clock()).toISOString();
+    this.webhookDiagnostics.lastMessageFrom = maskPhone(incoming.phone);
+    this.evolutionClient?.recordMessageProcessed?.({ phone: incoming.phone });
     if (incoming.messageId && this.paymentService.store.hasProcessedMessage(incoming.messageId)) {
       return { ignored: true, reason: 'duplicate-message' };
     }

@@ -228,6 +228,21 @@ function requireAdmin(request, response) {
   return false;
 }
 
+async function sendWhatsAppMessage(to, text, { throwOnFailure = false } = {}) {
+  const result = evolutionClient.sendWhatsAppMessage
+    ? await evolutionClient.sendWhatsAppMessage(to, text, {
+      checkStatus: true,
+      throwOnFailure: false,
+    })
+    : await evolutionClient.sendText(to, text);
+  if (result?.ok === false && throwOnFailure) {
+    const error = new Error(result.reason || result.error || 'WHATSAPP_SEND_FAILED');
+    error.result = result;
+    throw error;
+  }
+  return result;
+}
+
 async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
   if (!evolutionClient.isConfigured()) throw new Error('EVOLUTION_API_NOT_CONFIGURED');
   const currentPayment = paymentService.getPayment(paymentId);
@@ -236,11 +251,11 @@ async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
     ? paymentService.retryAccessLinkDelivery({ paymentId, adminPhone, source: `${source}-delivery-retry` })
     : paymentService.confirmPayment({ paymentId, adminPhone, source });
   try {
-    await evolutionClient.sendText(result.payment.phone, [
+    await sendWhatsAppMessage(result.payment.phone, [
       '✅ Pagamento confirmado!',
       'Sua partida está pronta:',
       result.accessLink,
-    ].join('\n'));
+    ].join('\n'), { throwOnFailure: true });
     paymentService.markLinkDelivery(result.payment.paymentId, { sent: true });
     return { payment: paymentService.getPayment(result.payment.paymentId), notificationSent: true, deliveryRetry };
   } catch (error) {
@@ -257,9 +272,10 @@ async function approveAndDeliverWhatsAppEntry(entryId, { actor, source }) {
   if (!internalEntry) throw new Error('ENTRY_NOT_FOUND');
   const result = whatsappEntryService.approveEntry({ entryId, actor, source });
   try {
-    await evolutionClient.sendText(
+    await sendWhatsAppMessage(
       internalEntry.phone,
       whatsappPaymentBot.safeEntryApprovedText(result.entry, result.accessLink),
+      { throwOnFailure: true },
     );
     whatsappEntryService.markLinkDelivery(entryId, { sent: true });
     return { entry: whatsappEntryService.getEntry(entryId), notificationSent: true };
@@ -695,8 +711,9 @@ app.post('/api/admin/payments/:paymentId/reject', async (request, response) => {
     });
     let notificationSent = false;
     try {
-      await evolutionClient.sendText(payment.phone, `❌ O pagamento #${payment.paymentId} não foi aprovado. Motivo: ${payment.rejectionReason}`);
-      notificationSent = true;
+      const delivery = await sendWhatsAppMessage(payment.phone, `❌ O pagamento #${payment.paymentId} não foi aprovado. Motivo: ${payment.rejectionReason}`);
+      notificationSent = delivery?.ok !== false;
+      if (!notificationSent) throw new Error(delivery.reason || delivery.error || 'WHATSAPP_SEND_FAILED');
     } catch (error) {
       logWarn('PAYMENT_REJECTION_NOTIFICATION_FAILED', { paymentId: payment.paymentId, message: error.message });
     }
@@ -759,14 +776,15 @@ app.post('/api/admin/whatsapp-entries/:entryId/reject', async (request, response
     });
     let notificationSent = false;
     try {
-      await evolutionClient.sendText(internalEntry.phone, [
+      const delivery = await sendWhatsAppMessage(internalEntry.phone, [
         '\u274C Sua entrada n\u00e3o foi liberada pelo admin.',
         '',
         `Motivo: ${entry.rejectionReason}`,
         '',
         'Digite menu para come\u00e7ar novamente.',
       ].join('\n'));
-      notificationSent = true;
+      notificationSent = delivery?.ok !== false;
+      if (!notificationSent) throw new Error(delivery.reason || delivery.error || 'WHATSAPP_SEND_FAILED');
     } catch (error) {
       logWarn('WHATSAPP_ENTRY_REJECTION_NOTIFICATION_FAILED', { entryId: entry.entryId, message: error.message });
     }

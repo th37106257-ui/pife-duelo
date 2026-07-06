@@ -144,6 +144,19 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(sentMessages.at(-1).text.includes('Admin reconhecido'));
   assert.ok(sentMessages.at(-1).text.includes(adminPhone));
 
+  const whatsappStatus = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'admin status whatsapp'));
+  assert.equal(whatsappStatus.type, 'entry_admin_status_whatsapp');
+  assert.ok(sentMessages.at(-1).text.includes('Status WhatsApp/Evolution'));
+  assert.ok(sentMessages.at(-1).text.includes('Inst'));
+
+  const testSend = await bot.handleConnectivityWebhook(createWebhook(adminPhone, 'admin teste envio +55 11 8888-7777'));
+  assert.equal(testSend.type, 'entry_admin_test_send');
+  assert.equal(testSend.targetPhone, '********7777');
+  assert.equal(sentMessages.at(-2).phone, '551188887777');
+  assert.match(sentMessages.at(-2).text, /Teste Evolution Pife Duelo/);
+  assert.ok(sentMessages.at(-1).text.includes('Teste de envio WhatsApp'));
+  assert.ok(sentMessages.at(-1).text.includes('Payload'));
+
   const denied = await bot.handleConnectivityWebhook(createWebhook(unauthorizedPhone, 'admin ping'));
   assert.equal(denied.type, 'entry_admin_unauthorized');
   assert.equal(sentMessages.at(-1).text, '❌ Comando admin não autorizado para este número.');
