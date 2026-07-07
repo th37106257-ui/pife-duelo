@@ -77,7 +77,7 @@ export const config = {
   META_PHONE_NUMBER_ID: process.env.META_PHONE_NUMBER_ID || '',
   META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || '',
   META_APP_SECRET: process.env.META_APP_SECRET || '',
-  META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || 'v23.0',
+  META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || '',
   WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER || '',
   PIX_KEY: process.env.PIX_KEY || '',
   PIX_RECEIVER: process.env.PIX_RECEIVER || '',

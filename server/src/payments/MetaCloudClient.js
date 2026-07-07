@@ -167,7 +167,7 @@ export class MetaCloudClient {
     phoneNumberId,
     verifyToken,
     appSecret = '',
-    graphApiVersion = DEFAULT_GRAPH_API_VERSION,
+    graphApiVersion = '',
     fetchImpl = fetch,
     timeoutMs = 10000,
   } = {}) {
@@ -176,6 +176,7 @@ export class MetaCloudClient {
     this.phoneNumberId = String(phoneNumberId || '');
     this.verifyToken = String(verifyToken || '');
     this.appSecret = String(appSecret || '');
+    this.graphApiVersionConfigured = Boolean(String(graphApiVersion || '').trim());
     this.graphApiVersion = String(graphApiVersion || DEFAULT_GRAPH_API_VERSION).replace(/^\/+|\/+$/g, '');
     this.baseUrl = `https://graph.facebook.com/${this.graphApiVersion}`;
     this.fetchImpl = fetchImpl;
@@ -204,8 +205,19 @@ export class MetaCloudClient {
     };
   }
 
+  getConfigurationErrors() {
+    const required = {
+      META_WHATSAPP_TOKEN: this.token,
+      META_PHONE_NUMBER_ID: this.phoneNumberId,
+      META_VERIFY_TOKEN: this.verifyToken,
+      META_APP_SECRET: this.appSecret,
+      META_GRAPH_API_VERSION: this.graphApiVersionConfigured ? this.graphApiVersion : '',
+    };
+    return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+  }
+
   isConfigured() {
-    return Boolean(this.token && this.phoneNumberId);
+    return this.getConfigurationErrors().length === 0;
   }
 
   getDiagnostics() {
@@ -219,6 +231,8 @@ export class MetaCloudClient {
       verifyTokenConfigured: Boolean(this.verifyToken),
       appSecretConfigured: Boolean(this.appSecret),
       graphApiVersion: this.graphApiVersion,
+      graphApiVersionConfigured: this.graphApiVersionConfigured,
+      configurationErrors: this.getConfigurationErrors(),
     };
   }
 
@@ -262,6 +276,7 @@ export class MetaCloudClient {
       httpStatus: null,
       provider: this.providerName,
       reason: this.isConfigured() ? null : 'META_CLOUD_NOT_CONFIGURED',
+      configurationErrors: this.getConfigurationErrors(),
     };
     this.diagnostics.lastStatusCheckAt = new Date().toISOString();
     this.diagnostics.lastStatus = state;
@@ -313,12 +328,27 @@ export class MetaCloudClient {
       return result;
     };
 
-    if (!this.isConfigured()) return fail('META_CLOUD_NOT_CONFIGURED');
+    if (!this.isConfigured()) {
+      console.error('META_SEND_FAILED', {
+        provider: this.providerName,
+        reason: 'META_CLOUD_NOT_CONFIGURED',
+        missing: this.getConfigurationErrors(),
+      });
+      return fail('META_CLOUD_NOT_CONFIGURED', {
+        configurationErrors: this.getConfigurationErrors(),
+      });
+    }
 
     const number = normalizePhone(phone);
     const safeText = String(text || '').trim().slice(0, 4000);
     if (!number || !safeText) {
       console.error('WHATSAPP_SEND_FAILED', {
+        provider: this.providerName,
+        reason: 'INVALID_WHATSAPP_MESSAGE',
+        target: maskTechnicalIdentity(phone),
+        normalizedTarget: maskPhone(number),
+      });
+      console.error('META_SEND_FAILED', {
         provider: this.providerName,
         reason: 'INVALID_WHATSAPP_MESSAGE',
         target: maskTechnicalIdentity(phone),
@@ -351,6 +381,12 @@ export class MetaCloudClient {
       });
       console.log('META_CLOUD_SEND_ATTEMPT', {
         phoneNumberIdConfigured: Boolean(this.phoneNumberId),
+        target: maskPhone(number),
+        textLength: safeText.length,
+      });
+      console.log('META_SEND_ATTEMPT', {
+        phoneNumberIdConfigured: Boolean(this.phoneNumberId),
+        tokenConfigured: Boolean(this.token),
         target: maskPhone(number),
         textLength: safeText.length,
       });
@@ -387,6 +423,12 @@ export class MetaCloudClient {
           httpStatus: response.status ?? null,
           response: sanitizeMetaResponse(responseBody),
         });
+        console.error('META_SEND_FAILED', {
+          provider: this.providerName,
+          target: maskPhone(number),
+          httpStatus: response.status ?? null,
+          response: sanitizeMetaResponse(responseBody),
+        });
         return fail(`META_CLOUD_SEND_FAILED_${response.status}`, {
           httpStatus: response.status ?? null,
           response: summarizeMetaResponse(responseBody),
@@ -397,6 +439,12 @@ export class MetaCloudClient {
       this.diagnostics.lastSendSuccessAt = new Date().toISOString();
       this.diagnostics.lastError = null;
       console.log('WHATSAPP_SEND_SUCCESS', {
+        provider: this.providerName,
+        target: maskPhone(number),
+        httpStatus: response.status ?? null,
+        response: summarizeMetaResponse(responseBody),
+      });
+      console.log('META_SEND_SUCCESS', {
         provider: this.providerName,
         target: maskPhone(number),
         httpStatus: response.status ?? null,
@@ -416,6 +464,11 @@ export class MetaCloudClient {
       this.diagnostics.lastSendErrorAt = new Date().toISOString();
       this.diagnostics.lastError = message;
       console.error('WHATSAPP_SEND_FAILED', {
+        provider: this.providerName,
+        target: maskPhone(number),
+        message,
+      });
+      console.error('META_SEND_FAILED', {
         provider: this.providerName,
         target: maskPhone(number),
         message,

@@ -135,6 +135,8 @@ function getWhatsAppProviderConfigurationErrors({ includeWebhook = false } = {})
       META_WHATSAPP_TOKEN: config.META_WHATSAPP_TOKEN,
       META_PHONE_NUMBER_ID: config.META_PHONE_NUMBER_ID,
       ...(includeWebhook ? { META_VERIFY_TOKEN: config.META_VERIFY_TOKEN } : {}),
+      META_APP_SECRET: config.META_APP_SECRET,
+      META_GRAPH_API_VERSION: config.META_GRAPH_API_VERSION,
     };
     return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
   }
@@ -516,8 +518,11 @@ app.get('/health', (request, response) => {
       instanceName: config.EVOLUTION_INSTANCE_NAME || null,
       evolutionConfigured: whatsappProviderContext.evolutionClient.isConfigured(),
       metaCloudConfigured: whatsappProviderContext.metaCloudClient.isConfigured(),
+      metaTokenConfigured: Boolean(config.META_WHATSAPP_TOKEN),
       metaPhoneNumberIdConfigured: Boolean(config.META_PHONE_NUMBER_ID),
       metaVerifyTokenConfigured: Boolean(config.META_VERIFY_TOKEN),
+      metaAppSecretConfigured: Boolean(config.META_APP_SECRET),
+      metaGraphApiVersionConfigured: Boolean(config.META_GRAPH_API_VERSION),
       botNumberConfigured: Boolean(config.WHATSAPP_BOT_NUMBER),
       botNumberMasked: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
       adminNumbersConfigured: config.ADMIN_WHATSAPP_NUMBERS.length,
@@ -560,6 +565,13 @@ app.get('/api/status', (request, response) => {
 app.get('/api/webhooks/meta-whatsapp', (request, response) => {
   const originIp = request.ip || request.get('x-forwarded-for') || null;
   const verification = metaCloudClient.verifyMetaWebhook(request.query ?? {});
+  logInfo('META_WEBHOOK_VERIFY_ATTEMPT', {
+    originIp,
+    provider: config.WHATSAPP_PROVIDER,
+    verifyTokenConfigured: Boolean(config.META_VERIFY_TOKEN),
+    hasChallenge: Boolean(request.query?.['hub.challenge'] ?? request.query?.hub?.challenge),
+    ok: verification.ok,
+  });
   logInfo('META_CLOUD_WEBHOOK_VERIFY', {
     originIp,
     provider: config.WHATSAPP_PROVIDER,
@@ -567,14 +579,30 @@ app.get('/api/webhooks/meta-whatsapp', (request, response) => {
     reason: verification.reason,
   });
   if (!verification.ok) {
+    logWarn('META_WEBHOOK_VERIFY_FAILED', {
+      originIp,
+      provider: config.WHATSAPP_PROVIDER,
+      reason: verification.reason,
+      verifyTokenConfigured: Boolean(config.META_VERIFY_TOKEN),
+    });
     response.status(403).send('meta-webhook-verification-failed');
     return;
   }
+  logInfo('META_WEBHOOK_VERIFY_SUCCESS', {
+    originIp,
+    provider: config.WHATSAPP_PROVIDER,
+  });
   response.status(200).type('text/plain').send(verification.challenge);
 });
 
 app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
   const originIp = request.ip || request.get('x-forwarded-for') || null;
+  logInfo('META_WEBHOOK_RECEIVED', {
+    originIp,
+    provider: 'meta_cloud',
+    activeProvider: config.WHATSAPP_PROVIDER,
+    object: request.body?.object ?? null,
+  });
   logInfo('WHATSAPP_WEBHOOK_RECEIVED', {
     originIp,
     provider: 'meta_cloud',
@@ -582,6 +610,16 @@ app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
   });
 
   if (config.WHATSAPP_PROVIDER !== 'meta_cloud') {
+    logWarn('META_PROVIDER_INACTIVE', {
+      originIp,
+      activeProvider: config.WHATSAPP_PROVIDER,
+      reason: 'meta_cloud_not_enabled',
+    });
+    logInfo('META_MESSAGE_IGNORED', {
+      originIp,
+      reason: 'meta_cloud_provider_inactive',
+      activeProvider: config.WHATSAPP_PROVIDER,
+    });
     logWarn('META_CLOUD_WEBHOOK_PROVIDER_INACTIVE', {
       originIp,
       activeProvider: config.WHATSAPP_PROVIDER,
@@ -592,7 +630,25 @@ app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
   }
 
   if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled && !whatsappSafeEntryEnabled) {
+    logInfo('META_MESSAGE_IGNORED', {
+      originIp,
+      reason: 'whatsapp-disabled',
+      activeProvider: config.WHATSAPP_PROVIDER,
+    });
     response.status(503).json({ error: 'whatsapp-disabled' });
+    return;
+  }
+
+  if (!metaCloudClient.isConfigured()) {
+    logWarn('META_MESSAGE_IGNORED', {
+      originIp,
+      reason: 'META_CLOUD_NOT_CONFIGURED',
+      missing: metaCloudClient.getConfigurationErrors?.() ?? [],
+    });
+    response.status(503).json({
+      error: 'META_CLOUD_NOT_CONFIGURED',
+      missing: metaCloudClient.getConfigurationErrors?.() ?? [],
+    });
     return;
   }
 
@@ -601,6 +657,11 @@ app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
     request.get('x-hub-signature-256'),
   );
   if (!signatureCheck.ok) {
+    logInfo('META_MESSAGE_IGNORED', {
+      originIp,
+      reason: signatureCheck.reason,
+      activeProvider: config.WHATSAPP_PROVIDER,
+    });
     logWarn('META_CLOUD_WEBHOOK_UNAUTHORIZED', {
       originIp,
       reason: signatureCheck.reason,
@@ -618,9 +679,23 @@ app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
     });
 
     const results = [];
+    if (!parsed.messages.length) {
+      logInfo('META_MESSAGE_IGNORED', {
+        originIp,
+        reason: parsed.statusCount ? 'status_event_without_message' : 'no_messages',
+        statuses: parsed.statusCount,
+      });
+    }
     for (const message of parsed.messages) {
       const normalizedPayload = message.payload;
       const messageDiagnostic = buildEvolutionMessageDiagnostic(normalizedPayload);
+      logInfo('META_MESSAGE_RECEIVED', {
+        originIp,
+        provider: 'meta_cloud',
+        phoneNumberIdConfigured: Boolean(config.META_PHONE_NUMBER_ID),
+        senderPhone: maskPhone(message.phone),
+        messageType: message.type,
+      });
       logInfo('META_CLOUD_MESSAGE_RECEIVED', {
         originIp,
         provider: 'meta_cloud',

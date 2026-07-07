@@ -59,6 +59,7 @@ export class WhatsAppProvider {
     const active = this.getActiveProviderName();
     const activeClient = active === 'meta_cloud' ? this.metaCloudClient : this.evolutionClient;
     const activeDiagnostics = activeClient?.getDiagnostics?.() ?? {};
+    const metaDiagnostics = this.metaCloudClient?.getDiagnostics?.() ?? {};
     return {
       ...activeDiagnostics,
       provider: 'whatsapp_provider',
@@ -68,6 +69,14 @@ export class WhatsAppProvider {
       configured: this.isConfigured(),
       primaryConfigured: Boolean(primary?.isConfigured?.()),
       fallbackConfigured: Boolean(fallback?.isConfigured?.()),
+      evolutionConfigured: Boolean(this.evolutionClient?.isConfigured?.()),
+      metaCloudConfigured: Boolean(this.metaCloudClient?.isConfigured?.()),
+      metaPhoneNumberIdConfigured: Boolean(metaDiagnostics.phoneNumberIdConfigured),
+      metaTokenConfigured: Boolean(metaDiagnostics.tokenConfigured),
+      metaVerifyTokenConfigured: Boolean(metaDiagnostics.verifyTokenConfigured),
+      metaAppSecretConfigured: Boolean(metaDiagnostics.appSecretConfigured),
+      metaGraphApiVersionConfigured: Boolean(metaDiagnostics.graphApiVersionConfigured),
+      metaConfigurationErrors: metaDiagnostics.configurationErrors ?? [],
       primary: primary?.getDiagnostics?.() ?? null,
       fallback: fallback?.getDiagnostics?.() ?? null,
     };
