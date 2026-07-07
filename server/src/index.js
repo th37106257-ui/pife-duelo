@@ -18,8 +18,8 @@ import { logError, logInfo, logWarn } from './utils/logger.js';
 import { calculatePrize, listOfficialTables } from '../../src/shared/economy.js';
 import { PaymentStore } from './payments/PaymentStore.js';
 import { maskPhone, PaymentService } from './payments/PaymentService.js';
-import { EvolutionClient } from './payments/EvolutionClient.js';
 import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/WhatsAppPaymentBot.js';
+import { createWhatsAppProvider } from './payments/WhatsAppProvider.js';
 import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
 import { MatchQueue } from './services/matchQueue.js';
@@ -60,11 +60,14 @@ const whatsappEntryService = new WhatsAppEntryService({
   entryExpiryMinutes: config.WHATSAPP_ENTRY_EXPIRY_MINUTES,
   accessTtlMinutes: config.WHATSAPP_ENTRY_ACCESS_TTL_MINUTES,
 });
-const evolutionClient = new EvolutionClient({
-  baseUrl: config.EVOLUTION_API_URL,
-  apiKey: config.EVOLUTION_API_KEY,
-  instanceName: config.EVOLUTION_INSTANCE_NAME,
+const whatsappProviderContext = createWhatsAppProvider({
+  config,
+  logInfo,
+  logWarn,
+  logError,
 });
+const evolutionClient = whatsappProviderContext.client;
+const metaCloudClient = whatsappProviderContext.metaCloudClient;
 const whatsappMatchQueue = new MatchQueue({
   entryService: whatsappEntryService,
   logInfo,
@@ -98,17 +101,19 @@ const postMatchFlow = createPostMatchFlow({
 const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
   && config.PAYMENT_GATE_ENABLED
   && getPaymentConfigurationErrors().length === 0;
-const whatsappConnectivityConfigured = Boolean(
-  config.EVOLUTION_API_URL
-  && config.EVOLUTION_API_KEY
-  && config.EVOLUTION_INSTANCE_NAME
-  && config.EVOLUTION_WEBHOOK_SECRET,
-);
+const whatsappConnectivityConfigured = getWhatsAppProviderConfigurationErrors({ includeWebhook: true }).length === 0;
 const whatsappConnectivityTestEnabled = config.WHATSAPP_CONNECTIVITY_TEST_ENABLED
   && whatsappConnectivityConfigured;
 const whatsappSafeEntryEnabled = config.WHATSAPP_SAFE_ENTRY_ENABLED
   && getWhatsAppEntryConfigurationErrors().length === 0;
 
+logInfo('WHATSAPP_PROVIDER_SELECTED', {
+  requestedProvider: config.WHATSAPP_PROVIDER,
+  activeProvider: whatsappProviderContext.client.getActiveProviderName?.() ?? whatsappProviderContext.activeProviderName,
+  fallbackProvider: whatsappProviderContext.fallbackProviderName,
+  evolutionConfigured: whatsappProviderContext.evolutionClient.isConfigured(),
+  metaCloudConfigured: whatsappProviderContext.metaCloudClient.isConfigured(),
+});
 logInfo('EVOLUTION_INSTANCE_USED', {
   instanceName: config.EVOLUTION_INSTANCE_NAME || null,
   apiUrlConfigured: Boolean(config.EVOLUTION_API_URL),
@@ -124,20 +129,38 @@ logInfo('ADMIN_NUMBER', {
   source: 'WHATSAPP_ADMIN_NUMBER/ADMIN_WHATSAPP_NUMBERS/WHATSAPP_ADMIN_NUMBERS',
 });
 
+function getWhatsAppProviderConfigurationErrors({ includeWebhook = false } = {}) {
+  if (config.WHATSAPP_PROVIDER === 'meta_cloud') {
+    const required = {
+      META_WHATSAPP_TOKEN: config.META_WHATSAPP_TOKEN,
+      META_PHONE_NUMBER_ID: config.META_PHONE_NUMBER_ID,
+      ...(includeWebhook ? { META_VERIFY_TOKEN: config.META_VERIFY_TOKEN } : {}),
+    };
+    return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+  }
+
+  const required = {
+    EVOLUTION_API_URL: config.EVOLUTION_API_URL,
+    EVOLUTION_API_KEY: config.EVOLUTION_API_KEY,
+    EVOLUTION_INSTANCE_NAME: config.EVOLUTION_INSTANCE_NAME,
+    ...(includeWebhook ? { EVOLUTION_WEBHOOK_SECRET: config.EVOLUTION_WEBHOOK_SECRET } : {}),
+  };
+  return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+}
+
 function getPaymentConfigurationErrors() {
   const required = {
     PAYMENT_STORE_PATH: config.PAYMENT_STORE_PATH,
     PAYMENT_ACCESS_SECRET: config.PAYMENT_ACCESS_SECRET,
     PUBLIC_GAME_URL: config.PUBLIC_GAME_URL,
     ADMIN_WHATSAPP_NUMBERS: config.ADMIN_WHATSAPP_NUMBERS.length,
-    EVOLUTION_API_URL: config.EVOLUTION_API_URL,
-    EVOLUTION_API_KEY: config.EVOLUTION_API_KEY,
-    EVOLUTION_INSTANCE_NAME: config.EVOLUTION_INSTANCE_NAME,
-    EVOLUTION_WEBHOOK_SECRET: config.EVOLUTION_WEBHOOK_SECRET,
     PIX_KEY: config.PIX_KEY,
     PIX_RECEIVER: config.PIX_RECEIVER,
   };
-  return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+  return [
+    ...Object.entries(required).filter(([, value]) => !value).map(([key]) => key),
+    ...getWhatsAppProviderConfigurationErrors({ includeWebhook: true }),
+  ];
 }
 
 function getWhatsAppEntryConfigurationErrors() {
@@ -145,12 +168,11 @@ function getWhatsAppEntryConfigurationErrors() {
     WHATSAPP_ENTRY_STORE_PATH: config.WHATSAPP_ENTRY_STORE_PATH,
     WHATSAPP_ENTRY_ACCESS_SECRET: config.WHATSAPP_ENTRY_ACCESS_SECRET,
     PUBLIC_GAME_URL: config.PUBLIC_GAME_URL,
-    EVOLUTION_API_URL: config.EVOLUTION_API_URL,
-    EVOLUTION_API_KEY: config.EVOLUTION_API_KEY,
-    EVOLUTION_INSTANCE_NAME: config.EVOLUTION_INSTANCE_NAME,
-    EVOLUTION_WEBHOOK_SECRET: config.EVOLUTION_WEBHOOK_SECRET,
   };
-  return Object.entries(required).filter(([, value]) => !value).map(([key]) => key);
+  return [
+    ...Object.entries(required).filter(([, value]) => !value).map(([key]) => key),
+    ...getWhatsAppProviderConfigurationErrors({ includeWebhook: true }),
+  ];
 }
 
 function secureEquals(left, right) {
@@ -200,7 +222,11 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({
+  verify: (request, response, buffer) => {
+    request.rawBody = buffer;
+  },
+}));
 app.use((request, response, next) => {
   response.set('Referrer-Policy', 'no-referrer');
   next();
@@ -244,7 +270,7 @@ async function sendWhatsAppMessage(to, text, { throwOnFailure = false } = {}) {
 }
 
 async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
-  if (!evolutionClient.isConfigured()) throw new Error('EVOLUTION_API_NOT_CONFIGURED');
+  if (!evolutionClient.isConfigured()) throw new Error('WHATSAPP_PROVIDER_NOT_CONFIGURED');
   const currentPayment = paymentService.getPayment(paymentId);
   const deliveryRetry = currentPayment?.status === 'confirmed' && !currentPayment.linkSentAt;
   const result = deliveryRetry
@@ -267,7 +293,7 @@ async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
 
 async function approveAndDeliverWhatsAppEntry(entryId, { actor, source }) {
   if (!whatsappSafeEntryEnabled) throw new Error('WHATSAPP_SAFE_ENTRIES_DISABLED');
-  if (!evolutionClient.isConfigured()) throw new Error('EVOLUTION_API_NOT_CONFIGURED');
+  if (!evolutionClient.isConfigured()) throw new Error('WHATSAPP_PROVIDER_NOT_CONFIGURED');
   const internalEntry = whatsappEntryService.getEntry(entryId, { includeSecrets: true });
   if (!internalEntry) throw new Error('ENTRY_NOT_FOUND');
   const result = whatsappEntryService.approveEntry({ entryId, actor, source });
@@ -478,6 +504,9 @@ app.get('/health', (request, response) => {
       postMatchWhatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
     },
     whatsapp: {
+      provider: config.WHATSAPP_PROVIDER,
+      activeProvider: whatsappProviderContext.client.getActiveProviderName?.() ?? whatsappProviderContext.activeProviderName,
+      fallbackProvider: whatsappProviderContext.fallbackProviderName,
       connectivityTestEnabled: whatsappConnectivityTestEnabled,
       configured: whatsappConnectivityConfigured,
       safeEntryEnabled: whatsappSafeEntryEnabled,
@@ -485,6 +514,10 @@ app.get('/health', (request, response) => {
       entryStorePersisted: Boolean(config.WHATSAPP_ENTRY_STORE_PATH),
       publicGameUrlConfigured: Boolean(config.PUBLIC_GAME_URL),
       instanceName: config.EVOLUTION_INSTANCE_NAME || null,
+      evolutionConfigured: whatsappProviderContext.evolutionClient.isConfigured(),
+      metaCloudConfigured: whatsappProviderContext.metaCloudClient.isConfigured(),
+      metaPhoneNumberIdConfigured: Boolean(config.META_PHONE_NUMBER_ID),
+      metaVerifyTokenConfigured: Boolean(config.META_VERIFY_TOKEN),
       botNumberConfigured: Boolean(config.WHATSAPP_BOT_NUMBER),
       botNumberMasked: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
       adminNumbersConfigured: config.ADMIN_WHATSAPP_NUMBERS.length,
@@ -522,6 +555,106 @@ app.get('/api/status', (request, response) => {
     matches: matchManager.listMatches().length,
     queuedPlayers: queueManager.getQueueSize(),
   });
+});
+
+app.get('/api/webhooks/meta-whatsapp', (request, response) => {
+  const originIp = request.ip || request.get('x-forwarded-for') || null;
+  const verification = metaCloudClient.verifyMetaWebhook(request.query ?? {});
+  logInfo('META_CLOUD_WEBHOOK_VERIFY', {
+    originIp,
+    provider: config.WHATSAPP_PROVIDER,
+    ok: verification.ok,
+    reason: verification.reason,
+  });
+  if (!verification.ok) {
+    response.status(403).send('meta-webhook-verification-failed');
+    return;
+  }
+  response.status(200).type('text/plain').send(verification.challenge);
+});
+
+app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
+  const originIp = request.ip || request.get('x-forwarded-for') || null;
+  logInfo('WHATSAPP_WEBHOOK_RECEIVED', {
+    originIp,
+    provider: 'meta_cloud',
+    object: request.body?.object ?? null,
+  });
+
+  if (config.WHATSAPP_PROVIDER !== 'meta_cloud') {
+    logWarn('META_CLOUD_WEBHOOK_PROVIDER_INACTIVE', {
+      originIp,
+      activeProvider: config.WHATSAPP_PROVIDER,
+      reason: 'meta_cloud_not_enabled',
+    });
+    response.json({ accepted: true, ignored: true, reason: 'meta-cloud-provider-inactive' });
+    return;
+  }
+
+  if (!paymentSystemEnabled && !whatsappConnectivityTestEnabled && !whatsappSafeEntryEnabled) {
+    response.status(503).json({ error: 'whatsapp-disabled' });
+    return;
+  }
+
+  const signatureCheck = metaCloudClient.verifyRequestSignature(
+    request.rawBody,
+    request.get('x-hub-signature-256'),
+  );
+  if (!signatureCheck.ok) {
+    logWarn('META_CLOUD_WEBHOOK_UNAUTHORIZED', {
+      originIp,
+      reason: signatureCheck.reason,
+    });
+    response.status(401).json({ error: 'meta-webhook-unauthorized' });
+    return;
+  }
+
+  try {
+    const parsed = metaCloudClient.handleMetaWebhookEvent(request.body ?? {});
+    logInfo('META_CLOUD_WEBHOOK_PARSED', {
+      originIp,
+      messages: parsed.messageCount,
+      statuses: parsed.statusCount,
+    });
+
+    const results = [];
+    for (const message of parsed.messages) {
+      const normalizedPayload = message.payload;
+      const messageDiagnostic = buildEvolutionMessageDiagnostic(normalizedPayload);
+      logInfo('META_CLOUD_MESSAGE_RECEIVED', {
+        originIp,
+        provider: 'meta_cloud',
+        phoneNumberIdConfigured: Boolean(config.META_PHONE_NUMBER_ID),
+        senderPhone: maskPhone(message.phone),
+        messageType: message.type,
+      });
+      logInfo('META_CLOUD_MESSAGE_DIAGNOSTIC', messageDiagnostic);
+      const result = paymentSystemEnabled
+        ? await whatsappPaymentBot.handleWebhook(normalizedPayload, { originIp })
+        : await whatsappPaymentBot.handleConnectivityWebhook(normalizedPayload, { originIp });
+      logInfo('META_CLOUD_MESSAGE_DECISION', {
+        decision: result.decision ?? (result.ignored ? 'ignored_invalid' : 'processed_incoming'),
+        reason: result.reason ?? result.type ?? 'unknown',
+        messageType: messageDiagnostic.messageType,
+        remoteJid: messageDiagnostic.remoteJid,
+      });
+      results.push({
+        messageId: message.messageId,
+        resultType: result.type ?? result.reason ?? 'ignored',
+      });
+    }
+
+    response.json({
+      accepted: true,
+      provider: 'meta_cloud',
+      messages: parsed.messageCount,
+      statuses: parsed.statusCount,
+      results,
+    });
+  } catch (error) {
+    logError('META_CLOUD_WEBHOOK_ERROR', { originIp, message: error.message });
+    response.status(500).json({ error: 'meta-webhook-processing-failed' });
+  }
 });
 
 app.post('/api/webhooks/evolution', async (request, response) => {

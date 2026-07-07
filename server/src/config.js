@@ -31,6 +31,10 @@ const normalizePhoneConfig = (value) => {
 const parsePhoneList = (...values) => [
   ...new Set(values.flatMap(parseList).map(normalizePhoneConfig).filter(Boolean)),
 ];
+const normalizeWhatsappProvider = (value) => {
+  const provider = String(value || 'evolution').trim().toLowerCase();
+  return provider === 'meta_cloud' ? 'meta_cloud' : 'evolution';
+};
 
 export const config = {
   PORT: Number(process.env.PORT || 3000),
@@ -49,6 +53,7 @@ export const config = {
     process.env.ADMIN_WHATSAPP_NUMBERS,
     process.env.WHATSAPP_ADMIN_NUMBERS,
   ),
+  WHATSAPP_PROVIDER: normalizeWhatsappProvider(process.env.WHATSAPP_PROVIDER),
   WHATSAPP_SUPPORT_NUMBER: process.env.WHATSAPP_SUPPORT_NUMBER || '',
   WHATSAPP_PAYMENTS_ENABLED: parseBoolean(process.env.WHATSAPP_PAYMENTS_ENABLED),
   PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
@@ -68,6 +73,11 @@ export const config = {
   EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY || '',
   EVOLUTION_INSTANCE_NAME: process.env.EVOLUTION_INSTANCE_NAME || process.env.EVOLUTION_INSTANCE || '',
   EVOLUTION_WEBHOOK_SECRET: process.env.EVOLUTION_WEBHOOK_SECRET || '',
+  META_WHATSAPP_TOKEN: process.env.META_WHATSAPP_TOKEN || '',
+  META_PHONE_NUMBER_ID: process.env.META_PHONE_NUMBER_ID || '',
+  META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || '',
+  META_APP_SECRET: process.env.META_APP_SECRET || '',
+  META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || 'v23.0',
   WHATSAPP_BOT_NUMBER: process.env.WHATSAPP_BOT_NUMBER || '',
   PIX_KEY: process.env.PIX_KEY || '',
   PIX_RECEIVER: process.env.PIX_RECEIVER || '',

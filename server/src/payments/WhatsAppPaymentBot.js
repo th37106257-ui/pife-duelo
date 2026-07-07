@@ -439,7 +439,9 @@ export class WhatsAppPaymentBot {
     return [
       '\u{1F4E1} Status WhatsApp/Evolution',
       '',
-      `Inst\u00e2ncia: ${diagnostics.instanceName || this.evolutionClient?.instanceName || 'n\u00e3o configurada'}`,
+      `Provider solicitado: ${diagnostics.requestedProvider || diagnostics.provider || 'evolution'}`,
+      `Provider ativo: ${diagnostics.activeProvider || diagnostics.provider || 'evolution'}`,
+      `Inst\u00e2ncia/ID: ${diagnostics.instanceName || this.evolutionClient?.instanceName || 'n\u00e3o configurada'}`,
       `Status: ${status.state || diagnostics.lastStatus || 'desconhecido'}`,
       `Inst\u00e2ncia aberta/conectada: ${openLabel}`,
       `HTTP status check: ${status.httpStatus ?? diagnostics.lastStatusHttpStatus ?? 'n/a'}`,
