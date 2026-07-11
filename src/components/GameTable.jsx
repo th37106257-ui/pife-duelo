@@ -907,6 +907,28 @@ export default function GameTable() {
     });
   }, [isLocalMultiplayer]);
 
+  const activeCardSignature = activeCards.map((card) => card.id).join('|');
+  const testModeBatEvaluation = useMemo(
+    () => validatePifeHand(activeCards),
+    [activeCardSignature],
+  );
+  const knockValidation = useMemo(
+    () => {
+      if (isTestMode && !isLocalMultiplayer) {
+        return {
+          valid: testModeBatEvaluation.canBeat,
+          groups: testModeBatEvaluation.validGroups.map((group) => group.cards),
+          validGroups: testModeBatEvaluation.validGroups,
+          remainingCards: testModeBatEvaluation.remainingCards,
+          deadwood: testModeBatEvaluation.remainingCards,
+          usedExtraCards: [],
+        };
+      }
+      return isLocalMultiplayer ? getKnockResultForActor(game, activeActor) : getPlayerKnockResult(game);
+    },
+    [activeActor, game, isLocalMultiplayer, isTestMode, testModeBatEvaluation],
+  );
+
   const knock = useCallback(() => {
     const canTryKnock = isTestMode && !isLocalMultiplayer
       ? activeHumanTurn && !handDragging && !isResolvingAction && !resolvingActionRef.current && !result
@@ -1243,27 +1265,6 @@ export default function GameTable() {
   ]);
 
   const topDiscard = game.discardPile[game.discardPile.length - 1];
-  const activeCardSignature = activeCards.map((card) => card.id).join('|');
-  const testModeBatEvaluation = useMemo(
-    () => validatePifeHand(activeCards),
-    [activeCardSignature],
-  );
-  const knockValidation = useMemo(
-    () => {
-      if (isTestMode && !isLocalMultiplayer) {
-        return {
-          valid: testModeBatEvaluation.canBeat,
-          groups: testModeBatEvaluation.validGroups.map((group) => group.cards),
-          validGroups: testModeBatEvaluation.validGroups,
-          remainingCards: testModeBatEvaluation.remainingCards,
-          deadwood: testModeBatEvaluation.remainingCards,
-          usedExtraCards: [],
-        };
-      }
-      return isLocalMultiplayer ? getKnockResultForActor(game, activeActor) : getPlayerKnockResult(game);
-    },
-    [activeActor, game, isLocalMultiplayer, isTestMode, testModeBatEvaluation],
-  );
   const canRecycleDraw = game.drawPile.length > 0 || game.discardPile.length > 1;
   const canDraw = canPlayerAct && !handDragging && !hasDrawn && canRecycleDraw && activeCards.length < 10;
   const canTapDraw = canDraw;
