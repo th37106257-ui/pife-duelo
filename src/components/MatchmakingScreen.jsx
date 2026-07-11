@@ -52,6 +52,12 @@ function clearStoredMatchSession() {
   window.localStorage.removeItem(ACTIVE_MATCH_STORAGE_KEY);
 }
 
+function maskClientId(value = '') {
+  const text = String(value || '');
+  if (text.length <= 8) return text;
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
 function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
   const remainingSeconds = (seconds % 60).toString().padStart(2, '0');
@@ -94,6 +100,8 @@ export default function MatchmakingScreen() {
   const onlineGameStateRef = useRef(null);
   const bootstrappedRef = useRef(false);
   const directJoinAttemptedRef = useRef(false);
+  const recoveryInProgressRef = useRef(false);
+  const recoveryLoggedMatchRef = useRef(null);
   const directJoinMatchId = useMemo(() => readJoinMatchIdFromUrl(), []);
   const hasDirectEntryLink = useMemo(() => Boolean(readEntryTokenFromUrl()), []);
 
@@ -191,6 +199,23 @@ export default function MatchmakingScreen() {
     setOnlineGameState(normalized);
     setPlayerId(normalized.playerId);
     setStatus(nextStatus ?? (normalized.status === 'finished' ? 'finished' : 'playing'));
+
+    if (
+      recoveryInProgressRef.current
+      && normalized.matchId
+      && normalized.matchId === activeSessionRef.current?.matchId
+      && recoveryLoggedMatchRef.current !== normalized.matchId
+    ) {
+      console.info('CLIENT_RECOVERY_SUCCESS', {
+        matchId: maskClientId(normalized.matchId),
+        roomId: maskClientId(normalized.roomId),
+        playerId: maskClientId(normalized.playerId),
+        status: normalized.status,
+        turnNumber: normalized.turnNumber,
+      });
+      recoveryLoggedMatchRef.current = normalized.matchId;
+      recoveryInProgressRef.current = false;
+    }
   };
 
   const attachListeners = (socket) => {
@@ -277,7 +302,20 @@ export default function MatchmakingScreen() {
       },
       onActionRejected: (payload) => {
         setActionError(payload.message || payload.reason || 'Acao rejeitada.');
+        if (String(payload.reason || '').includes('DUPLICATE_SESSION')) {
+          console.warn('DUPLICATE_SESSION_BLOCKED', {
+            reason: payload.reason,
+            action: payload.action,
+          });
+        }
         if (payload.reason === 'MATCH_NOT_FOUND') {
+          if (recoveryInProgressRef.current) {
+            console.warn('CLIENT_RECOVERY_FAILED', {
+              reason: payload.reason,
+              action: payload.action,
+            });
+            recoveryInProgressRef.current = false;
+          }
           activeSessionRef.current = null;
           onlineGameStateRef.current = null;
           clearStoredMatchSession();
@@ -304,7 +342,18 @@ export default function MatchmakingScreen() {
       socket.emit('requestServerStatus');
       const session = activeSessionRef.current ?? readStoredMatchSession();
       if (session?.matchId && session?.roomId && session?.playerId) {
+        console.info('CLIENT_RECOVERY_SOCKET_CONNECTED', {
+          matchId: maskClientId(session.matchId),
+          roomId: maskClientId(session.roomId),
+          playerId: maskClientId(session.playerId),
+        });
         activeSessionRef.current = session;
+        recoveryInProgressRef.current = true;
+        console.info('CLIENT_RECOVERY_REQUEST_SENT', {
+          matchId: maskClientId(session.matchId),
+          roomId: maskClientId(session.roomId),
+          playerId: maskClientId(session.playerId),
+        });
         resumeOnlineMatch(session);
       }
     };
@@ -379,19 +428,44 @@ export default function MatchmakingScreen() {
   };
 
   const restoreActiveMatch = async () => {
+    console.info('CLIENT_RECOVERY_STARTED');
     const session = readStoredMatchSession();
-    if (!session?.matchId || !session?.roomId || !session?.playerId) return false;
+    if (!session?.matchId || !session?.roomId || !session?.playerId) {
+      console.info('CLIENT_RECOVERY_FAILED', { reason: 'NO_STORED_SESSION' });
+      return false;
+    }
 
+    console.info('CLIENT_RECOVERY_STORAGE_FOUND', {
+      matchId: maskClientId(session.matchId),
+      roomId: maskClientId(session.roomId),
+      playerId: maskClientId(session.playerId),
+      savedAt: session.savedAt ?? null,
+    });
     activeSessionRef.current = session;
+    recoveryInProgressRef.current = true;
     setStatus((current) => (current === 'playing' || current === 'finished' ? current : 'connecting'));
     setActionError('');
 
     try {
       const socket = await connectSocket();
       attachListeners(socket);
+      console.info('CLIENT_RECOVERY_SOCKET_CONNECTED', {
+        matchId: maskClientId(session.matchId),
+        roomId: maskClientId(session.roomId),
+        playerId: maskClientId(session.playerId),
+      });
+      console.info('CLIENT_RECOVERY_REQUEST_SENT', {
+        matchId: maskClientId(session.matchId),
+        roomId: maskClientId(session.roomId),
+        playerId: maskClientId(session.playerId),
+      });
       resumeOnlineMatch(session);
       return true;
     } catch (error) {
+      console.warn('CLIENT_RECOVERY_FAILED', {
+        reason: error.message || 'SOCKET_CONNECT_FAILED',
+      });
+      recoveryInProgressRef.current = false;
       setActionError(error.message || 'Nao foi possivel reconectar a partida.');
       return false;
     }
@@ -446,6 +520,8 @@ export default function MatchmakingScreen() {
   useEffect(() => {
     const handleResume = () => {
       if (document.visibilityState === 'hidden') return;
+      const session = activeSessionRef.current ?? readStoredMatchSession();
+      if (!session?.matchId || !session?.roomId || !session?.playerId) return;
       restoreActiveMatch();
     };
     const handlePageHide = () => {

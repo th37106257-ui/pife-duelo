@@ -90,8 +90,16 @@ function combinations(items, size, start = 0, selected = [], output = []) {
   return output;
 }
 
-function getLogicalCandidates(cards) {
+function getWinningCandidates(cards) {
   const candidates = [];
+  const seen = new Set();
+
+  const pushCandidate = (type, cardsInGroup, indices) => {
+    const key = cardsInGroup.map(getCardId).sort().join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(buildGroup(type, cardsInGroup, indices));
+  };
 
   const byRank = new Map();
   const bySuit = new Map();
@@ -115,7 +123,7 @@ function getLogicalCandidates(cards) {
     combinations(rankCards, 3).forEach((combo) => {
       const cardsInGroup = combo.map((item) => item.card);
       if (isValidSet(cardsInGroup)) {
-        candidates.push(buildGroup('trinca', cardsInGroup, combo.map((item) => item.index)));
+        pushCandidate('trinca', cardsInGroup, combo.map((item) => item.index));
       }
     });
   });
@@ -123,42 +131,33 @@ function getLogicalCandidates(cards) {
   [...bySuit.values()].forEach((suitCards) => {
     const sorted = [...suitCards].sort((a, b) => getCardValue(a.card) - getCardValue(b.card));
 
-    for (let start = 0; start < sorted.length; start += 1) {
-      const run = [sorted[start]];
-      for (let index = start + 1; index < sorted.length; index += 1) {
-        const previous = run[run.length - 1];
-        const current = sorted[index];
-
-        if (getCardValue(current.card) === getCardValue(previous.card)) continue;
-        if (getCardValue(current.card) !== getCardValue(previous.card) + 1) break;
-
-        run.push(current);
-        if (run.length >= 3) {
-          const cardsInGroup = run.map((item) => item.card);
-          candidates.push(buildGroup('sequencia', cardsInGroup, run.map((item) => item.index)));
-        }
+    combinations(sorted, 3).forEach((combo) => {
+      const cardsInGroup = combo.map((item) => item.card);
+      if (isValidSequence(cardsInGroup)) {
+        pushCandidate('sequencia', cardsInGroup, combo.map((item) => item.index));
       }
-    }
+    });
   });
 
   return candidates.sort((a, b) => {
-    if (a.cards.length !== b.cards.length) return b.cards.length - a.cards.length;
+    if (a.type !== b.type) return a.type === 'sequencia' ? -1 : 1;
     return Math.min(...a.indices) - Math.min(...b.indices);
   });
 }
 
-function findLogicalCover(cards) {
-  const targetCount = cards.length;
-  const candidates = getLogicalCandidates(cards);
-  let bestGroups = [];
-  let bestUsedIds = new Set();
+function findWinningPartition(cards) {
+  const candidates = getWinningCandidates(cards);
 
   function search(candidateIndex, groups, usedIds) {
-    if (usedIds.size > bestUsedIds.size) {
-      bestGroups = groups;
-      bestUsedIds = usedIds;
+    if (groups.length === 3) {
+      if (usedIds.size !== 9) return null;
+      const remainingCards = cards.filter((card) => !usedIds.has(getCardId(card)));
+      return {
+        groups,
+        usedIds,
+        remainingCards,
+      };
     }
-    if (usedIds.size === targetCount) return groups;
 
     for (let index = candidateIndex; index < candidates.length; index += 1) {
       const candidate = candidates[index];
@@ -175,16 +174,17 @@ function findLogicalCover(cards) {
     return null;
   }
 
-  const cover = search(0, [], new Set());
-  return cover ?? bestGroups;
+  return search(0, [], new Set());
 }
 
 export function validatePifeHand(handCards = []) {
   const cards = Array.isArray(handCards) ? handCards.filter(Boolean) : [];
-  const groups = findVisualGroups(cards);
+  const visualGroups = findVisualGroups(cards);
+  const partition = cards.length >= 9 ? findWinningPartition(cards) : null;
+  const groups = partition?.groups ?? [];
   const markedCardIds = groups.flatMap((group) => group.cards.map(getCardId));
   const groupedCardIds = new Set(markedCardIds);
-  const remainingCards = cards.filter((card) => !groupedCardIds.has(getCardId(card)));
+  const remainingCards = partition?.remainingCards ?? cards.filter((card) => !groupedCardIds.has(getCardId(card)));
   const remainingCardIds = remainingCards.map(getCardId);
 
   if (cards.length < 9) {
@@ -193,6 +193,7 @@ export function validatePifeHand(handCards = []) {
       groups,
       validGroups: groups,
       logicalGroups: groups,
+      visualGroups,
       markedCardIds,
       groupedCardIds: [...groupedCardIds],
       groupedCardCount: groupedCardIds.size,
@@ -220,6 +221,7 @@ export function validatePifeHand(handCards = []) {
     groups,
     validGroups: groups,
     logicalGroups: groups,
+    visualGroups,
     markedCardIds,
     groupedCardIds: [...groupedCardIds],
     groupedCardCount,

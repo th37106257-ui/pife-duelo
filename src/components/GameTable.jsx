@@ -150,6 +150,19 @@ export default function GameTable() {
     gameRef.current = game;
   }, [game]);
 
+  useEffect(() => {
+    if (!isTestMode || isLocalMultiplayer || result) return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+      return '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isLocalMultiplayer, isTestMode, result]);
+
   const logGameEvent = useCallback((eventName, { game: eventGame = gameRef.current, actor = eventGame?.currentTurn, reason, extra } = {}) => {
     logMatchEvent(eventName, {
       matchId: matchMeta.matchId,

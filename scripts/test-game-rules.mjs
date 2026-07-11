@@ -295,7 +295,7 @@ runTest('destaque automatico detecta combinacoes na mao', () => {
   assert.equal(validGroups.length, 3);
 });
 
-runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna livre', () => {
+runTest('destaque automatico encontra grupos espalhados e aceita ordem interna livre', () => {
   const separatedSequence = [
     cards['5-hearts'],
     cards['K-diamonds'],
@@ -306,6 +306,7 @@ runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna 
     cards['2-diamonds'],
     cards['2-hearts'],
     cards['10-clubs'],
+    cards['J-clubs'],
   ];
   const unorderedSequence = [
     cards['5-hearts'],
@@ -328,9 +329,23 @@ runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna 
     cards['9-clubs'],
     cards['7-hearts'],
     cards['10-clubs'],
+    cards['J-clubs'],
   ];
 
-  assert.deepEqual(detectValidCombinations(separatedSequence).validGroups, []);
+  assert.deepEqual(
+    detectValidCombinations(separatedSequence).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
+    cardIds([
+      '5-hearts',
+      '6-hearts',
+      '7-hearts',
+      '2-diamonds',
+      '2-hearts',
+      '2-spades',
+      '9-clubs',
+      '10-clubs',
+      'J-clubs',
+    ]).sort(),
+  );
   assert.deepEqual(
     detectValidCombinations(unorderedSequence).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
     cardIds([
@@ -345,7 +360,20 @@ runTest('destaque automatico exige grupos lado a lado, mas aceita ordem interna 
       'J-clubs',
     ]).sort(),
   );
-  assert.deepEqual(detectValidCombinations(separatedSet).validGroups, []);
+  assert.deepEqual(
+    detectValidCombinations(separatedSet).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
+    cardIds([
+      '2-diamonds',
+      '2-hearts',
+      '2-spades',
+      '5-hearts',
+      '6-hearts',
+      '7-hearts',
+      '9-clubs',
+      '10-clubs',
+      'J-clubs',
+    ]).sort(),
+  );
   assert.deepEqual(detectValidCombinations([
     cards['2-spades'],
     cards['2-hearts'],
@@ -403,7 +431,7 @@ runTest('destaque e bater aceitam 3 grupos com 1 carta restante', () => {
   const highlightedIds = validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort();
 
   assert.deepEqual(highlightedIds, hand.slice(0, 9).map((card) => card.id).sort());
-  assert.deepEqual(validGroups.map((group) => group.indices), [
+  assert.deepEqual(validGroups.map((group) => [...group.indices].sort((a, b) => a - b)), [
     [0, 1, 2],
     [3, 4, 5],
     [6, 7, 8],
@@ -412,7 +440,7 @@ runTest('destaque e bater aceitam 3 grupos com 1 carta restante', () => {
   assert.deepEqual(canKnock(hand).deadwood.map((card) => card.id), cardIds(['K-clubs']));
 });
 
-runTest('bater rejeita 10 cartas quando nenhuma sobra como restante', () => {
+runTest('bater rejeita 10 cartas sem tres grupos validos globais', () => {
   const hand = [
     cards['7-hearts'],
     cards['8-hearts'],
@@ -421,9 +449,9 @@ runTest('bater rejeita 10 cartas quando nenhuma sobra como restante', () => {
     cards['3-hearts'],
     cards['3-spades'],
     cards['3-diamonds'],
-    cards['6-diamonds'],
-    cards['6-spades'],
-    cards['6-clubs'],
+    cards['K-diamonds'],
+    cards['Q-spades'],
+    cards['2-clubs'],
   ];
 
   const validation = canKnock(hand);
@@ -432,8 +460,8 @@ runTest('bater rejeita 10 cartas quando nenhuma sobra como restante', () => {
     .flatMap((group) => group.cards.map((card) => card.id));
 
   assert.equal(validation.valid, false);
-  assert.equal(new Set(highlightedIds).size, 10);
-  assert.deepEqual(validation.deadwood, []);
+  assert.equal(new Set(highlightedIds).size, 0);
+  assert.equal(validation.deadwood.length, 10);
 });
 
 runTest('modo teste habilita bater com mao visual 3-2-4, trinca de 2, trinca de 7 e 9 restante', () => {
@@ -495,6 +523,37 @@ runTest('modo teste habilita bater com mao visual 3-2-4, trinca de 2, trinca de 
   assert.equal(knockResult.game.result.winningGroups.length, 3);
   assert.equal(knockResult.game.result.winningGroups.flatMap((group) => group.cards).length, 9);
   assert.deepEqual(knockResult.game.result.remainingCards.map((card) => card.id), cardIds(['9-clubs']));
+});
+
+runTest('modo teste habilita bater com combinacoes espalhadas na mao', () => {
+  const scatteredHand = [
+    cards['2-clubs'],
+    cards['7-diamonds'],
+    cards['3-clubs'],
+    cards['2-hearts'],
+    cards['9-clubs'],
+    cards['7-clubs'],
+    cards['4-clubs'],
+    cards['2-spades'],
+    cards['7-hearts'],
+    cards['2-diamonds'],
+  ];
+
+  const validation = validatePifeHand(scatteredHand);
+  const highlightedIds = detectValidCombinations(scatteredHand)
+    .validGroups
+    .flatMap((group) => group.cards.map((card) => card.id));
+
+  assert.equal(validation.validGroupCount, 3);
+  assert.equal(validation.groupedCardCount, 9);
+  assert.equal(validation.remainingCardCount, 1);
+  assert.equal(validation.canBeat, true);
+  assert.deepEqual(validation.remainingCardIds, cardIds(['9-clubs']));
+  assert.equal(new Set(highlightedIds).size, 9);
+
+  const withoutSeven = scatteredHand.filter((card) => card.id !== cards['7-diamonds'].id);
+  assert.equal(validatePifeHand(withoutSeven).canBeat, false);
+  assert.equal(validatePifeHand([...scatteredHand].reverse()).canBeat, true);
 });
 
 runTest('bater aceita os cenarios oficiais em tres blocos de tres', () => {
@@ -708,6 +767,12 @@ runTest('bot escolhe descarte util e evita descartar sequencia pronta', () => {
   assert.notEqual(
     chooseBotDiscard([cards['4-hearts'], cards['5-hearts'], cards['6-hearts'], cards['K-spades']]).id,
     '5-hearts',
+  );
+  assert.equal(
+    ['4-hearts', '5-hearts', '6-hearts'].includes(
+      chooseBotDiscard([cards['4-hearts'], cards['5-hearts'], cards['6-hearts'], cards['K-spades']]).logicalId,
+    ),
+    false,
   );
 });
 

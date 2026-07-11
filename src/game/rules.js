@@ -186,7 +186,7 @@ function getSuitValues(hand, card) {
     .map((item) => item.value);
 }
 
-export function scoreBotCardUsefulness(hand, card) {
+function rawBotCardUsefulness(hand, card) {
   if (card.isJoker) return 100;
 
   const sameRankCount = getRankCount(hand, card);
@@ -211,18 +211,74 @@ export function scoreBotCardUsefulness(hand, card) {
   return score;
 }
 
+function findProtectedBotGroups(hand) {
+  const winningAnalysis = getWinningHandAnalysis(hand);
+  if (winningAnalysis.valid) return winningAnalysis.validGroups;
+
+  const candidates = getCombinationCandidates(hand)
+    .filter((candidate) => candidate.cards.length >= 3)
+    .sort((a, b) => {
+      if (a.cards.length !== b.cards.length) return a.cards.length - b.cards.length;
+      const priority = { sequence: 0, set: 1 };
+      if (a.type !== b.type) return priority[a.type] - priority[b.type];
+      return Math.min(...a.cards.map((card) => hand.findIndex((item) => item.id === card.id)))
+        - Math.min(...b.cards.map((card) => hand.findIndex((item) => item.id === card.id)));
+    });
+
+  const groups = [];
+  const usedIds = new Set();
+  candidates.forEach((candidate) => {
+    const candidateIds = candidate.cards.map((card) => card.id);
+    if (candidateIds.some((id) => usedIds.has(id))) return;
+    groups.push(candidate);
+    candidateIds.forEach((id) => usedIds.add(id));
+  });
+
+  return groups;
+}
+
+function getProtectedBotCardIds(hand) {
+  return new Set(findProtectedBotGroups(hand).flatMap((group) => group.cards.map((card) => card.id)));
+}
+
+export function scoreBotCardUsefulness(hand, card) {
+  const protectedIds = getProtectedBotCardIds(hand);
+  return rawBotCardUsefulness(hand, card) + (protectedIds.has(card.id) ? 1000 : 0);
+}
+
+function scoreBotHandPotential(hand) {
+  const protectedIds = getProtectedBotCardIds(hand);
+  const protectedGroupScore = findProtectedBotGroups(hand).reduce((score, group) => score + 180 + group.cards.length * 15, 0);
+  const cardScore = hand.reduce((score, card) => score + rawBotCardUsefulness(hand, card), 0);
+  const protectedCardScore = [...protectedIds].length * 40;
+  const winningBonus = getWinningHandAnalysis(hand).valid ? 10000 : 0;
+
+  return winningBonus + protectedGroupScore + protectedCardScore + cardScore;
+}
+
 export function shouldBotTakeDiscard(hand, discardCard) {
   if (!discardCard || discardCard.discardedBy === 'bot') return false;
 
   const { discardedBy, ...cleanCard } = discardCard;
-  const usefulness = scoreBotCardUsefulness(hand, cleanCard);
+  const currentScore = scoreBotHandPotential(hand);
+  const candidateHand = [...hand, cleanCard];
+  if (getWinningHandAnalysis(candidateHand).valid) return true;
 
-  return usefulness >= 10;
+  const simulatedDiscard = chooseBotDiscard(candidateHand);
+  const afterDiscardHand = candidateHand.filter((card) => card.id !== simulatedDiscard?.id);
+  const afterScore = scoreBotHandPotential(afterDiscardHand);
+
+  return simulatedDiscard?.id !== cleanCard.id && afterScore > currentScore;
 }
 
 export function chooseBotDiscard(hand) {
+  const winningAnalysis = getWinningHandAnalysis(hand);
   const { deadwood } = canKnock(hand);
-  const candidates = deadwood.length > 0 ? deadwood : hand;
+  const protectedIds = getProtectedBotCardIds(hand);
+  const nonProtectedCards = hand.filter((card) => !protectedIds.has(card.id));
+  const candidates = winningAnalysis.valid && deadwood.length > 0
+    ? deadwood
+    : nonProtectedCards.length > 0 ? nonProtectedCards : hand;
 
   return [...candidates]
     .sort((a, b) => {
@@ -235,15 +291,15 @@ export function chooseBotDiscard(hand) {
 }
 
 export function findThreeCombinationResult(hand, extraCards = []) {
-  const groups = findCombinationGroups([...hand, ...extraCards], 3);
+  const analysis = getWinningHandAnalysis([...hand, ...extraCards]);
   const extraIds = new Set(extraCards.map((card) => card.id));
-  const usedExtraCards = groups
-    ? groups.flatMap((group) => group.cards).filter((card) => extraIds.has(card.id))
+  const usedExtraCards = analysis.validGroups
+    ? analysis.validGroups.flatMap((group) => group.cards).filter((card) => extraIds.has(card.id))
     : [];
 
   return {
-    valid: Boolean(groups),
-    groups: groups ?? [],
+    valid: analysis.valid,
+    groups: analysis.validGroups ?? [],
     usedExtraCards,
   };
 }
@@ -268,17 +324,12 @@ export function arrangeHandByCombinations(hand) {
 }
 
 export function organizeHandByPifeRules(hand) {
-  const completeGroups = findCombinationGroups(hand, 3);
-  if (completeGroups?.length === 3) {
-    const groupedIds = new Set(completeGroups.flatMap((group) => group.cards.map((card) => card.id)));
-    const looseCards = hand.filter((card) => !groupedIds.has(card.id));
-
-    if (groupedIds.size === 9 && looseCards.length === hand.length - 9) {
-      return [
-        ...completeGroups.flatMap((group) => sortCardsForDisplay(group.cards)),
-        ...sortCardsForDisplay(looseCards),
-      ];
-    }
+  const winningAnalysis = getWinningHandAnalysis(hand);
+  if (winningAnalysis.validGroups?.length === 3) {
+    return [
+      ...winningAnalysis.validGroups.flatMap((group) => sortCardsForDisplay(group.cards)),
+      ...sortCardsForDisplay(winningAnalysis.remainingCards ?? []),
+    ];
   }
 
   const remaining = [...hand];
