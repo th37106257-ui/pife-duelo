@@ -24,8 +24,10 @@ import {
   takeFromDiscardForActor,
   takeFromDiscard,
   timeoutForActor,
+  TURN_STAGES,
   validateGameState,
 } from '../src/game/matchEngine.js';
+import { validatePifeHand } from '../src/shared/pifeRules.js';
 import {
   chooseBotDiscard,
   canKnock,
@@ -384,7 +386,7 @@ runTest('destaque automatico nao marca pares ou sequencias incompletas', () => {
   assert.deepEqual(detectValidCombinations([cards['5-clubs'], cards['6-clubs']]).validGroups, []);
 });
 
-runTest('destaque e bater aceitam sequencia decrescente na mao', () => {
+runTest('destaque e bater aceitam 3 grupos com 1 carta restante', () => {
   const hand = [
     cards['9-hearts'],
     cards['8-hearts'],
@@ -395,20 +397,22 @@ runTest('destaque e bater aceitam sequencia decrescente na mao', () => {
     cards['6-diamonds'],
     cards['6-spades'],
     cards['6-clubs'],
+    cards['K-clubs'],
   ];
   const { validGroups } = detectValidCombinations(hand);
   const highlightedIds = validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort();
 
-  assert.deepEqual(highlightedIds, hand.map((card) => card.id).sort());
+  assert.deepEqual(highlightedIds, hand.slice(0, 9).map((card) => card.id).sort());
   assert.deepEqual(validGroups.map((group) => group.indices), [
     [0, 1, 2],
     [3, 4, 5],
     [6, 7, 8],
   ]);
   assert.equal(canKnock(hand).valid, true);
+  assert.deepEqual(canKnock(hand).deadwood.map((card) => card.id), cardIds(['K-clubs']));
 });
 
-runTest('bater aceita 10 cartas quando a mao inteira esta coberta', () => {
+runTest('bater rejeita 10 cartas quando nenhuma sobra como restante', () => {
   const hand = [
     cards['7-hearts'],
     cards['8-hearts'],
@@ -427,9 +431,70 @@ runTest('bater aceita 10 cartas quando a mao inteira esta coberta', () => {
     .validGroups
     .flatMap((group) => group.cards.map((card) => card.id));
 
-  assert.equal(validation.valid, true);
+  assert.equal(validation.valid, false);
   assert.equal(new Set(highlightedIds).size, 10);
   assert.deepEqual(validation.deadwood, []);
+});
+
+runTest('modo teste habilita bater com mao visual 3-2-4, trinca de 2, trinca de 7 e 9 restante', () => {
+  const hand = [
+    cards['3-clubs'],
+    cards['2-clubs'],
+    cards['4-clubs'],
+    cards['9-clubs'],
+    cards['2-spades'],
+    cards['2-diamonds'],
+    cards['2-hearts'],
+    cards['7-hearts'],
+    cards['7-diamonds'],
+    cards['7-clubs'],
+  ];
+
+  const validation = validatePifeHand(hand);
+  assert.equal(validation.validGroupCount, 3);
+  assert.equal(validation.groupedCardCount, 9);
+  assert.equal(validation.remainingCardCount, 1);
+  assert.equal(validation.canBeat, true);
+  assert.deepEqual(validation.remainingCardIds, cardIds(['9-clubs']));
+
+  const reorderedSequence = [
+    cards['3-clubs'],
+    cards['2-clubs'],
+    cards['4-clubs'],
+    cards['9-clubs'],
+    cards['2-spades'],
+    cards['2-diamonds'],
+    cards['2-hearts'],
+    cards['7-hearts'],
+    cards['7-diamonds'],
+    cards['7-clubs'],
+  ];
+  assert.equal(validatePifeHand(reorderedSequence).canBeat, true);
+
+  const missingSeven = hand.filter((card) => card.id !== cards['7-clubs'].id);
+  assert.equal(validatePifeHand(missingSeven).canBeat, false);
+  assert.equal(validatePifeHand(hand).canBeat, true);
+
+  const baseGame = createMatchState({ scenarioKey: 'invalid' });
+  const usedIds = new Set(hand.map((card) => card.id));
+  const remainingDeck = cardsInGame(baseGame).filter((card) => !usedIds.has(card.id));
+  const opponentHand = remainingDeck.slice(0, 9);
+  const testGame = {
+    ...baseGame,
+    playerHand: hand,
+    opponentHand,
+    drawPile: remainingDeck.slice(9),
+    currentTurn: 'player',
+    turnStage: TURN_STAGES.DISCARD,
+    result: null,
+  };
+  const knockResult = playerKnock(testGame);
+  assert.equal(knockResult.blocked, false);
+  assert.equal(knockResult.game.result.winnerId, 'player');
+  assert.equal(knockResult.game.result.reason, 'knock');
+  assert.equal(knockResult.game.result.winningGroups.length, 3);
+  assert.equal(knockResult.game.result.winningGroups.flatMap((group) => group.cards).length, 9);
+  assert.deepEqual(knockResult.game.result.remainingCards.map((card) => card.id), cardIds(['9-clubs']));
 });
 
 runTest('bater aceita os cenarios oficiais em tres blocos de tres', () => {
@@ -443,6 +508,7 @@ runTest('bater aceita os cenarios oficiais em tres blocos de tres', () => {
     cards['6-spades'],
     cards['6-clubs'],
     cards['6-hearts'],
+    cards['K-clubs'],
   ];
   const mixedGroups = [
     cards['4-clubs'],
@@ -454,6 +520,7 @@ runTest('bater aceita os cenarios oficiais em tres blocos de tres', () => {
     cards['5-diamonds'],
     cards['7-diamonds'],
     cards['6-diamonds'],
+    cards['K-clubs'],
   ];
 
   assert.equal(canKnock(allSets).valid, true);
@@ -476,6 +543,7 @@ runTest('bater exige tres grupos e nao usa carta visivel no descarte', () => {
     cards['2-diamonds'],
     cards['3-diamonds'],
     cards['4-diamonds'],
+    cards['A-spades'],
   ];
 
   assert.equal(canKnock(twoGroupsInHand).valid, false);
@@ -493,6 +561,7 @@ runTest('validacao de mao vencedora e mao invalida', () => {
     cards['9-diamonds'],
     cards['10-diamonds'],
     cards['J-diamonds'],
+    cards['K-clubs'],
   ];
   const invalidHand = [
     cards['A-hearts'],
@@ -522,7 +591,13 @@ runTest('comandos debug iniciam maos controladas', () => {
   const debugRecycle = buildDebugGame('DEBUG_RECYCLE');
   const timeoutConfig = getDebugScenarioConfig('DEBUG_TIMEOUT');
 
-  assert.equal(getPlayerKnockResult(debugWinning).valid, true);
+  assert.equal(getPlayerKnockResult(debugWinning).valid, false);
+  assert.equal(getPlayerKnockResult({
+    ...debugWinning,
+    playerHand: [...debugWinning.playerHand, cards['K-clubs']],
+    drawPile: debugWinning.drawPile.filter((card) => card.id !== cards['K-clubs'].id),
+    turnStage: TURN_STAGES.DISCARD,
+  }).valid, true);
   assert.equal(getPlayerKnockResult(debugInvalid).valid, false);
   assert.equal(debugRecycle.drawPile.length, 0);
   assert.equal(timeoutConfig.timerSeconds, 5);
@@ -535,7 +610,7 @@ runTest('debug de vitoria rapida e derrota rapida sao consistentes', () => {
 
   assert.equal(nearPlayer.drawPile[0].id, cards['J-diamonds'].id);
   assert.equal(nearBot.drawPile[0].id, cards['J-diamonds'].id);
-  assert.equal(findThreeCombinationResult(botWinning.opponentHand).valid, true);
+  assert.equal(findThreeCombinationResult([...botWinning.opponentHand, cards['K-clubs']]).valid, true);
 });
 
 runTest('compra do monte exige turno correto e preserva cartas', () => {
@@ -723,7 +798,14 @@ runTest('multiplayer local permite Jogador B pegar descarte do Jogador A', () =>
 });
 
 runTest('multiplayer local valida bater e timeout por ator', () => {
-  const botWinning = { ...createMatchState({ scenarioKey: 'DEBUG_BOT_WIN' }), currentTurn: 'bot' };
+  const baseBotWinning = createMatchState({ scenarioKey: 'DEBUG_BOT_WIN' });
+  const botWinning = {
+    ...baseBotWinning,
+    currentTurn: 'bot',
+    turnStage: TURN_STAGES.DISCARD,
+    opponentHand: [...baseBotWinning.opponentHand, cards['K-clubs']],
+    drawPile: baseBotWinning.drawPile.filter((card) => card.id !== cards['K-clubs'].id),
+  };
   const botKnockResult = getKnockResultForActor(botWinning, 'bot');
   const botKnock = knockForActor(botWinning, 'bot');
   const botTimeout = timeoutForActor({ ...createMatchState({ scenarioKey: 'invalid' }), currentTurn: 'bot' }, 'bot');
@@ -739,7 +821,7 @@ runTest('multiplayer local valida bater e timeout por ator', () => {
 
 runTest('bater invalido nao gera vitoria e bater valido nasce no motor', () => {
   const invalidGame = createMatchState({ scenarioKey: 'invalid' });
-  const winningGame = createMatchState({ scenarioKey: 'DEBUG_WIN_HAND' });
+  const winningGame = drawFromStock(createMatchState({ scenarioKey: 'near-win-player' }), { handMode: 'auto' }).game;
   const invalidKnock = playerKnock(invalidGame);
   const winningKnock = playerKnock(winningGame);
 

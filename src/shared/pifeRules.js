@@ -183,26 +183,50 @@ export function validatePifeHand(handCards = []) {
   const cards = Array.isArray(handCards) ? handCards.filter(Boolean) : [];
   const groups = findVisualGroups(cards);
   const markedCardIds = groups.flatMap((group) => group.cards.map(getCardId));
+  const groupedCardIds = new Set(markedCardIds);
+  const remainingCards = cards.filter((card) => !groupedCardIds.has(getCardId(card)));
+  const remainingCardIds = remainingCards.map(getCardId);
 
   if (cards.length < 9) {
     return {
       canBeat: false,
       groups,
-      logicalGroups: [],
+      validGroups: groups,
+      logicalGroups: groups,
       markedCardIds,
+      groupedCardIds: [...groupedCardIds],
+      groupedCardCount: groupedCardIds.size,
+      remainingCards,
+      remainingCardIds,
+      remainingCardCount: remainingCards.length,
+      validGroupCount: groups.length,
       reason: 'HAND_TOO_SHORT',
     };
   }
 
-  const logicalGroups = findLogicalCover(cards);
-  const usedIds = new Set(logicalGroups.flatMap((group) => group.cards.map(getCardId)));
-  const canBeat = logicalGroups.length >= 3 && usedIds.size >= 9;
+  const validGroupCount = groups.length;
+  const groupedCardCount = groupedCardIds.size;
+  const remainingCardCount = remainingCards.length;
+  const canBeat = (
+    cards.length === 10
+    && validGroupCount === 3
+    && groups.every((group) => group.cards.length >= 3)
+    && groupedCardCount === 9
+    && remainingCardCount === 1
+  );
 
   return {
     canBeat,
     groups,
-    logicalGroups,
+    validGroups: groups,
+    logicalGroups: groups,
     markedCardIds,
+    groupedCardIds: [...groupedCardIds],
+    groupedCardCount,
+    remainingCards,
+    remainingCardIds,
+    remainingCardCount,
+    validGroupCount,
     reason: canBeat ? 'VALID_HAND' : 'INVALID_HAND',
   };
 }
@@ -211,9 +235,13 @@ export function analyzeHandGroups(handCards = []) {
   const validation = validatePifeHand(handCards);
   return {
     canKnock: validation.canBeat,
-    validGroups: validation.groups,
-    logicalGroups: validation.logicalGroups,
+    validGroups: validation.validGroups,
+    logicalGroups: validation.validGroups,
     markedCardIds: validation.markedCardIds,
+    groupedCardCount: validation.groupedCardCount,
+    remainingCards: validation.remainingCards,
+    remainingCardCount: validation.remainingCardCount,
+    validGroupCount: validation.validGroupCount ?? validation.validGroups?.length ?? 0,
     reason: validation.reason,
   };
 }
@@ -225,8 +253,9 @@ export function findValidGroups(hand = []) {
 export function getWinningHandAnalysis(hand = []) {
   const validation = validatePifeHand(hand);
   return {
-    validGroups: validation.logicalGroups,
-    usedCardIds: new Set(validation.logicalGroups.flatMap((group) => group.cards.map(getCardId))),
+    validGroups: validation.validGroups,
+    usedCardIds: new Set(validation.validGroups.flatMap((group) => group.cards.map(getCardId))),
+    remainingCards: validation.remainingCards,
     allCardsUsed: validation.canBeat,
     valid: validation.canBeat,
     canKnock: validation.canBeat,

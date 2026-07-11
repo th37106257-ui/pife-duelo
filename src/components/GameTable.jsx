@@ -4,6 +4,7 @@ import AudioToggle from './AudioToggle.jsx';
 import BeatButton from './BeatButton.jsx';
 import CardFlightLayer from './CardFlightLayer.jsx';
 import DeckArea from './DeckArea.jsx';
+import EndGameReveal from './EndGameReveal.jsx';
 import GameModal from './GameModal.jsx';
 import OpponentHand from './OpponentHand.jsx';
 import PlayerHand from './PlayerHand.jsx';
@@ -32,6 +33,8 @@ import { restartMatch, startMatch } from '../game/matchActions.js';
 import { createGameStateSnapshot, createTurnState } from '../game/matchStateModel.js';
 import { MATCH_EVENTS, logMatchEvent } from '../game/matchTelemetry.js';
 import { playSoundEffect } from '../services/soundEffects.js';
+import { buildWhatsAppPlayLink } from '../services/whatsAppLink.js';
+import { validatePifeHand } from '../shared/pifeRules.js';
 
 const TURN_SECONDS = 60;
 const TOAST_DURATION = 1600;
@@ -141,6 +144,7 @@ export default function GameTable() {
   const alertTurnRef = useRef(null);
   const resultSoundRef = useRef(null);
   const resultScreenLogRef = useRef(null);
+  const testModeWhatsAppOpeningRef = useRef(false);
 
   useEffect(() => {
     gameRef.current = game;
@@ -536,6 +540,29 @@ export default function GameTable() {
     exitTestMode({ target: 'paid' });
   }, [exitTestMode]);
 
+  const openWhatsAppFromTestMode = useCallback(() => {
+    if (testModeWhatsAppOpeningRef.current) return;
+    testModeWhatsAppOpeningRef.current = true;
+    console.info('TEST_MODE_GO_TO_WHATSAPP', {
+      from: 'test_mode_result',
+      matchId: matchMeta.matchId,
+    });
+    window.location.href = buildWhatsAppPlayLink();
+    window.setTimeout(() => {
+      testModeWhatsAppOpeningRef.current = false;
+    }, 1800);
+  }, [matchMeta.matchId]);
+
+  const copyWhatsAppLinkFromTestMode = useCallback(async () => {
+    const link = buildWhatsAppPlayLink();
+    try {
+      await navigator.clipboard?.writeText?.(link);
+      showToast('Link do WhatsApp copiado.');
+    } catch {
+      showToast('Nao abriu? Copie o link e abra no navegador.');
+    }
+  }, [showToast]);
+
   const openTestModeMenu = useCallback(() => {
     if (!isTestMode) return;
     console.info('TEST_MODE_MENU_OPEN', {
@@ -881,15 +908,24 @@ export default function GameTable() {
   }, [isLocalMultiplayer]);
 
   const knock = useCallback(() => {
-    if (!activeHumanTurn || turnTransitioning || handDragging || isResolvingAction || resolvingActionRef.current || result) return;
+    const canTryKnock = isTestMode && !isLocalMultiplayer
+      ? activeHumanTurn && !handDragging && !isResolvingAction && !resolvingActionRef.current && !result
+      : activeHumanTurn && !turnTransitioning && !handDragging && !isResolvingAction && !resolvingActionRef.current && !result;
+    if (!canTryKnock) return;
 
-    const currentKnockValidation = isLocalMultiplayer ? getKnockResultForActor(game, activeActor) : getPlayerKnockResult(game);
+    const currentKnockValidation = isTestMode && !isLocalMultiplayer
+      ? knockValidation
+      : isLocalMultiplayer ? getKnockResultForActor(game, activeActor) : getPlayerKnockResult(game);
     if (!currentKnockValidation.valid) {
       logGameEvent(MATCH_EVENTS.INVALID_ACTION_BLOCKED, { actor: activeActor, reason: 'invalid-knock' });
       showToast('Ainda falta jogo: forme 3 combinacoes ou use o descarte do bot.');
       return;
     }
 
+    if (handReorderTimeoutRef.current) {
+      window.clearTimeout(handReorderTimeoutRef.current);
+      handReorderTimeoutRef.current = null;
+    }
     resolvingActionRef.current = true;
     setIsResolvingAction(true);
     const knockAction = isLocalMultiplayer ? knockForActor(game, activeActor) : playerKnock(game);
@@ -936,7 +972,7 @@ export default function GameTable() {
     setIsResolvingAction(false);
     logGameEvent(MATCH_EVENTS.INVALID_ACTION_BLOCKED, { actor: activeActor, reason: knockAction.reason });
     showToast('Ainda falta jogo: forme 3 combinacoes ou use o descarte do bot.');
-  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, handDragging, isLocalMultiplayer, isResolvingAction, logGameEvent, result, showBeatImpact, showToast, turnTransitioning]);
+  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, handDragging, isLocalMultiplayer, isResolvingAction, isTestMode, knockValidation, logGameEvent, result, showBeatImpact, showToast, turnTransitioning]);
 
   useEffect(() => {
     if (!activeHumanTurn || result) return undefined;
@@ -1207,9 +1243,26 @@ export default function GameTable() {
   ]);
 
   const topDiscard = game.discardPile[game.discardPile.length - 1];
+  const activeCardSignature = activeCards.map((card) => card.id).join('|');
+  const testModeBatEvaluation = useMemo(
+    () => validatePifeHand(activeCards),
+    [activeCardSignature],
+  );
   const knockValidation = useMemo(
-    () => (isLocalMultiplayer ? getKnockResultForActor(game, activeActor) : getPlayerKnockResult(game)),
-    [activeActor, game, isLocalMultiplayer],
+    () => {
+      if (isTestMode && !isLocalMultiplayer) {
+        return {
+          valid: testModeBatEvaluation.canBeat,
+          groups: testModeBatEvaluation.validGroups.map((group) => group.cards),
+          validGroups: testModeBatEvaluation.validGroups,
+          remainingCards: testModeBatEvaluation.remainingCards,
+          deadwood: testModeBatEvaluation.remainingCards,
+          usedExtraCards: [],
+        };
+      }
+      return isLocalMultiplayer ? getKnockResultForActor(game, activeActor) : getPlayerKnockResult(game);
+    },
+    [activeActor, game, isLocalMultiplayer, isTestMode, testModeBatEvaluation],
   );
   const canRecycleDraw = game.drawPile.length > 0 || game.discardPile.length > 1;
   const canDraw = canPlayerAct && !handDragging && !hasDrawn && canRecycleDraw && activeCards.length < 10;
@@ -1222,7 +1275,43 @@ export default function GameTable() {
     Boolean(topDiscard) &&
     topDiscard.discardedBy !== activeActor;
   const canDropDiscard = canPlayerAct && activeCards.length === 10;
-  const canKnockNow = canPlayerAct && !handDragging && knockValidation.valid;
+  const canAttemptTestModeBeat = isTestMode
+    && !isLocalMultiplayer
+    && activeHumanTurn
+    && !handDragging
+    && !isResolvingAction
+    && !resolvingActionRef.current
+    && !result;
+  const canKnockNow = (
+    isTestMode && !isLocalMultiplayer
+      ? canAttemptTestModeBeat
+      : canPlayerAct && !handDragging
+  ) && activeCards.length === 10 && knockValidation.valid;
+
+  useEffect(() => {
+    if (!isTestMode || isLocalMultiplayer) return;
+    console.info('TEST_MODE_BAT_EVALUATED', {
+      handSize: activeCards.length,
+      isPlayerTurn: Boolean(activeHumanTurn),
+      validGroupCount: testModeBatEvaluation.validGroupCount ?? testModeBatEvaluation.validGroups.length,
+      groupedCardCount: testModeBatEvaluation.groupedCardCount ?? testModeBatEvaluation.markedCardIds.length,
+      remainingCardCount: testModeBatEvaluation.remainingCardCount ?? testModeBatEvaluation.remainingCards.length,
+      canBat: Boolean(canKnockNow),
+    });
+  }, [
+    activeCardSignature,
+    activeCards.length,
+    activeHumanTurn,
+    canKnockNow,
+    isLocalMultiplayer,
+    isTestMode,
+    testModeBatEvaluation.groupedCardCount,
+    testModeBatEvaluation.markedCardIds.length,
+    testModeBatEvaluation.remainingCardCount,
+    testModeBatEvaluation.remainingCards.length,
+    testModeBatEvaluation.validGroupCount,
+    testModeBatEvaluation.validGroups.length,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1257,6 +1346,8 @@ export default function GameTable() {
     matchMeta.turnsPlayed,
     turnSeconds,
   ]);
+
+  const showTestModeEndGameReveal = Boolean(isTestMode && result?.reason === 'knock');
 
   return (
     <main className="game-shell">
@@ -1294,11 +1385,23 @@ export default function GameTable() {
           <CardFlightLayer flight={flight} />
           <ActionHistory actions={actionHistory} />
           <GameModal
-            result={result}
+            result={showTestModeEndGameReveal ? null : result}
             onRestart={restart}
             isTestMode={isTestMode}
             onExitToMenu={() => exitTestMode({ target: 'menu' })}
             onGoToPaidFlow={goToPaidFlowFromTestMode}
+          />
+          <EndGameReveal
+            isOpen={showTestModeEndGameReveal}
+            result={result}
+            matchId={matchMeta.matchId}
+            currentPlayerId="player"
+            onNewMatch={restart}
+            isTestModePostMatch={showTestModeEndGameReveal}
+            onOpenWhatsApp={openWhatsAppFromTestMode}
+            onCopyWhatsAppLink={copyWhatsAppLinkFromTestMode}
+            onExitToMenu={() => exitTestMode({ target: 'menu' })}
+            whatsAppLink={buildWhatsAppPlayLink()}
           />
           {isTestMode && testMenuMode ? (
             <div

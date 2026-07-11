@@ -2,7 +2,6 @@ import { createDeck, dealInitialHands, recycleDiscardPile, sortHand } from './ca
 import { buildDebugGame } from './debugScenarios.js';
 import {
   chooseBotDiscard,
-  findThreeCombinationResult,
   organizeHandByPifeRules,
   shouldBotTakeDiscard,
 } from './rules.js';
@@ -247,6 +246,8 @@ export function getKnockResultForActor(game, actor = game?.currentTurn ?? TURNS.
     valid: analysis.valid,
     groups: analysis.validGroups.map((group) => group.cards),
     validGroups: analysis.validGroups,
+    remainingCards: analysis.remainingCards ?? [],
+    deadwood: analysis.remainingCards ?? [],
     usedExtraCards: [],
   };
 }
@@ -378,6 +379,11 @@ export function knockForActor(game, actor = TURNS.PLAYER) {
   const result = {
     type: 'win',
     winner: actor,
+    winnerId: actor,
+    loserId: getOpponentActor(actor),
+    reason: 'knock',
+    winningGroups: validation.validGroups ?? [],
+    remainingCards: validation.deadwood ?? validation.remainingCards ?? [],
     message:
       validation.usedExtraCards.length > 0
         ? `${actorLabel} bateu usando ${validation.usedExtraCards.length} carta(s) do descarte do adversario.`
@@ -518,12 +524,17 @@ export function botPlanTurn(game) {
     currentTurn: TURNS.BOT,
     turnStage: TURN_STAGES.DISCARD,
   };
-  const botValidation = findThreeCombinationResult(updatedHand);
+  const botAnalysis = getWinningHandAnalysis(updatedHand);
 
-  if (botValidation.valid) {
+  if (botAnalysis.valid) {
     const result = {
       type: 'loss',
       winner: TURNS.BOT,
+      winnerId: TURNS.BOT,
+      loserId: TURNS.PLAYER,
+      reason: 'knock',
+      winningGroups: botAnalysis.validGroups ?? [],
+      remainingCards: botAnalysis.remainingCards ?? [],
       message: 'Oponente bateu com combinacoes validas.',
     };
 
@@ -532,7 +543,13 @@ export function botPlanTurn(game) {
       recycled: recycledState.recycled,
       drawSource,
       drawnCard,
-      validation: botValidation,
+      validation: {
+        valid: true,
+        groups: (botAnalysis.validGroups ?? []).map((group) => group.cards),
+        validGroups: botAnalysis.validGroups ?? [],
+        remainingCards: botAnalysis.remainingCards ?? [],
+        usedExtraCards: [],
+      },
       result,
       afterDrawGame,
     });

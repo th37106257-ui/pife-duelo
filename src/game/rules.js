@@ -268,6 +268,19 @@ export function arrangeHandByCombinations(hand) {
 }
 
 export function organizeHandByPifeRules(hand) {
+  const completeGroups = findCombinationGroups(hand, 3);
+  if (completeGroups?.length === 3) {
+    const groupedIds = new Set(completeGroups.flatMap((group) => group.cards.map((card) => card.id)));
+    const looseCards = hand.filter((card) => !groupedIds.has(card.id));
+
+    if (groupedIds.size === 9 && looseCards.length === hand.length - 9) {
+      return [
+        ...completeGroups.flatMap((group) => sortCardsForDisplay(group.cards)),
+        ...sortCardsForDisplay(looseCards),
+      ];
+    }
+  }
+
   const remaining = [...hand];
   const groups = [];
 

@@ -84,8 +84,12 @@ export default function EndGameReveal({
   currentPlayerId,
   onNewMatch,
   isOnlinePostMatch = false,
+  isTestModePostMatch = false,
   hasWhatsAppReturn = false,
   onOpenWhatsApp,
+  onCopyWhatsAppLink,
+  onExitToMenu,
+  whatsAppLink = '',
 }) {
   const won = result?.winnerId === currentPlayerId;
   const groups = normalizeGroups(result?.winningGroups);
@@ -102,19 +106,28 @@ export default function EndGameReveal({
       currentPlayerId,
       groups: groups.length,
       remainingCards: remainingCards.length,
-      mode: isOnlinePostMatch ? 'online' : 'local',
+      mode: isTestModePostMatch ? 'test' : isOnlinePostMatch ? 'online' : 'local',
     };
     console.info('MATCH_RESULT_RENDER_START', payload);
     window.requestAnimationFrame?.(() => {
       console.info('MATCH_RESULT_RENDER_SUCCESS', payload);
     });
-  }, [currentPlayerId, groups.length, isOnlinePostMatch, isOpen, matchId, remainingCards.length, result?.reason, result?.winnerId]);
+  }, [currentPlayerId, groups.length, isOnlinePostMatch, isOpen, isTestModePostMatch, matchId, remainingCards.length, result?.reason, result?.winnerId]);
+
+  const title = isTestModePostMatch
+    ? won ? '🎉 Parabéns, você venceu!' : '😅 Quase lá!'
+    : won ? 'Voce bateu!' : 'Seu adversario bateu';
+  const subtitle = isTestModePostMatch
+    ? won
+      ? 'Agora que você já conhece o Pife Duelo, volte ao WhatsApp para encontrar uma partida.'
+      : 'Você pode tentar novamente ou voltar ao WhatsApp para encontrar uma partida.'
+    : won ? 'Sua formacao foi confirmada' : 'Veja a formacao vencedora';
 
   return (
     <ResultRenderBoundary
       matchId={matchId}
       reason={result?.reason ?? null}
-      mode={isOnlinePostMatch ? 'online' : 'local'}
+      mode={isTestModePostMatch ? 'test' : isOnlinePostMatch ? 'online' : 'local'}
       hasWhatsAppReturn={hasWhatsAppReturn}
       onOpenWhatsApp={onOpenWhatsApp}
       onNewMatch={onNewMatch}
@@ -136,9 +149,9 @@ export default function EndGameReveal({
               exit={{ opacity: 0, y: 10, scale: 0.97 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
-            <h2 className="endgame-title">{won ? 'Voce bateu!' : 'Seu adversario bateu'}</h2>
+            <h2 className="endgame-title">{title}</h2>
             <p className="endgame-subtitle">
-              {won ? 'Sua formacao foi confirmada' : 'Veja a formacao vencedora'}
+              {subtitle}
             </p>
 
             <div className="endgame-groups">
@@ -195,10 +208,21 @@ export default function EndGameReveal({
               </div>
             ) : null}
 
-            <p className="endgame-footer">
-              {won ? 'Voce venceu por batida.' : 'Voce perdeu por batida.'}
-            </p>
-            {isOnlinePostMatch ? (
+            {!isTestModePostMatch ? (
+              <p className="endgame-footer">
+                {won ? 'Voce venceu por batida.' : 'Voce perdeu por batida.'}
+              </p>
+            ) : null}
+            {isTestModePostMatch ? (
+              <>
+                <p className="endgame-footer">
+                  {won ? 'Voce venceu por batida.' : 'Voce perdeu por batida.'}
+                </p>
+                <p className="endgame-footer">
+                  Não abriu? Copie o link e abra no navegador.
+                </p>
+              </>
+            ) : isOnlinePostMatch ? (
               <p className="endgame-footer">
                 {hasWhatsAppReturn
                   ? 'O resultado foi enviado para seu WhatsApp. Volte para o WhatsApp para jogar novamente.'
@@ -218,7 +242,23 @@ export default function EndGameReveal({
                 )}
               </div>
             ) : null}
-            {isOnlinePostMatch ? (
+            {isTestModePostMatch ? (
+              <div className="modal-actions">
+                <button type="button" className="endgame-button" onClick={onOpenWhatsApp}>
+                  Jogar pelo WhatsApp
+                </button>
+                <button type="button" className="modal-secondary-action" onClick={onNewMatch}>
+                  Jogar teste novamente
+                </button>
+                <button type="button" className="modal-ghost-action" onClick={onExitToMenu}>
+                  Voltar ao menu
+                </button>
+                <button type="button" className="modal-ghost-action" onClick={onCopyWhatsAppLink}>
+                  Copiar link do WhatsApp
+                </button>
+                {whatsAppLink ? <small className="endgame-whatsapp-fallback">{whatsAppLink}</small> : null}
+              </div>
+            ) : isOnlinePostMatch ? (
               <div className="modal-actions">
                 {hasWhatsAppReturn ? (
                   <button type="button" className="endgame-button" onClick={onOpenWhatsApp}>

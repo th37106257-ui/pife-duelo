@@ -18,6 +18,7 @@ import {
   surrenderOnlineMatch,
 } from '../services/onlineGameSocket.js';
 import { playSoundEffect } from '../services/soundEffects.js';
+import { buildWhatsAppMenuLink } from '../services/whatsAppLink.js';
 import { formatMoney } from '../shared/economy.js';
 import { validatePifeHand } from '../shared/pifeRules.js';
 
@@ -50,12 +51,6 @@ function buildOnlineResult(onlineGameState) {
     economicResult,
     message: won ? 'Voce venceu a partida online.' : 'O adversario venceu a partida online.',
   };
-}
-
-function buildWhatsAppReturnLink() {
-  const botNumber = String(import.meta.env.VITE_WHATSAPP_BOT_NUMBER || '').replace(/\D/g, '');
-  const text = encodeURIComponent('menu');
-  return botNumber ? `https://wa.me/${botNumber}?text=${text}` : `https://wa.me/?text=${text}`;
 }
 
 function syncOnlineVisualHand(currentHand, serverHand) {
@@ -366,7 +361,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   ]);
 
   const handleOpenWhatsApp = useCallback(() => {
-    window.location.href = buildWhatsAppReturnLink();
+    window.location.href = buildWhatsAppMenuLink();
   }, []);
 
   useEffect(() => {
