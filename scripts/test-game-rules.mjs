@@ -21,6 +21,7 @@ import {
   playerTimeout,
   planBotTurn,
   playBotTurn,
+  reorderPlayerHand,
   takeFromDiscardForActor,
   takeFromDiscard,
   timeoutForActor,
@@ -708,6 +709,92 @@ runTest('descarte obrigatorio apos compra alterna turno', () => {
   assert.equal(discardAction.game.currentTurn, 'bot');
   assert.equal(discardAction.game.turnStage, 'awaiting-draw');
   assertStableCardSet(drawAction.game, discardAction.game, 'discardFromPlayerHand');
+});
+
+runTest('modo teste descartar com canBeat ativo libera proximo turno normalmente', () => {
+  const initialPlayerHand = [
+    cards['2-clubs'],
+    cards['7-diamonds'],
+    cards['3-clubs'],
+    cards['2-hearts'],
+    cards['9-clubs'],
+    cards['7-clubs'],
+    cards['4-clubs'],
+    cards['2-spades'],
+    cards['7-hearts'],
+  ];
+  const opponentHand = [
+    cards['deck2-A-hearts'],
+    cards['deck2-3-diamonds'],
+    cards['deck2-5-spades'],
+    cards['deck2-8-hearts'],
+    cards['deck2-10-diamonds'],
+    cards['deck2-Q-spades'],
+    cards['deck2-K-hearts'],
+    cards['deck2-3-spades'],
+    cards['deck2-6-diamonds'],
+  ];
+  const plannedDraws = [
+    cards['2-diamonds'],
+    cards['K-clubs'],
+    cards['Q-hearts'],
+  ];
+  const usedIds = new Set([
+    ...initialPlayerHand,
+    ...opponentHand,
+    ...plannedDraws,
+  ].map((card) => card.id));
+  const game = {
+    playerHand: initialPlayerHand,
+    opponentHand,
+    drawPile: [
+      ...plannedDraws,
+      ...deck.filter((card) => !usedIds.has(card.id)),
+    ],
+    discardPile: [],
+    currentTurn: 'player',
+    turnStage: TURN_STAGES.DRAW,
+    result: null,
+  };
+
+  const drawAction = drawFromStock(game, { handMode: 'manual' });
+  assert.equal(drawAction.blocked, false);
+  assert.equal(drawAction.game.playerHand.length, 10);
+  assert.equal(validatePifeHand(drawAction.game.playerHand).canBeat, true);
+
+  const discardAction = discardFromPlayerHand(drawAction.game, cards['9-clubs'].id, { handMode: 'manual' });
+  assert.equal(discardAction.blocked, false);
+  assert.equal(discardAction.game.playerHand.length, 9);
+  assert.equal(validatePifeHand(discardAction.game.playerHand).canBeat, false);
+  assert.equal(discardAction.game.currentTurn, 'bot');
+  assert.equal(discardAction.game.turnStage, TURN_STAGES.DRAW);
+
+  const botAction = planBotTurn(discardAction.game);
+  assert.equal(botAction.blocked, false);
+  assert.equal(botAction.game.result, null);
+  assert.equal(botAction.game.currentTurn, 'player');
+  assert.equal(botAction.game.turnStage, TURN_STAGES.DRAW);
+
+  const reorderAction = reorderPlayerHand(botAction.game, botAction.game.playerHand[0].id, 5);
+  assert.equal(reorderAction.blocked, false);
+
+  const secondDrawAction = drawFromStock(reorderAction.game, { handMode: 'manual' });
+  assert.equal(secondDrawAction.blocked, false);
+  assert.equal(secondDrawAction.game.playerHand.length, 10);
+  assert.equal(secondDrawAction.game.currentTurn, 'player');
+  assert.equal(secondDrawAction.game.turnStage, TURN_STAGES.DISCARD);
+  assert.equal(validatePifeHand(secondDrawAction.game.playerHand).canBeat, true);
+
+  const secondReorderAction = reorderPlayerHand(
+    secondDrawAction.game,
+    secondDrawAction.game.playerHand.at(-1).id,
+    0,
+  );
+  assert.equal(secondReorderAction.blocked, false);
+  const remainingCard = validatePifeHand(secondReorderAction.game.playerHand).remainingCards[0];
+  const secondDiscardAction = discardFromPlayerHand(secondReorderAction.game, remainingCard.id, { handMode: 'manual' });
+  assert.equal(secondDiscardAction.blocked, false);
+  assert.equal(secondDiscardAction.game.currentTurn, 'bot');
 });
 
 runTest('descarte sem compra e carta inexistente sao bloqueados', () => {

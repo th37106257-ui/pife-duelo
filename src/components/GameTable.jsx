@@ -145,6 +145,8 @@ export default function GameTable() {
   const resultSoundRef = useRef(null);
   const resultScreenLogRef = useRef(null);
   const testModeWhatsAppOpeningRef = useRef(false);
+  const testModeInteractionLockLogRef = useRef(null);
+  const testModeTurnLogRef = useRef(null);
 
   useEffect(() => {
     gameRef.current = game;
@@ -420,6 +422,11 @@ export default function GameTable() {
 
     handReorderTimeoutRef.current = window.setTimeout(() => {
       setIncomingCardId(null);
+      setSelectedCardId(null);
+      setDragDiscardState({ active: false, over: false });
+      setHandDragging(false);
+      setIsResolvingAction(false);
+      resolvingActionRef.current = false;
       setTurnTransitioning(false);
       showToast(sourceLabel);
     }, HAND_REORDER_MS);
@@ -442,8 +449,25 @@ export default function GameTable() {
   useEffect(() => {
     if (!playerTurn || isLocalMultiplayer) return;
     resetOpponentState();
+    setSelectedCardId(null);
+    setIncomingCardId(null);
+    setDepartingCardId(null);
+    setDragDiscardState({ active: false, over: false });
+    setHandDragging(false);
+    setIsResolvingAction(false);
+    resolvingActionRef.current = false;
     setSeconds(turnSeconds);
-  }, [isLocalMultiplayer, playerTurn, resetOpponentState, turnSeconds]);
+    if (isTestMode) {
+      console.info('TEST_MODE_HAND_UNLOCKED', {
+        playerTurn: true,
+        handSize: gameRef.current.playerHand.length,
+        canBeat: validatePifeHand(gameRef.current.playerHand).canBeat,
+        interactionLocked: false,
+        actionPending: false,
+        discardPending: false,
+      });
+    }
+  }, [isLocalMultiplayer, isTestMode, playerTurn, resetOpponentState, turnSeconds]);
 
   const showBeatImpact = useCallback(() => {
     if (beatImpactTimeoutRef.current) {
@@ -798,6 +822,20 @@ export default function GameTable() {
       return;
     }
 
+    const canBeatBeforeDiscard = isTestMode && !isLocalMultiplayer
+      ? validatePifeHand(activeCards).canBeat
+      : false;
+    if (isTestMode && !isLocalMultiplayer) {
+      console.info('TEST_MODE_DISCARD_STARTED', {
+        playerTurn: Boolean(activeHumanTurn),
+        handSize: activeCards.length,
+        canBeat: canBeatBeforeDiscard,
+        interactionLocked: true,
+        actionPending: true,
+        discardPending: true,
+      });
+    }
+
     const cardElement = tableRef.current?.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`);
     const cardRect = cardElement?.getBoundingClientRect?.();
     const tableRect = tableRef.current?.getBoundingClientRect?.();
@@ -823,6 +861,9 @@ export default function GameTable() {
     setDepartingCardId(cardId);
     setSelectedCardId(null);
     setDragDiscardState({ active: false, over: false });
+    setHandDragging(false);
+    setIsResolvingAction(false);
+    resolvingActionRef.current = false;
     setTurnTransitioning(true);
     playSoundEffect('discard');
     scheduleFlight(
@@ -831,7 +872,12 @@ export default function GameTable() {
         setGame(discardAction.game);
         setLastAction('player-discard');
         setIncomingCardId(null);
+        setDepartingCardId(null);
         setSelectedCardId(null);
+        setDragDiscardState({ active: false, over: false });
+        setHandDragging(false);
+        setIsResolvingAction(false);
+        resolvingActionRef.current = false;
         setSeconds(turnSeconds);
         setTurnTransitioning(false);
         setMatchMeta((current) => ({
@@ -847,12 +893,22 @@ export default function GameTable() {
           game: discardAction.game,
           actor: discardAction.game.currentTurn,
         });
+        if (isTestMode && !isLocalMultiplayer) {
+          console.info('TEST_MODE_DISCARD_COMPLETED', {
+            playerTurn: discardAction.game.currentTurn === 'player',
+            handSize: discardAction.game.playerHand.length,
+            canBeat: validatePifeHand(discardAction.game.playerHand).canBeat,
+            interactionLocked: discardAction.game.currentTurn !== 'player',
+            actionPending: false,
+            discardPending: false,
+          });
+        }
         addActionHistory(`${actorHistoryName} descartou ${formatCardLabel(discardAction.discardedCard)}`);
         showToast(isLocalMultiplayer ? `Passe para ${getSeatName(discardAction.game.currentTurn)}.` : 'Carta descartada.');
       },
       { commitDelay: DISCARD_ANIMATION_MS, clearDelay: FLIGHT_CLEAR_MS },
     );
-  }, [activeActor, activeCards.length, activeHumanTurn, actorHistoryName, addActionHistory, game, getLocalBox, isLocalMultiplayer, logGameEvent, makeFlight, result, scheduleFlight, showToast, turnSeconds, turnTransitioning]);
+  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, getLocalBox, isLocalMultiplayer, isTestMode, logGameEvent, makeFlight, result, scheduleFlight, showToast, turnSeconds, turnTransitioning]);
 
   const cancelCardSelection = useCallback((event) => {
     if (!selectedCardId || turnTransitioning) return;
@@ -1301,6 +1357,77 @@ export default function GameTable() {
       ? canAttemptTestModeBeat
       : canPlayerAct && !handDragging
   ) && activeCards.length === 10 && knockValidation.valid;
+  const interactionLocked = Boolean(result)
+    || !activeHumanTurn
+    || turnTransitioning
+    || handDragging
+    || isResolvingAction
+    || resolvingActionRef.current;
+  const actionPending = Boolean(turnTransitioning || isResolvingAction || resolvingActionRef.current);
+  const discardPending = Boolean(departingCardId || dragDiscardState.active || dragDiscardState.over);
+
+  useEffect(() => {
+    if (!isTestMode || isLocalMultiplayer) return;
+
+    const logKey = [
+      currentTurn,
+      activeCards.length,
+      canKnockNow,
+      interactionLocked,
+      actionPending,
+      discardPending,
+    ].join('|');
+    if (testModeInteractionLockLogRef.current === logKey) return;
+    testModeInteractionLockLogRef.current = logKey;
+
+    console.info('TEST_MODE_INTERACTION_LOCK_CHANGED', {
+      playerTurn: Boolean(activeHumanTurn),
+      handSize: activeCards.length,
+      canBeat: Boolean(canKnockNow),
+      interactionLocked,
+      actionPending,
+      discardPending,
+    });
+  }, [
+    actionPending,
+    activeCards.length,
+    activeHumanTurn,
+    canKnockNow,
+    currentTurn,
+    discardPending,
+    interactionLocked,
+    isLocalMultiplayer,
+    isTestMode,
+  ]);
+
+  useEffect(() => {
+    if (!isTestMode || isLocalMultiplayer) return;
+
+    const logKey = `${currentTurn}|${matchMeta.turnsPlayed}|${game.turnStage}`;
+    if (testModeTurnLogRef.current === logKey) return;
+    testModeTurnLogRef.current = logKey;
+
+    console.info('TEST_MODE_TURN_CHANGED', {
+      playerTurn: Boolean(activeHumanTurn),
+      handSize: activeCards.length,
+      canBeat: Boolean(canKnockNow),
+      interactionLocked,
+      actionPending,
+      discardPending,
+    });
+  }, [
+    actionPending,
+    activeCards.length,
+    activeHumanTurn,
+    canKnockNow,
+    currentTurn,
+    discardPending,
+    game.turnStage,
+    interactionLocked,
+    isLocalMultiplayer,
+    isTestMode,
+    matchMeta.turnsPlayed,
+  ]);
 
   useEffect(() => {
     if (!isTestMode || isLocalMultiplayer) return;
@@ -1311,12 +1438,18 @@ export default function GameTable() {
       groupedCardCount: testModeBatEvaluation.groupedCardCount ?? testModeBatEvaluation.markedCardIds.length,
       remainingCardCount: testModeBatEvaluation.remainingCardCount ?? testModeBatEvaluation.remainingCards.length,
       canBat: Boolean(canKnockNow),
+      interactionLocked,
+      actionPending,
+      discardPending,
     });
   }, [
+    actionPending,
     activeCardSignature,
     activeCards.length,
     activeHumanTurn,
     canKnockNow,
+    discardPending,
+    interactionLocked,
     isLocalMultiplayer,
     isTestMode,
     testModeBatEvaluation.groupedCardCount,
