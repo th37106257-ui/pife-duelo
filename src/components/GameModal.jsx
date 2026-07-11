@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { formatMoney } from '../shared/economy.js';
 
@@ -32,6 +33,20 @@ export default function GameModal({
         ? 'Você já entendeu como o Pife Duelo funciona.\nAgora, se quiser, volte ao WhatsApp e entre em uma mesa valendo.\n\n💰 Jogue com responsabilidade.\n🔞 Apenas para maiores de 18 anos.'
         : 'Você perdeu essa, mas já pegou o jeito do jogo.\nTreine mais uma rodada grátis ou volte ao WhatsApp para jogar valendo quando se sentir pronto.\n\n💰 Jogue com responsabilidade.\n🔞 Apenas para maiores de 18 anos.'
       : result?.message;
+
+  useEffect(() => {
+    if (!result || !isOnlinePostMatch) return;
+    const payload = {
+      matchId: result.matchId ?? null,
+      winner: result.winner ?? null,
+      type: result.type ?? null,
+      mode: 'online',
+    };
+    console.info('MATCH_RESULT_RENDER_START', payload);
+    window.requestAnimationFrame?.(() => {
+      console.info('MATCH_RESULT_RENDER_SUCCESS', payload);
+    });
+  }, [isOnlinePostMatch, result]);
 
   return (
     <AnimatePresence>

@@ -215,6 +215,7 @@ export function createPostMatchFlow({
           status: entry.status,
           reason,
         };
+        logInfo('PLAYER_RELEASE_AFTER_MATCH', payload);
         logInfo('PLAYER_RELEASED_AFTER_MATCH', payload);
         logInfo('PLAYER_ENTRY_RELEASED_AFTER_MATCH', payload);
       });
@@ -233,6 +234,11 @@ export function createPostMatchFlow({
     if (typeof emitResult === 'function') emitResult(gameState, 'matchFinished');
 
     if (!whatsappEnabled) {
+      logInfo('POST_MATCH_WHATSAPP_SKIPPED_DISABLED', {
+        matchId,
+        table: report.table,
+        reason,
+      });
       logWarn('POST_MATCH_WHATSAPP_DISABLED', {
         matchId,
         table: report.table,

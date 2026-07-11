@@ -29,6 +29,7 @@ function buildOnlineResult(onlineGameState) {
   const economicResult = onlineGameState.result.economicResult ?? onlineGameState.economicResult ?? null;
   if (onlineGameState.result.reason === 'timeout') {
     return {
+      matchId: onlineGameState.matchId,
       type: won ? 'win' : 'loss',
       winner: onlineGameState.result.winnerId,
       title: '\u23f0 Tempo esgotado',
@@ -42,6 +43,7 @@ function buildOnlineResult(onlineGameState) {
   }
 
   return {
+    matchId: onlineGameState.matchId,
     type: won ? 'win' : 'loss',
     winner: onlineGameState.result.winnerId,
     economy,
@@ -370,6 +372,16 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   useEffect(() => {
     if (!onlineGameState.result) return;
 
+    console.info('MATCH_FINISH_CLIENT_RECEIVED', {
+      matchId: onlineGameState.matchId,
+      roomId: onlineGameState.roomId,
+      playerId: onlineGameState.playerId,
+      winnerId: onlineGameState.result.winnerId ?? null,
+      loserId: onlineGameState.result.loserId ?? null,
+      reason: onlineGameState.result.reason ?? null,
+      status: onlineGameState.status,
+    });
+
     const resultKey = `${onlineGameState.matchId}-${onlineGameState.result.reason}-${onlineGameState.result.winnerId}`;
     if (resultSoundRef.current === resultKey) return;
 
@@ -556,6 +568,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
           <EndGameReveal
             isOpen={showKnockReveal}
             result={onlineGameState.result}
+            matchId={onlineGameState.matchId}
             currentPlayerId={onlineGameState.playerId}
             onNewMatch={onLeaveOnline}
             isOnlinePostMatch={showKnockReveal}

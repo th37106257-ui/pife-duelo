@@ -1,5 +1,7 @@
+import { Component, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import Card from './Card.jsx';
+import { reportClientError } from '../services/errorReporter.js';
 import { formatMoney } from '../shared/economy.js';
 
 const GROUP_LABELS = {
@@ -7,9 +9,78 @@ const GROUP_LABELS = {
   trinca: 'Trinca',
 };
 
+function isSafeCard(card) {
+  return Boolean(card && typeof card === 'object' && (card.id || card.instanceId));
+}
+
+function normalizeGroups(rawGroups) {
+  if (!Array.isArray(rawGroups)) return [];
+
+  return rawGroups
+    .filter((group) => group && typeof group === 'object')
+    .map((group) => ({
+      type: group.type ?? 'grupo',
+      cards: Array.isArray(group.cards) ? group.cards.filter(isSafeCard) : [],
+    }))
+    .filter((group) => group.cards.length > 0);
+}
+
+function normalizeCards(rawCards) {
+  return Array.isArray(rawCards) ? rawCards.filter(isSafeCard) : [];
+}
+
+class ResultRenderBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error) {
+    const payload = {
+      matchId: this.props.matchId ?? null,
+      reason: this.props.reason ?? null,
+      mode: this.props.mode ?? null,
+      message: error?.message ?? String(error),
+    };
+    console.error('MATCH_RESULT_RENDER_FAILED', payload);
+    reportClientError(error, 'MATCH_RESULT_RENDER_FAILED', payload);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="endgame-overlay">
+          <section className="endgame-panel" aria-label="Resultado da partida">
+            <h2 className="endgame-title">Partida finalizada</h2>
+            <p className="endgame-subtitle">O jogo terminou, mas houve um erro ao mostrar os detalhes das cartas.</p>
+            <p className="endgame-footer">Voce ja pode voltar ao lobby ou abrir o WhatsApp para continuar.</p>
+            <div className="modal-actions">
+              {this.props.hasWhatsAppReturn ? (
+                <button type="button" className="endgame-button" onClick={this.props.onOpenWhatsApp}>
+                  Abrir WhatsApp
+                </button>
+              ) : null}
+              <button type="button" className="modal-ghost-action" onClick={this.props.onNewMatch}>
+                Voltar ao lobby
+              </button>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function EndGameReveal({
   isOpen,
   result,
+  matchId = null,
   currentPlayerId,
   onNewMatch,
   isOnlinePostMatch = false,
@@ -17,36 +88,61 @@ export default function EndGameReveal({
   onOpenWhatsApp,
 }) {
   const won = result?.winnerId === currentPlayerId;
-  const groups = result?.winningGroups ?? [];
-  const remainingCards = result?.remainingCards ?? [];
+  const groups = normalizeGroups(result?.winningGroups);
+  const remainingCards = normalizeCards(result?.remainingCards);
   const economy = result?.economy;
   const economicResult = result?.economicResult;
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const payload = {
+      matchId,
+      reason: result?.reason ?? null,
+      winnerId: result?.winnerId ?? null,
+      currentPlayerId,
+      groups: groups.length,
+      remainingCards: remainingCards.length,
+      mode: isOnlinePostMatch ? 'online' : 'local',
+    };
+    console.info('MATCH_RESULT_RENDER_START', payload);
+    window.requestAnimationFrame?.(() => {
+      console.info('MATCH_RESULT_RENDER_SUCCESS', payload);
+    });
+  }, [currentPlayerId, groups.length, isOnlinePostMatch, isOpen, matchId, remainingCards.length, result?.reason, result?.winnerId]);
+
   return (
-    <AnimatePresence>
-      {isOpen ? (
-        <motion.div
-          className="endgame-overlay"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.22, ease: 'easeOut' }}
-        >
-          <motion.section
-            className="endgame-panel"
-            aria-label="Resultado da partida"
-            initial={{ opacity: 0, y: 12, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.97 }}
-            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+    <ResultRenderBoundary
+      matchId={matchId}
+      reason={result?.reason ?? null}
+      mode={isOnlinePostMatch ? 'online' : 'local'}
+      hasWhatsAppReturn={hasWhatsAppReturn}
+      onOpenWhatsApp={onOpenWhatsApp}
+      onNewMatch={onNewMatch}
+    >
+      <AnimatePresence>
+        {isOpen ? (
+          <motion.div
+            className="endgame-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
           >
+            <motion.section
+              className="endgame-panel"
+              aria-label="Resultado da partida"
+              initial={{ opacity: 0, y: 12, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.97 }}
+              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            >
             <h2 className="endgame-title">{won ? 'Voce bateu!' : 'Seu adversario bateu'}</h2>
             <p className="endgame-subtitle">
               {won ? 'Sua formacao foi confirmada' : 'Veja a formacao vencedora'}
             </p>
 
             <div className="endgame-groups">
-              {groups.map((group, groupIndex) => (
+              {groups.length > 0 ? groups.map((group, groupIndex) => (
                 <motion.div
                   key={`${group.type}-${groupIndex}`}
                   className="winning-group"
@@ -78,7 +174,12 @@ export default function EndGameReveal({
                     ))}
                   </div>
                 </motion.div>
-              ))}
+              )) : (
+                <div className="winning-group">
+                  <span className="group-label">Combinacao vencedora</span>
+                  <p className="endgame-footer">A partida foi finalizada, mas a combinacao nao foi enviada completa pelo servidor.</p>
+                </div>
+              )}
             </div>
 
             {remainingCards.length > 0 ? (
@@ -142,9 +243,10 @@ export default function EndGameReveal({
                 Nova partida
               </button>
             )}
-          </motion.section>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
+            </motion.section>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </ResultRenderBoundary>
   );
 }

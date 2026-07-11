@@ -17,12 +17,17 @@ function showStartupError(error) {
 }
 
 window.__PIFE_DUELO_BOOTED__ = true;
+let startupCompleted = false;
 installClientErrorReporting();
 window.addEventListener('error', (event) => {
-  showStartupError(event.error || new Error(event.message));
+  if (!startupCompleted) {
+    showStartupError(event.error || new Error(event.message));
+  }
 });
 window.addEventListener('unhandledrejection', (event) => {
-  showStartupError(event.reason instanceof Error ? event.reason : new Error(String(event.reason)));
+  if (!startupCompleted) {
+    showStartupError(event.reason instanceof Error ? event.reason : new Error(String(event.reason)));
+  }
 });
 
 class StartupBoundary extends React.Component {
@@ -66,6 +71,7 @@ try {
       </StartupBoundary>
     </React.StrictMode>,
   );
+  startupCompleted = true;
 } catch (error) {
   showStartupError(error);
 }
