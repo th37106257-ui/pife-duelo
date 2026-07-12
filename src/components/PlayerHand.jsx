@@ -18,6 +18,7 @@ function PlayerHand({
   onDiscardDragState,
   onHandDragState,
   winningCardIds,
+  comboHighlightedIds: comboHighlightedIdsOverride,
   departingCardId,
   playerName,
   statusLabel,
@@ -25,9 +26,12 @@ function PlayerHand({
 }) {
   const cardSignature = cards.map((card) => card.id).join('|');
   const comboHighlightedIds = useMemo(() => {
+    if (Array.isArray(comboHighlightedIdsOverride)) {
+      return comboHighlightedIdsOverride;
+    }
     const { markedCardIds } = detectValidCombinations(cards);
     return markedCardIds;
-  }, [cardSignature, cards]);
+  }, [cardSignature, cards, comboHighlightedIdsOverride]);
 
   return (
     <section className={`player-hand-zone ${isActive ? 'player-hand-active' : ''}`}>

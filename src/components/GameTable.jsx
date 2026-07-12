@@ -71,6 +71,96 @@ function readIsTestMode() {
   return params.get('mode') === 'test';
 }
 
+const TEST_DISABLE_COMBINATION_HIGHLIGHT = false;
+
+const TEST_TURN_PHASES = {
+  PLAYER_MUST_DRAW: 'PLAYER_MUST_DRAW',
+  PLAYER_CAN_DISCARD_OR_BEAT: 'PLAYER_CAN_DISCARD_OR_BEAT',
+  RESOLVING_PLAYER_ACTION: 'RESOLVING_PLAYER_ACTION',
+  BOT_TURN: 'BOT_TURN',
+  FINISHED: 'FINISHED',
+};
+
+function readDisableCombinationHighlight() {
+  if (TEST_DISABLE_COMBINATION_HIGHLIGHT) return true;
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.get('disableComboHighlight') === '1';
+}
+
+function readTestModeE2EEnabled() {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.has('e2e');
+}
+
+function getTestModeTurnPhase({
+  currentTurn,
+  isResolvingAction,
+  result,
+  turnStage,
+  turnTransitioning,
+}) {
+  if (result) return TEST_TURN_PHASES.FINISHED;
+  if (currentTurn !== 'player') return TEST_TURN_PHASES.BOT_TURN;
+  if (turnTransitioning || isResolvingAction) return TEST_TURN_PHASES.RESOLVING_PLAYER_ACTION;
+  if (turnStage === 'awaiting-draw') return TEST_TURN_PHASES.PLAYER_MUST_DRAW;
+  if (turnStage === 'awaiting-discard') return TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT;
+  return 'UNKNOWN_PHASE';
+}
+
+function getTestModeInteractionBlockReason({
+  activeHumanTurn,
+  actionPending,
+  botPhase,
+  botThinking,
+  canDraw,
+  canDropDiscard,
+  canPlayerAct,
+  canTakeDiscard,
+  currentTurn,
+  departingCardId,
+  discardPending,
+  dragDiscardState,
+  flyingDrawCard,
+  handDragging,
+  handSize,
+  hasDrawn,
+  isResolvingAction,
+  result,
+  resolvingActionRefActive,
+  testModeTurnPhase,
+  turnStage,
+  turnTransitioning,
+}) {
+  if (result) return 'MATCH_FINISHED';
+  if (!activeHumanTurn || currentTurn !== 'player') return 'NOT_PLAYER_TURN';
+  if (isResolvingAction || resolvingActionRefActive) return 'ACTION_RESOLVING';
+  if (turnTransitioning && departingCardId) return 'DISCARD_ANIMATION_ACTIVE';
+  if (turnTransitioning && (botThinking || botPhase !== 'idle')) return 'BOT_THINKING';
+  if (turnTransitioning) return 'PENDING_ACTION';
+  if (flyingDrawCard) return 'DRAW_ANIMATION_ACTIVE';
+  if (handDragging) return 'HAND_DRAGGING';
+  if (discardPending || dragDiscardState?.active || dragDiscardState?.over) return 'DRAG_DISCARD_ACTIVE';
+  if (departingCardId) return 'DEPARTING_CARD_ACTIVE';
+  if (botThinking || botPhase !== 'idle') return 'BOT_THINKING';
+  if (actionPending) return 'PENDING_ACTION';
+  if (
+    testModeTurnPhase !== TEST_TURN_PHASES.PLAYER_MUST_DRAW
+    && testModeTurnPhase !== TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
+  ) {
+    return 'INVALID_TURN_PHASE';
+  }
+  if (!canPlayerAct) return 'UNKNOWN_BLOCK';
+  if (turnStage !== 'awaiting-draw' && turnStage !== 'awaiting-discard') return 'INVALID_TURN_PHASE';
+  if (turnStage === 'awaiting-draw' && hasDrawn) return 'INVALID_TURN_PHASE';
+  if (turnStage === 'awaiting-draw' && handSize >= 10) return 'DRAW_NOT_ALLOWED';
+  if (turnStage === 'awaiting-draw' && !canDraw && !canTakeDiscard) return 'DRAW_NOT_ALLOWED';
+  if (turnStage === 'awaiting-discard' && handSize !== 10) return 'INVALID_TURN_PHASE';
+  if (turnStage === 'awaiting-discard' && !canDropDiscard) return 'DISCARD_NOT_ALLOWED';
+  return 'NONE';
+}
+
 function getSeatName(actor) {
   return actor === 'player' ? 'JOGADOR A' : 'JOGADOR B';
 }
@@ -78,6 +168,8 @@ function getSeatName(actor) {
 export default function GameTable() {
   const playMode = useMemo(() => readPlayMode(), []);
   const isTestMode = useMemo(() => readIsTestMode(), []);
+  const testModeCombinationHighlightDisabled = useMemo(() => readDisableCombinationHighlight(), []);
+  const testModeE2EEnabled = useMemo(() => readTestModeE2EEnabled(), []);
   const isLocalMultiplayer = playMode === 'local-2p';
   const debugScenarioKey = useMemo(() => readDebugScenarioKey(), []);
   const debugConfig = useMemo(() => getDebugScenarioConfig(debugScenarioKey), [debugScenarioKey]);
@@ -113,7 +205,21 @@ export default function GameTable() {
   const activeHumanTurn = isLocalMultiplayer || playerTurn;
   const hasDrawn = game.turnStage === 'awaiting-discard';
   const result = game.result;
-  const canPlayerAct = activeHumanTurn && !isAnimating && !isResolvingAction && !result;
+  const testModeTurnPhase = isTestMode && !isLocalMultiplayer
+    ? getTestModeTurnPhase({
+        currentTurn,
+        isResolvingAction,
+        result,
+        turnStage: game.turnStage,
+        turnTransitioning: isAnimating,
+      })
+    : null;
+  const canPlayerAct = isTestMode && !isLocalMultiplayer
+    ? (
+        testModeTurnPhase === TEST_TURN_PHASES.PLAYER_MUST_DRAW
+        || testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
+      )
+    : activeHumanTurn && !isAnimating && !isResolvingAction && !result;
   const activeCards = isLocalMultiplayer && activeActor === 'bot' ? game.opponentHand : game.playerHand;
   const waitingCards = isLocalMultiplayer && activeActor === 'bot' ? game.playerHand : game.opponentHand;
   const activeName = isLocalMultiplayer ? getSeatName(activeActor) : 'VOCE';
@@ -147,6 +253,7 @@ export default function GameTable() {
   const testModeWhatsAppOpeningRef = useRef(false);
   const testModeInteractionLockLogRef = useRef(null);
   const testModeTurnLogRef = useRef(null);
+  const testModeInteractionSnapshotRef = useRef(null);
 
   useEffect(() => {
     gameRef.current = game;
@@ -211,6 +318,29 @@ export default function GameTable() {
     setBotThinking(false);
     setBotPhase('idle');
     setTurnTransitioning(false);
+  }, []);
+
+  const resetTestTurnTransientState = useCallback(({
+    clearFlightState = false,
+    clearIncomingCard = true,
+    clearTransition = true,
+  } = {}) => {
+    setSelectedCardId(null);
+    if (clearIncomingCard) {
+      setIncomingCardId(null);
+    }
+    setDepartingCardId(null);
+    setDragDiscardState({ active: false, over: false });
+    setHandDragging(false);
+    setIsResolvingAction(false);
+    resolvingActionRef.current = false;
+    if (clearFlightState) {
+      setFlight(null);
+      setFlyingDrawCard(null);
+    }
+    if (clearTransition) {
+      setTurnTransitioning(false);
+    }
   }, []);
 
   const scheduleBotStep = useCallback((delay, callback) => {
@@ -421,16 +551,20 @@ export default function GameTable() {
     }
 
     handReorderTimeoutRef.current = window.setTimeout(() => {
-      setIncomingCardId(null);
-      setSelectedCardId(null);
-      setDragDiscardState({ active: false, over: false });
-      setHandDragging(false);
-      setIsResolvingAction(false);
-      resolvingActionRef.current = false;
-      setTurnTransitioning(false);
+      if (isTestMode && !isLocalMultiplayer) {
+        resetTestTurnTransientState({ clearIncomingCard: true, clearTransition: true });
+      } else {
+        setIncomingCardId(null);
+        setSelectedCardId(null);
+        setDragDiscardState({ active: false, over: false });
+        setHandDragging(false);
+        setIsResolvingAction(false);
+        resolvingActionRef.current = false;
+        setTurnTransitioning(false);
+      }
       showToast(sourceLabel);
     }, HAND_REORDER_MS);
-  }, [isLocalMultiplayer, showToast]);
+  }, [isLocalMultiplayer, isTestMode, resetTestTurnTransientState, showToast]);
 
   const pulseTurnCue = useCallback((target) => {
     if (turnCueTimeoutRef.current) {
@@ -449,13 +583,17 @@ export default function GameTable() {
   useEffect(() => {
     if (!playerTurn || isLocalMultiplayer) return;
     resetOpponentState();
-    setSelectedCardId(null);
-    setIncomingCardId(null);
-    setDepartingCardId(null);
-    setDragDiscardState({ active: false, over: false });
-    setHandDragging(false);
-    setIsResolvingAction(false);
-    resolvingActionRef.current = false;
+    if (isTestMode) {
+      resetTestTurnTransientState({ clearFlightState: true, clearIncomingCard: true, clearTransition: true });
+    } else {
+      setSelectedCardId(null);
+      setIncomingCardId(null);
+      setDepartingCardId(null);
+      setDragDiscardState({ active: false, over: false });
+      setHandDragging(false);
+      setIsResolvingAction(false);
+      resolvingActionRef.current = false;
+    }
     setSeconds(turnSeconds);
     if (isTestMode) {
       console.info('TEST_MODE_HAND_UNLOCKED', {
@@ -467,7 +605,7 @@ export default function GameTable() {
         discardPending: false,
       });
     }
-  }, [isLocalMultiplayer, isTestMode, playerTurn, resetOpponentState, turnSeconds]);
+  }, [isLocalMultiplayer, isTestMode, playerTurn, resetOpponentState, resetTestTurnTransientState, turnSeconds]);
 
   const showBeatImpact = useCallback(() => {
     if (beatImpactTimeoutRef.current) {
@@ -690,6 +828,12 @@ export default function GameTable() {
   }, [isTestMode, matchMeta.matchId, result]);
 
   const drawCardForPlayer = useCallback(() => {
+    if (isTestMode && !isLocalMultiplayer) {
+      console.info('TEST_MODE_INTERACTION_SNAPSHOT', {
+        ...testModeInteractionSnapshotRef.current,
+        event: 'USER_DRAW_ATTEMPT',
+      });
+    }
     if (!activeHumanTurn || turnTransitioning || result) {
       logGameEvent(MATCH_EVENTS.INVALID_ACTION_BLOCKED, { actor: activeActor, reason: 'draw-not-allowed' });
       return;
@@ -743,9 +887,15 @@ export default function GameTable() {
       },
       { commitAfterClear: true },
     );
-  }, [activeActor, activeCards.length, activeHumanTurn, actorHistoryName, addActionHistory, game, getHandTargetBox, getLocalBox, hasDrawn, isLocalMultiplayer, logGameEvent, makeFlight, result, scheduleFlight, settleHandAfterDraw, showRecycleEffect, showToast, turnTransitioning]);
+  }, [activeActor, activeCards.length, activeHumanTurn, actorHistoryName, addActionHistory, game, getHandTargetBox, getLocalBox, hasDrawn, isLocalMultiplayer, isTestMode, logGameEvent, makeFlight, result, scheduleFlight, settleHandAfterDraw, showRecycleEffect, showToast, turnTransitioning]);
 
   const takeDiscardForPlayer = useCallback(() => {
+    if (isTestMode && !isLocalMultiplayer) {
+      console.info('TEST_MODE_INTERACTION_SNAPSHOT', {
+        ...testModeInteractionSnapshotRef.current,
+        event: 'USER_TAKE_DISCARD_ATTEMPT',
+      });
+    }
     const topDiscard = game.discardPile[game.discardPile.length - 1];
 
     if (!activeHumanTurn || turnTransitioning || result || !topDiscard) {
@@ -801,7 +951,7 @@ export default function GameTable() {
       },
       { commitAfterClear: true },
     );
-  }, [activeActor, activeCards.length, activeHumanTurn, actorHistoryName, addActionHistory, game, getHandTargetBox, getLocalBox, hasDrawn, isLocalMultiplayer, logGameEvent, makeFlight, result, scheduleFlight, settleHandAfterDraw, showToast, turnTransitioning]);
+  }, [activeActor, activeCards.length, activeHumanTurn, actorHistoryName, addActionHistory, game, getHandTargetBox, getLocalBox, hasDrawn, isLocalMultiplayer, isTestMode, logGameEvent, makeFlight, result, scheduleFlight, settleHandAfterDraw, showToast, turnTransitioning]);
 
   const discardCardById = useCallback((cardId, originPoint = null) => {
     if (!activeHumanTurn || turnTransitioning || !cardId || result) {
@@ -871,13 +1021,17 @@ export default function GameTable() {
       () => {
         setGame(discardAction.game);
         setLastAction('player-discard');
-        setIncomingCardId(null);
-        setDepartingCardId(null);
-        setSelectedCardId(null);
-        setDragDiscardState({ active: false, over: false });
-        setHandDragging(false);
-        setIsResolvingAction(false);
-        resolvingActionRef.current = false;
+        if (isTestMode && !isLocalMultiplayer) {
+          resetTestTurnTransientState({ clearIncomingCard: true, clearTransition: false });
+        } else {
+          setIncomingCardId(null);
+          setDepartingCardId(null);
+          setSelectedCardId(null);
+          setDragDiscardState({ active: false, over: false });
+          setHandDragging(false);
+          setIsResolvingAction(false);
+          resolvingActionRef.current = false;
+        }
         setSeconds(turnSeconds);
         setTurnTransitioning(false);
         setMatchMeta((current) => ({
@@ -908,7 +1062,7 @@ export default function GameTable() {
       },
       { commitDelay: DISCARD_ANIMATION_MS, clearDelay: FLIGHT_CLEAR_MS },
     );
-  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, getLocalBox, isLocalMultiplayer, isTestMode, logGameEvent, makeFlight, result, scheduleFlight, showToast, turnSeconds, turnTransitioning]);
+  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, getLocalBox, isLocalMultiplayer, isTestMode, logGameEvent, makeFlight, resetTestTurnTransientState, result, scheduleFlight, showToast, turnSeconds, turnTransitioning]);
 
   const cancelCardSelection = useCallback((event) => {
     if (!selectedCardId || turnTransitioning) return;
@@ -966,6 +1120,14 @@ export default function GameTable() {
   }, [discardCardById, isPointInsideDiscard, showToast]);
 
   const reorderCardByDrop = useCallback((cardId, targetIndex) => {
+    if (isTestMode && !isLocalMultiplayer) {
+      console.info('TEST_MODE_INTERACTION_SNAPSHOT', {
+        ...testModeInteractionSnapshotRef.current,
+        event: 'USER_REORDER_ATTEMPT',
+        cardId,
+        targetIndex,
+      });
+    }
     setSelectedCardId(null);
     setIncomingCardId(null);
     setGame((current) => {
@@ -974,13 +1136,45 @@ export default function GameTable() {
         : reorderPlayerHand(current, cardId, targetIndex);
       return reorderAction.blocked ? current : reorderAction.game;
     });
-  }, [isLocalMultiplayer]);
+  }, [isLocalMultiplayer, isTestMode]);
+
+  useEffect(() => {
+    if (!isTestMode || isLocalMultiplayer || !testModeE2EEnabled || typeof window === 'undefined') return undefined;
+
+    window.__PIFE_DUELO_TEST_MODE_ACTIONS__ = {
+      discardCardById,
+      drawCardForPlayer,
+      reorderCardByDrop,
+      snapshot: () => testModeInteractionSnapshotRef.current,
+    };
+
+    return () => {
+      delete window.__PIFE_DUELO_TEST_MODE_ACTIONS__;
+    };
+  }, [
+    discardCardById,
+    drawCardForPlayer,
+    isLocalMultiplayer,
+    isTestMode,
+    reorderCardByDrop,
+    testModeE2EEnabled,
+  ]);
 
   const activeCardSignature = activeCards.map((card) => card.id).join('|');
   const testModeBatEvaluation = useMemo(
     () => validatePifeHand(activeCards),
     [activeCardSignature],
   );
+  const testModeComboHighlightedIds = useMemo(() => {
+    if (!isTestMode || isLocalMultiplayer) return undefined;
+    if (testModeCombinationHighlightDisabled) return [];
+    return testModeBatEvaluation.markedCardIds ?? [];
+  }, [
+    isLocalMultiplayer,
+    isTestMode,
+    testModeBatEvaluation.markedCardIds,
+    testModeCombinationHighlightDisabled,
+  ]);
   const knockValidation = useMemo(
     () => {
       if (isTestMode && !isLocalMultiplayer) {
@@ -1000,7 +1194,11 @@ export default function GameTable() {
 
   const knock = useCallback(() => {
     const canTryKnock = isTestMode && !isLocalMultiplayer
-      ? activeHumanTurn && !handDragging && !isResolvingAction && !resolvingActionRef.current && !result
+      ? testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
+        && !handDragging
+        && !isResolvingAction
+        && !resolvingActionRef.current
+        && !result
       : activeHumanTurn && !turnTransitioning && !handDragging && !isResolvingAction && !resolvingActionRef.current && !result;
     if (!canTryKnock) return;
 
@@ -1063,7 +1261,7 @@ export default function GameTable() {
     setIsResolvingAction(false);
     logGameEvent(MATCH_EVENTS.INVALID_ACTION_BLOCKED, { actor: activeActor, reason: knockAction.reason });
     showToast('Ainda falta jogo: forme 3 combinacoes ou use o descarte do bot.');
-  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, handDragging, isLocalMultiplayer, isResolvingAction, isTestMode, knockValidation, logGameEvent, result, showBeatImpact, showToast, turnTransitioning]);
+  }, [activeActor, activeCards, activeHumanTurn, actorHistoryName, addActionHistory, game, handDragging, isLocalMultiplayer, isResolvingAction, isTestMode, knockValidation, logGameEvent, result, showBeatImpact, showToast, testModeTurnPhase, turnTransitioning]);
 
   useEffect(() => {
     if (!activeHumanTurn || result) return undefined;
@@ -1335,19 +1533,48 @@ export default function GameTable() {
 
   const topDiscard = game.discardPile[game.discardPile.length - 1];
   const canRecycleDraw = game.drawPile.length > 0 || game.discardPile.length > 1;
-  const canDraw = canPlayerAct && !handDragging && !hasDrawn && canRecycleDraw && activeCards.length < 10;
+  const canDraw = isTestMode && !isLocalMultiplayer
+    ? (
+        testModeTurnPhase === TEST_TURN_PHASES.PLAYER_MUST_DRAW
+        && canPlayerAct
+        && !handDragging
+        && !resolvingActionRef.current
+        && canRecycleDraw
+        && activeCards.length < 10
+      )
+    : canPlayerAct && !handDragging && !hasDrawn && canRecycleDraw && activeCards.length < 10;
   const canTapDraw = canDraw;
-  const canTakeDiscard =
-    canPlayerAct &&
-    !handDragging &&
-    !hasDrawn &&
-    activeCards.length < 10 &&
-    Boolean(topDiscard) &&
-    topDiscard.discardedBy !== activeActor;
-  const canDropDiscard = canPlayerAct && activeCards.length === 10;
+  const canTakeDiscard = isTestMode && !isLocalMultiplayer
+    ? (
+        testModeTurnPhase === TEST_TURN_PHASES.PLAYER_MUST_DRAW
+        && canPlayerAct
+        && !handDragging
+        && !resolvingActionRef.current
+        && activeCards.length < 10
+        && Boolean(topDiscard)
+        && topDiscard.discardedBy !== activeActor
+      )
+    : (
+        canPlayerAct &&
+        !handDragging &&
+        !hasDrawn &&
+        activeCards.length < 10 &&
+        Boolean(topDiscard) &&
+        topDiscard.discardedBy !== activeActor
+      );
+  const canDropDiscard = isTestMode && !isLocalMultiplayer
+    ? (
+        testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
+        && canPlayerAct
+        && !handDragging
+        && !resolvingActionRef.current
+        && activeCards.length === 10
+      )
+    : canPlayerAct && activeCards.length === 10;
   const canAttemptTestModeBeat = isTestMode
     && !isLocalMultiplayer
-    && activeHumanTurn
+    && testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
+    && canPlayerAct
     && !handDragging
     && !isResolvingAction
     && !resolvingActionRef.current
@@ -1365,6 +1592,127 @@ export default function GameTable() {
     || resolvingActionRef.current;
   const actionPending = Boolean(turnTransitioning || isResolvingAction || resolvingActionRef.current);
   const discardPending = Boolean(departingCardId || dragDiscardState.active || dragDiscardState.over);
+  const canReorderHand = isTestMode && !isLocalMultiplayer
+    ? (
+        !result
+        && currentTurn === 'player'
+        && !turnTransitioning
+        && !isResolvingAction
+        && !resolvingActionRef.current
+        && (
+          testModeTurnPhase === TEST_TURN_PHASES.PLAYER_MUST_DRAW
+          || testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
+        )
+      )
+    : activeHumanTurn && !turnTransitioning && !result;
+  const testModeInteractionSnapshot = useMemo(() => {
+    const blockReason = getTestModeInteractionBlockReason({
+      activeHumanTurn,
+      actionPending,
+      botPhase,
+      botThinking,
+      canDraw,
+      canDropDiscard,
+      canPlayerAct,
+      canTakeDiscard,
+      currentTurn,
+      departingCardId,
+      discardPending,
+      dragDiscardState,
+      flyingDrawCard,
+      handDragging,
+      handSize: activeCards.length,
+      hasDrawn,
+      isResolvingAction,
+      result,
+      resolvingActionRefActive: resolvingActionRef.current,
+      testModeTurnPhase,
+      turnStage: game.turnStage,
+      turnTransitioning,
+    });
+
+    return {
+      isPlayerTurn: Boolean(activeHumanTurn),
+      currentTurn,
+      turnPhase: testModeTurnPhase ?? game.turnStage,
+      engineTurnStage: game.turnStage,
+      handSize: activeCards.length,
+      hasDrawn,
+      canBeat: Boolean(canKnockNow),
+      canPlayerAct: Boolean(canPlayerAct),
+      canDraw: Boolean(canDraw),
+      canDiscard: Boolean(canDropDiscard),
+      canTakeDiscard: Boolean(canTakeDiscard),
+      canReorderHand: Boolean(canReorderHand),
+      validGroupCount: testModeBatEvaluation.validGroupCount ?? testModeBatEvaluation.validGroups.length,
+      groupedCardCount: testModeBatEvaluation.groupedCardCount ?? testModeBatEvaluation.markedCardIds.length,
+      remainingCardCount: testModeBatEvaluation.remainingCardCount ?? testModeBatEvaluation.remainingCards.length,
+      remainingCardIds: testModeBatEvaluation.remainingCardIds ?? testModeBatEvaluation.remainingCards.map((card) => card.id),
+      comboHighlightEnabled: !testModeCombinationHighlightDisabled,
+      isResolvingAction: Boolean(isResolvingAction),
+      resolvingActionRef: Boolean(resolvingActionRef.current),
+      handDragging: Boolean(handDragging),
+      dragDiscardState,
+      departingCardId,
+      selectedCardId,
+      botThinking: Boolean(botThinking),
+      animationActive: Boolean(isAnimating),
+      actionPending: Boolean(actionPending),
+      discardPending: Boolean(discardPending),
+      botPhase,
+      flyingDrawCardId: flyingDrawCard?.id ?? null,
+      turnTransitioning: Boolean(turnTransitioning),
+      blockReason,
+    };
+  }, [
+    activeCards.length,
+    activeHumanTurn,
+    actionPending,
+    botPhase,
+    botThinking,
+    canDraw,
+    canDropDiscard,
+    canKnockNow,
+    canPlayerAct,
+    canReorderHand,
+    canTakeDiscard,
+    currentTurn,
+    departingCardId,
+    discardPending,
+    dragDiscardState,
+    flyingDrawCard,
+    game.turnStage,
+    handDragging,
+    hasDrawn,
+    isAnimating,
+    isResolvingAction,
+    result,
+    selectedCardId,
+    testModeBatEvaluation.groupedCardCount,
+    testModeBatEvaluation.markedCardIds.length,
+    testModeBatEvaluation.remainingCardCount,
+    testModeBatEvaluation.remainingCardIds,
+    testModeBatEvaluation.remainingCards,
+    testModeBatEvaluation.validGroupCount,
+    testModeBatEvaluation.validGroups.length,
+    testModeCombinationHighlightDisabled,
+    testModeTurnPhase,
+    turnTransitioning,
+  ]);
+
+  useEffect(() => {
+    if (!isTestMode || isLocalMultiplayer) return;
+
+    testModeInteractionSnapshotRef.current = testModeInteractionSnapshot;
+    if (typeof window !== 'undefined') {
+      window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__ = testModeInteractionSnapshot;
+    }
+
+    console.info('TEST_MODE_INTERACTION_SNAPSHOT', {
+      ...testModeInteractionSnapshot,
+      event: 'STATE_CHANGE',
+    });
+  }, [isLocalMultiplayer, isTestMode, testModeInteractionSnapshot]);
 
   useEffect(() => {
     if (!isTestMode || isLocalMultiplayer) return;
@@ -1669,13 +2017,14 @@ export default function GameTable() {
               entryFromDeck={lastAction === 'player-draw'}
               entryFromDiscard={lastAction === 'player-take-discard'}
               incomingCardId={incomingCardId}
-              canReorder={activeHumanTurn && !turnTransitioning && !result}
+              canReorder={canReorderHand}
               onReorderCard={reorderCardByDrop}
               canDiscard={canDropDiscard}
               onDiscardDragEnd={handleCardDiscardDragEnd}
               onDiscardDragState={handleCardDiscardDragState}
               onHandDragState={handleHandDragState}
               winningCardIds={winningCardIds}
+              comboHighlightedIds={testModeComboHighlightedIds}
               departingCardId={departingCardId}
             />
           </section>

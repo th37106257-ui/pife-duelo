@@ -121,6 +121,34 @@ export const DEBUG_SCENARIOS = {
       drawPile: ['J-diamonds', 'A-hearts', '3-clubs', '8-diamonds'],
     },
   },
+  'exact-canbeat-discard': {
+    label: 'Mao exata com tres grupos e descarte manual',
+    game: {
+      playerHand: [
+        '3-clubs',
+        '2-clubs',
+        '4-clubs',
+        '9-clubs',
+        '2-spades',
+        '2-hearts',
+        '7-hearts',
+        '7-diamonds',
+        '7-clubs',
+      ],
+      opponentHand: [
+        'A-clubs',
+        '5-diamonds',
+        '8-hearts',
+        '10-spades',
+        'Q-clubs',
+        'K-hearts',
+        '3-spades',
+        '6-clubs',
+        'A-diamonds',
+      ],
+      drawPile: ['2-diamonds', 'K-clubs', 'Q-hearts', 'A-spades', '5-hearts', '8-diamonds'],
+    },
+  },
   'near-win-bot': {
     label: 'Bot quase batendo',
     game: {

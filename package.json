@@ -12,6 +12,7 @@
     "test": "node scripts/test-game-rules.mjs && node scripts/test-observability.mjs && node scripts/test-whatsapp-payments.mjs && node scripts/test-whatsapp-entries.mjs && node scripts/test-whatsapp-match-queue.mjs && node scripts/test-post-match-flow.mjs && node scripts/test-meta-cloud-provider.mjs",
     "test:observability": "node scripts/test-observability.mjs && node scripts/test-observability-integration.mjs",
     "test:online-sync": "node scripts/test-online-sync.mjs",
+    "test:test-mode-discard": "node scripts/test-test-mode-discard-unlock.mjs",
     "test:payments": "node scripts/test-whatsapp-payments.mjs && node scripts/test-payment-gate-integration.mjs",
     "test:entries": "node scripts/test-whatsapp-entries.mjs && node scripts/test-whatsapp-match-queue.mjs && node scripts/test-whatsapp-entry-gate-integration.mjs",
     "test:report": "node scripts/test-game-rules.mjs --report",
