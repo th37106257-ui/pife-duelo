@@ -161,6 +161,34 @@ function getTestModeInteractionBlockReason({
   return 'NONE';
 }
 
+function logTestModeActionAttempt(action, snapshot, { allowed, blockReason } = {}) {
+  const current = snapshot ?? {};
+  const isAllowed = Boolean(allowed);
+  const payload = {
+    action,
+    allowed: isAllowed,
+    blockReason: isAllowed ? 'NONE' : (blockReason ?? current.blockReason ?? 'UNKNOWN'),
+    turnPhase: current.turnPhase ?? 'UNKNOWN_PHASE',
+    isPlayerTurn: Boolean(current.isPlayerTurn),
+    handSize: Number(current.handSize ?? 0),
+    hasDrawn: Boolean(current.hasDrawn),
+    hasWinningHand: Boolean(current.hasWinningHand),
+    canBeat: Boolean(current.canBeat),
+    canDiscard: Boolean(current.canDiscard),
+    canDropDiscard: Boolean(current.canDropDiscard),
+    handDragging: Boolean(current.handDragging),
+    isResolvingAction: Boolean(current.isResolvingAction || current.resolvingActionRef),
+    matchStatus: current.matchStatus ?? 'unknown',
+  };
+  console.info('TEST_MODE_ACTION_ATTEMPT', payload);
+  if (typeof window !== 'undefined') {
+    const attempts = Array.isArray(window.__PIFE_DUELO_TEST_MODE_ACTION_ATTEMPTS__)
+      ? window.__PIFE_DUELO_TEST_MODE_ACTION_ATTEMPTS__
+      : [];
+    window.__PIFE_DUELO_TEST_MODE_ACTION_ATTEMPTS__ = [...attempts.slice(-49), payload];
+  }
+}
+
 function getSeatName(actor) {
   return actor === 'player' ? 'JOGADOR A' : 'JOGADOR B';
 }
@@ -829,6 +857,9 @@ export default function GameTable() {
 
   const drawCardForPlayer = useCallback(() => {
     if (isTestMode && !isLocalMultiplayer) {
+      logTestModeActionAttempt('DRAW_DECK', testModeInteractionSnapshotRef.current, {
+        allowed: testModeInteractionSnapshotRef.current?.canDraw,
+      });
       console.info('TEST_MODE_INTERACTION_SNAPSHOT', {
         ...testModeInteractionSnapshotRef.current,
         event: 'USER_DRAW_ATTEMPT',
@@ -891,6 +922,9 @@ export default function GameTable() {
 
   const takeDiscardForPlayer = useCallback(() => {
     if (isTestMode && !isLocalMultiplayer) {
+      logTestModeActionAttempt('DRAW_DISCARD', testModeInteractionSnapshotRef.current, {
+        allowed: testModeInteractionSnapshotRef.current?.canTakeDiscard,
+      });
       console.info('TEST_MODE_INTERACTION_SNAPSHOT', {
         ...testModeInteractionSnapshotRef.current,
         event: 'USER_TAKE_DISCARD_ATTEMPT',
@@ -954,6 +988,11 @@ export default function GameTable() {
   }, [activeActor, activeCards.length, activeHumanTurn, actorHistoryName, addActionHistory, game, getHandTargetBox, getLocalBox, hasDrawn, isLocalMultiplayer, isTestMode, logGameEvent, makeFlight, result, scheduleFlight, settleHandAfterDraw, showToast, turnTransitioning]);
 
   const discardCardById = useCallback((cardId, originPoint = null) => {
+    if (isTestMode && !isLocalMultiplayer && !originPoint) {
+      logTestModeActionAttempt('CLICK_DISCARD', testModeInteractionSnapshotRef.current, {
+        allowed: testModeInteractionSnapshotRef.current?.canDropDiscard,
+      });
+    }
     if (!activeHumanTurn || turnTransitioning || !cardId || result) {
       logGameEvent(MATCH_EVENTS.INVALID_ACTION_BLOCKED, { actor: activeActor, reason: 'discard-not-allowed' });
       return;
@@ -1104,11 +1143,29 @@ export default function GameTable() {
   }, [isPointInsideDiscard]);
 
   const handleHandDragState = useCallback((active) => {
+    if (isTestMode && !isLocalMultiplayer) {
+      const snapshot = testModeInteractionSnapshotRef.current;
+      if (active || snapshot?.handDragging) {
+        const action = active ? 'DRAG_START' : 'DRAG_END';
+        logTestModeActionAttempt(action, snapshot, {
+          allowed: active
+            ? Boolean(snapshot?.canReorderHand || snapshot?.canDropDiscard)
+            : true,
+        });
+      }
+    }
     setHandDragging((current) => (current === active ? current : active));
-  }, []);
+  }, [isLocalMultiplayer, isTestMode]);
 
   const handleCardDiscardDragEnd = useCallback((cardId, point) => {
     const overDiscard = isPointInsideDiscard(point);
+    if (isTestMode && !isLocalMultiplayer) {
+      const snapshot = testModeInteractionSnapshotRef.current;
+      logTestModeActionAttempt('DRAG_TO_DISCARD', snapshot, {
+        allowed: Boolean(overDiscard && snapshot?.canDropDiscard),
+        blockReason: overDiscard ? undefined : 'NOT_OVER_DISCARD',
+      });
+    }
     setDragDiscardState({ active: false, over: false });
 
     if (!overDiscard) {
@@ -1117,7 +1174,7 @@ export default function GameTable() {
     }
 
     discardCardById(cardId, point);
-  }, [discardCardById, isPointInsideDiscard, showToast]);
+  }, [discardCardById, isLocalMultiplayer, isPointInsideDiscard, isTestMode, showToast]);
 
   const reorderCardByDrop = useCallback((cardId, targetIndex) => {
     if (isTestMode && !isLocalMultiplayer) {
@@ -1165,14 +1222,21 @@ export default function GameTable() {
     () => validatePifeHand(activeCards),
     [activeCardSignature],
   );
+  const hasWinningHand = Boolean(
+    testModeBatEvaluation.canBeat
+    && testModeBatEvaluation.validGroupCount === 3
+    && testModeBatEvaluation.groupedCardCount === 9
+    && testModeBatEvaluation.remainingCardCount === 1
+  );
   const testModeComboHighlightedIds = useMemo(() => {
     if (!isTestMode || isLocalMultiplayer) return undefined;
     if (testModeCombinationHighlightDisabled) return [];
-    return testModeBatEvaluation.markedCardIds ?? [];
+    return (testModeBatEvaluation.visualGroups ?? [])
+      .flatMap((group) => group.cards.map((card) => card.id));
   }, [
     isLocalMultiplayer,
     isTestMode,
-    testModeBatEvaluation.markedCardIds,
+    testModeBatEvaluation.visualGroups,
     testModeCombinationHighlightDisabled,
   ]);
   const knockValidation = useMemo(
@@ -1195,11 +1259,15 @@ export default function GameTable() {
   const knock = useCallback(() => {
     const canTryKnock = isTestMode && !isLocalMultiplayer
       ? testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
-        && !handDragging
         && !isResolvingAction
         && !resolvingActionRef.current
         && !result
       : activeHumanTurn && !turnTransitioning && !handDragging && !isResolvingAction && !resolvingActionRef.current && !result;
+    if (isTestMode && !isLocalMultiplayer) {
+      logTestModeActionAttempt('BEAT', testModeInteractionSnapshotRef.current, {
+        allowed: Boolean(testModeInteractionSnapshotRef.current?.canBeat),
+      });
+    }
     if (!canTryKnock) return;
 
     const currentKnockValidation = isTestMode && !isLocalMultiplayer
@@ -1222,8 +1290,8 @@ export default function GameTable() {
       const { validation } = knockAction;
       playSoundEffect('beat');
       const playerCardIds = new Set(activeCards.map((card) => card.id));
-      const confirmedCardIds = validation.groups
-        .flatMap((group) => group.cards)
+      const confirmedCardIds = (validation.validGroups ?? validation.groups ?? [])
+        .flatMap((group) => (Array.isArray(group) ? group : (group?.cards ?? [])))
         .filter((card) => playerCardIds.has(card.id))
         .map((card) => card.id);
 
@@ -1566,7 +1634,6 @@ export default function GameTable() {
     ? (
         testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
         && canPlayerAct
-        && !handDragging
         && !resolvingActionRef.current
         && activeCards.length === 10
       )
@@ -1575,15 +1642,12 @@ export default function GameTable() {
     && !isLocalMultiplayer
     && testModeTurnPhase === TEST_TURN_PHASES.PLAYER_CAN_DISCARD_OR_BEAT
     && canPlayerAct
-    && !handDragging
     && !isResolvingAction
     && !resolvingActionRef.current
     && !result;
-  const canKnockNow = (
-    isTestMode && !isLocalMultiplayer
-      ? canAttemptTestModeBeat
-      : canPlayerAct && !handDragging
-  ) && activeCards.length === 10 && knockValidation.valid;
+  const canKnockNow = isTestMode && !isLocalMultiplayer
+    ? canAttemptTestModeBeat && activeCards.length === 10 && hasWinningHand
+    : canPlayerAct && !handDragging && activeCards.length === 10 && knockValidation.valid;
   const interactionLocked = Boolean(result)
     || !activeHumanTurn
     || turnTransitioning
@@ -1638,10 +1702,12 @@ export default function GameTable() {
       engineTurnStage: game.turnStage,
       handSize: activeCards.length,
       hasDrawn,
+      hasWinningHand,
       canBeat: Boolean(canKnockNow),
       canPlayerAct: Boolean(canPlayerAct),
       canDraw: Boolean(canDraw),
       canDiscard: Boolean(canDropDiscard),
+      canDropDiscard: Boolean(canDropDiscard),
       canTakeDiscard: Boolean(canTakeDiscard),
       canReorderHand: Boolean(canReorderHand),
       validGroupCount: testModeBatEvaluation.validGroupCount ?? testModeBatEvaluation.validGroups.length,
@@ -1662,6 +1728,7 @@ export default function GameTable() {
       botPhase,
       flyingDrawCardId: flyingDrawCard?.id ?? null,
       turnTransitioning: Boolean(turnTransitioning),
+      matchStatus: result ? 'finished' : 'playing',
       blockReason,
     };
   }, [
@@ -1683,6 +1750,7 @@ export default function GameTable() {
     flyingDrawCard,
     game.turnStage,
     handDragging,
+    hasWinningHand,
     hasDrawn,
     isAnimating,
     isResolvingAction,

@@ -296,7 +296,7 @@ runTest('destaque automatico detecta combinacoes na mao', () => {
   assert.equal(validGroups.length, 3);
 });
 
-runTest('destaque automatico encontra grupos espalhados e aceita ordem interna livre', () => {
+runTest('destaque visual exige grupos contiguos e aceita ordem interna livre', () => {
   const separatedSequence = [
     cards['5-hearts'],
     cards['K-diamonds'],
@@ -335,17 +335,7 @@ runTest('destaque automatico encontra grupos espalhados e aceita ordem interna l
 
   assert.deepEqual(
     detectValidCombinations(separatedSequence).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
-    cardIds([
-      '5-hearts',
-      '6-hearts',
-      '7-hearts',
-      '2-diamonds',
-      '2-hearts',
-      '2-spades',
-      '9-clubs',
-      '10-clubs',
-      'J-clubs',
-    ]).sort(),
+    [],
   );
   assert.deepEqual(
     detectValidCombinations(unorderedSequence).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
@@ -363,17 +353,7 @@ runTest('destaque automatico encontra grupos espalhados e aceita ordem interna l
   );
   assert.deepEqual(
     detectValidCombinations(separatedSet).validGroups.flatMap((group) => group.cards.map((card) => card.id)).sort(),
-    cardIds([
-      '2-diamonds',
-      '2-hearts',
-      '2-spades',
-      '5-hearts',
-      '6-hearts',
-      '7-hearts',
-      '9-clubs',
-      '10-clubs',
-      'J-clubs',
-    ]).sort(),
+    [],
   );
   assert.deepEqual(detectValidCombinations([
     cards['2-spades'],
@@ -461,7 +441,7 @@ runTest('bater rejeita 10 cartas sem tres grupos validos globais', () => {
     .flatMap((group) => group.cards.map((card) => card.id));
 
   assert.equal(validation.valid, false);
-  assert.equal(new Set(highlightedIds).size, 0);
+  assert.equal(new Set(highlightedIds).size, 7);
   assert.equal(validation.deadwood.length, 10);
 });
 
@@ -550,7 +530,7 @@ runTest('modo teste habilita bater com combinacoes espalhadas na mao', () => {
   assert.equal(validation.remainingCardCount, 1);
   assert.equal(validation.canBeat, true);
   assert.deepEqual(validation.remainingCardIds, cardIds(['9-clubs']));
-  assert.equal(new Set(highlightedIds).size, 9);
+  assert.equal(new Set(highlightedIds).size, 0);
 
   const withoutSeven = scatteredHand.filter((card) => card.id !== cards['7-diamonds'].id);
   assert.equal(validatePifeHand(withoutSeven).canBeat, false);
@@ -761,6 +741,20 @@ runTest('modo teste descartar com canBeat ativo libera proximo turno normalmente
   assert.equal(drawAction.blocked, false);
   assert.equal(drawAction.game.playerHand.length, 10);
   assert.equal(validatePifeHand(drawAction.game.playerHand).canBeat, true);
+
+  const groupedCardDiscardAction = discardFromPlayerHand(
+    drawAction.game,
+    cards['3-clubs'].id,
+    { handMode: 'manual' },
+  );
+  assert.equal(groupedCardDiscardAction.blocked, false);
+  assert.equal(groupedCardDiscardAction.game.playerHand.length, 9);
+  assert.equal(validatePifeHand(groupedCardDiscardAction.game.playerHand).canBeat, false);
+  assert.equal(groupedCardDiscardAction.game.currentTurn, 'bot');
+  const botAfterGroupedCardDiscard = planBotTurn(groupedCardDiscardAction.game);
+  assert.equal(botAfterGroupedCardDiscard.blocked, false);
+  assert.equal(botAfterGroupedCardDiscard.game.currentTurn, 'player');
+  assert.equal(botAfterGroupedCardDiscard.game.turnStage, TURN_STAGES.DRAW);
 
   const discardAction = discardFromPlayerHand(drawAction.game, cards['9-clubs'].id, { handMode: 'manual' });
   assert.equal(discardAction.blocked, false);

@@ -4,16 +4,29 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WebSocket } from 'ws';
 
 const DEFAULT_PORT = 4173;
 const DEFAULT_URL = `http://127.0.0.1:${DEFAULT_PORT}/?mode=test&debug=exact-canbeat-discard`;
 const targetUrl = process.env.PIFE_E2E_URL ?? DEFAULT_URL;
 const spawnedProcesses = new Set();
 
+function terminateProcessTree(child) {
+  if (!child?.pid) return null;
+  if (process.platform !== 'win32') {
+    child.kill();
+    return null;
+  }
+  return spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+    stdio: ['ignore', 'ignore', 'ignore'],
+    windowsHide: true,
+  });
+}
+
 function killSpawnedProcesses() {
   for (const child of spawnedProcesses) {
     try {
-      child.kill();
+      terminateProcessTree(child);
     } catch {}
   }
   spawnedProcesses.clear();
@@ -24,7 +37,7 @@ const hardTimeout = setTimeout(() => {
   console.error('TEST_MODE_DISCARD_UNLOCK_E2E_TIMEOUT');
   killSpawnedProcesses();
   process.exit(1);
-}, 180000);
+}, 300000);
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
@@ -64,6 +77,14 @@ async function startPreviewIfNeeded() {
   if (!targetUrl.startsWith(`http://127.0.0.1:${DEFAULT_PORT}`)) {
     return null;
   }
+
+  try {
+    const existingPreview = await fetch(targetUrl, { method: 'GET' });
+    if (existingPreview.ok) {
+      console.log('TEST_MODE_E2E_REUSING_EXISTING_PREVIEW');
+      return null;
+    }
+  } catch {}
 
   const distDir = join(process.cwd(), 'dist');
   if (!existsSync(join(distDir, 'index.html'))) {
@@ -127,8 +148,8 @@ class CdpClient {
     this.pending = new Map();
     this.events = [];
 
-    socket.onmessage = (event) => {
-      const payload = typeof event.data === 'string' ? event.data : event.data.toString();
+    socket.on('message', (data) => {
+      const payload = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
       const message = JSON.parse(payload);
       if (message.id && this.pending.has(message.id)) {
         const { resolve, reject } = this.pending.get(message.id);
@@ -143,22 +164,25 @@ class CdpClient {
       if (message.method) {
         this.events.push(message);
       }
-    };
+    });
   }
 
   send(method, params = {}) {
     const id = this.nextId;
     this.nextId += 1;
-    this.socket.send(JSON.stringify({ id, method, params }));
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
+      this.socket.send(JSON.stringify({ id, method, params }), (error) => {
+        if (error) console.error('TEST_MODE_E2E_CDP_SEND_ERROR', method, error.message);
+      });
       setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
         reject(new Error(`CDP timeout: ${method}`));
-      }, 12000);
+      }, 30000);
     });
   }
+
 }
 
 async function openCdpPage(url) {
@@ -166,9 +190,11 @@ async function openCdpPage(url) {
   const profileDir = await mkdtemp(join(tmpdir(), 'pife-test-mode-cdp-'));
   const browserProcess = spawn(findEdgePath(), [
     `--remote-debugging-port=${port}`,
+    '--remote-allow-origins=*',
     `--user-data-dir=${profileDir}`,
     '--headless=new',
     '--disable-gpu',
+    '--disable-gpu-sandbox',
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=420,860',
@@ -195,10 +221,10 @@ async function openCdpPage(url) {
     { method: 'PUT' },
   );
 
-  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  const socket = new WebSocket(target.webSocketDebuggerUrl, { perMessageDeflate: false });
   await new Promise((resolve, reject) => {
-    socket.onopen = resolve;
-    socket.onerror = () => reject(new Error('Falha ao conectar no CDP do navegador.'));
+    socket.once('open', resolve);
+    socket.once('error', () => reject(new Error('Falha ao conectar no CDP do navegador.')));
   });
 
   const cdp = new CdpClient(socket);
@@ -222,9 +248,20 @@ async function openCdpPage(url) {
       try {
         socket.close();
       } catch {}
-      browserProcess.kill();
+      const browserExited = new Promise((resolve) => browserProcess.once('exit', resolve));
+      const killer = terminateProcessTree(browserProcess);
+      if (killer) {
+        await Promise.race([
+          new Promise((resolve) => killer.once('exit', resolve)),
+          wait(5000),
+        ]);
+      }
+      await Promise.race([browserExited, wait(3000)]);
       spawnedProcesses.delete(browserProcess);
-      await rm(profileDir, { recursive: true, force: true }).catch(() => {});
+      await Promise.race([
+        rm(profileDir, { recursive: true, force: true }).catch(() => {}),
+        wait(3000),
+      ]);
     },
   };
 }
@@ -402,7 +439,7 @@ async function assertPlayerUnlocked(cdp, label) {
   return snapshot;
 }
 
-async function drawUntilCanBeat(cdp, label) {
+async function drawUntilCanBeat(cdp, label, expectedMarkerCount) {
   console.log(`${label}_DRAW`);
   const drawRect = await getRect(cdp, 'document.querySelector(\'button[aria-label="Comprar carta"]\')');
   await clickRect(cdp, drawRect);
@@ -419,8 +456,11 @@ async function drawUntilCanBeat(cdp, label) {
   if (snapshot.validGroupCount !== 3 || snapshot.groupedCardCount !== 9 || snapshot.remainingCardCount !== 1) {
     throw new Error(`${label}: solucao invalida: ${JSON.stringify(snapshot)}`);
   }
-  if (snapshot.comboHighlightEnabled && markerCount !== 9) {
-    throw new Error(`${label}: circulos esperados=9, encontrados=${markerCount}`);
+  const acceptedMarkerCounts = Array.isArray(expectedMarkerCount)
+    ? expectedMarkerCount
+    : [expectedMarkerCount];
+  if (snapshot.comboHighlightEnabled && !acceptedMarkerCounts.includes(markerCount)) {
+    throw new Error(`${label}: circulos esperados=${acceptedMarkerCounts.join(' ou ')}, encontrados=${markerCount}`);
   }
   if (!snapshot.comboHighlightEnabled && markerCount !== 0) {
     throw new Error(`${label}: circulos deveriam estar desativados, encontrados=${markerCount}`);
@@ -429,23 +469,24 @@ async function drawUntilCanBeat(cdp, label) {
   return snapshot;
 }
 
-async function dragRemainingCardToDiscard(cdp, label) {
-  const snapshot = await evaluate(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
-  const remainingCardId = snapshot.remainingCardIds?.[0];
-  if (!remainingCardId) {
-    throw new Error(`${label}: carta restante ausente no snapshot ${JSON.stringify(snapshot)}`);
-  }
-  console.log(`${label}_DRAG_DISCARD_${remainingCardId}`);
-  const cardPoint = await getVisibleCardPoint(cdp, remainingCardId);
+async function dragCardToDiscard(cdp, label, cardId, inputMethod = 'touch') {
+  console.log(`${label}_DRAG_DISCARD_${cardId}`);
+  const cardPoint = await getVisibleCardPoint(cdp, cardId);
   const discardRect = await getRect(cdp, 'document.querySelector(\'.discard-button\')');
-  await touchDragPointToRect(cdp, cardPoint, discardRect);
-  if (!await waitForEvalBoolean(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "bot"', 1500)) {
+  if (inputMethod === 'mouse') {
+    await dragPointToRect(cdp, cardPoint, discardRect);
+  } else {
+    await touchDragPointToRect(cdp, cardPoint, discardRect);
+  }
+  if (
+    inputMethod === 'touch'
+    && !await waitForEvalBoolean(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "bot"', 1500)
+  ) {
     console.log(`${label}_DRAG_DISCARD_SYNTHETIC_POINTER_FALLBACK`);
-    await syntheticPointerDragCardToDiscard(cdp, remainingCardId, cardPoint, discardRect);
+    await syntheticPointerDragCardToDiscard(cdp, cardId, cardPoint, discardRect);
   }
   if (!await waitForEvalBoolean(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "bot"', 1500)) {
-    console.log(`${label}_DISCARD_COMPONENT_ACTION_FALLBACK`);
-    await evaluate(cdp, `window.__PIFE_DUELO_TEST_MODE_ACTIONS__?.discardCardById(${JSON.stringify(remainingCardId)})`);
+    throw new Error(`${label}: o drag real do componente nao descartou a carta`);
   }
 
   await waitForEval(
@@ -454,6 +495,38 @@ async function dragRemainingCardToDiscard(cdp, label) {
     'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "bot"',
     10000,
   );
+
+  const dragAttempt = await evaluate(cdp, `(() => {
+    const attempts = window.__PIFE_DUELO_TEST_MODE_ACTION_ATTEMPTS__ ?? [];
+    return [...attempts].reverse().find((attempt) => attempt.action === 'DRAG_TO_DISCARD') ?? null;
+  })()`);
+  if (!dragAttempt?.allowed || !dragAttempt.handDragging || !dragAttempt.canDropDiscard) {
+    throw new Error(`${label}: destino de descarte perdeu autorizacao durante o drag: ${JSON.stringify(dragAttempt)}`);
+  }
+}
+
+async function dragRemainingCardToDiscard(cdp, label, inputMethod = 'touch') {
+  const snapshot = await evaluate(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
+  const remainingCardId = snapshot.remainingCardIds?.[0];
+  if (!remainingCardId) {
+    throw new Error(`${label}: carta restante ausente no snapshot ${JSON.stringify(snapshot)}`);
+  }
+  await dragCardToDiscard(cdp, label, remainingCardId, inputMethod);
+}
+
+function buildScenarioUrl(scenarioKey) {
+  const url = new URL(targetUrl);
+  url.searchParams.set('mode', 'test');
+  url.searchParams.set('debug', scenarioKey);
+  url.searchParams.set('e2e', String(Date.now()));
+  return url.toString();
+}
+
+async function openReadyScenario(scenarioKey) {
+  const session = await openCdpPage(buildScenarioUrl(scenarioKey));
+  await waitForEval(session.cdp, `${scenarioKey}: modo teste pronto`, 'Boolean(window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__)', 15000);
+  await waitForEval(session.cdp, `${scenarioKey}: turno inicial`, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "player"');
+  return session;
 }
 
 async function reorderFirstCard(cdp, label) {
@@ -465,18 +538,72 @@ async function reorderFirstCard(cdp, label) {
   if (!Array.isArray(rects) || rects.length < 2) {
     throw new Error(`${label}: cartas insuficientes para reorganizar`);
   }
+  const beforeOrder = rects.map((card) => card.id);
   await touchDragRectToRect(cdp, rects[0], rects[rects.length - 1]);
-  await wait(500);
-  let snapshot = await evaluate(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
-  if (snapshot.blockReason !== 'NONE' || !snapshot.canReorderHand) {
-    console.log(`${label}_REORDER_COMPONENT_ACTION_FALLBACK`);
-    await evaluate(cdp, `window.__PIFE_DUELO_TEST_MODE_ACTIONS__?.reorderCardByDrop(${JSON.stringify(rects[0].id)}, ${rects.length - 1})`);
-    await wait(500);
+  await wait(700);
+  let afterOrder = await evaluate(cdp, `Array.from(document.querySelectorAll('.card-fan-player [data-card-id]')).map((element) => element.getAttribute('data-card-id'))`);
+  if (JSON.stringify(afterOrder) === JSON.stringify(beforeOrder)) {
+    console.log(`${label}_REORDER_SYNTHETIC_POINTER_FALLBACK`);
+    const start = await getVisibleCardPoint(cdp, rects[0].id);
+    await syntheticPointerDragCardToDiscard(cdp, rects[0].id, start, rects[rects.length - 1]);
+    await wait(700);
+    afterOrder = await evaluate(cdp, `Array.from(document.querySelectorAll('.card-fan-player [data-card-id]')).map((element) => element.getAttribute('data-card-id'))`);
   }
-  snapshot = await evaluate(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
+  if (JSON.stringify(afterOrder) === JSON.stringify(beforeOrder)) {
+    throw new Error(`${label}: o gesto real nao reorganizou a mao`);
+  }
+  const snapshot = await evaluate(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
   if (snapshot.blockReason !== 'NONE' || !snapshot.canReorderHand) {
     throw new Error(`${label}: reorganizacao bloqueou a mao: ${JSON.stringify(snapshot)}`);
   }
+}
+
+async function arrangeScatteredWinningHand(cdp) {
+  const desiredSuffixes = [
+    '-2-clubs',
+    '-7-diamonds',
+    '-3-clubs',
+    '-2-hearts',
+    '-9-clubs',
+    '-7-clubs',
+    '-4-clubs',
+    '-2-spades',
+    '-7-hearts',
+  ];
+
+  for (let index = 0; index < desiredSuffixes.length; index += 1) {
+    const suffix = desiredSuffixes[index];
+    const cardId = await evaluate(cdp, `Array.from(document.querySelectorAll('.card-fan-player [data-card-id]')).map((element) => element.getAttribute('data-card-id')).find((id) => id.endsWith(${JSON.stringify(suffix)}))`);
+    if (!cardId) throw new Error(`Carta ausente ao espalhar a mao: ${suffix}`);
+    await evaluate(cdp, `window.__PIFE_DUELO_TEST_MODE_ACTIONS__?.reorderCardByDrop(${JSON.stringify(cardId)}, ${index})`);
+    await wait(80);
+  }
+
+  await wait(700);
+  const actualSuffixes = await evaluate(cdp, `Array.from(document.querySelectorAll('.card-fan-player [data-card-id]')).map((element) => {
+    const id = element.getAttribute('data-card-id');
+    return ${JSON.stringify(desiredSuffixes)}.find((suffix) => id.endsWith(suffix));
+  })`);
+  if (JSON.stringify(actualSuffixes) !== JSON.stringify(desiredSuffixes)) {
+    throw new Error(`Ordem espalhada nao aplicada: ${JSON.stringify(actualSuffixes)}`);
+  }
+}
+
+async function assertScatteredWinningHandBeat(cdp) {
+  await arrangeScatteredWinningHand(cdp);
+  await drawUntilCanBeat(cdp, 'TEST_MODE_E2E_SCATTERED_BEAT', 0);
+  const beatRect = await getRect(cdp, 'document.querySelector(\'.beat-button:not(:disabled)\')');
+  await clickRect(cdp, beatRect);
+  await waitForEval(cdp, 'resultado final apos bater', 'Boolean(document.querySelector(".endgame-panel"))', 10000);
+  const revealSummary = await evaluate(cdp, `({
+    groups: document.querySelectorAll('.endgame-groups .winning-group').length,
+    cards: document.querySelectorAll('.endgame-groups .endgame-card').length,
+    whatsappButton: Array.from(document.querySelectorAll('.endgame-panel button')).some((button) => button.textContent.includes('WhatsApp')),
+  })`);
+  if (revealSummary.groups !== 3 || revealSummary.cards !== 9 || !revealSummary.whatsappButton) {
+    throw new Error(`Tela final incompleta: ${JSON.stringify(revealSummary)}`);
+  }
+  return revealSummary;
 }
 
 async function main() {
@@ -491,18 +618,22 @@ async function main() {
     }
 
     console.log('TEST_MODE_E2E_OPEN_BROWSER');
-    browserSession = await openCdpPage(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}e2e=${Date.now()}`);
+    browserSession = await openReadyScenario('exact-canbeat-discard');
     const { cdp } = browserSession;
 
-    console.log('TEST_MODE_E2E_WAIT_APP_READY');
-    await waitForEval(cdp, 'modo teste pronto', 'Boolean(window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__)', 15000);
-    await waitForEval(cdp, 'turno inicial do jogador', 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "player"');
+    if (process.env.PIFE_E2E_ONLY_BEAT === '1') {
+      const revealSummary = await assertScatteredWinningHandBeat(cdp);
+      console.log('TEST_MODE_BEAT_E2E_SUCCESS');
+      console.log(JSON.stringify({ revealSummary }, null, 2));
+      return;
+    }
 
     const cycleResults = [];
+    const expectedMarkersByCycle = [6, [3, 6], [3, 6]];
     for (let cycle = 1; cycle <= 3; cycle += 1) {
       const label = `TEST_MODE_E2E_CYCLE_${cycle}`;
-      const afterDraw = await drawUntilCanBeat(cdp, label);
-      await dragRemainingCardToDiscard(cdp, label);
+      const afterDraw = await drawUntilCanBeat(cdp, label, expectedMarkersByCycle[cycle - 1]);
+      await dragRemainingCardToDiscard(cdp, label, cycle === 1 ? 'mouse' : 'touch');
       const unlocked = await assertPlayerUnlocked(cdp, label);
       console.log(`${label}_UNLOCKED`);
       cycleResults.push({ cycle, afterDraw, unlocked });
@@ -511,11 +642,59 @@ async function main() {
       }
     }
 
-    const afterSecondDraw = await evaluate(cdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
+    await browserSession.close();
+    browserSession = await openReadyScenario('exact-canbeat-discard');
+    const groupedDiscardCdp = browserSession.cdp;
+    await drawUntilCanBeat(groupedDiscardCdp, 'TEST_MODE_E2E_GROUP_CARD_DISCARD', 6);
+    const groupedCardId = await evaluate(groupedDiscardCdp, `Array.from(document.querySelectorAll('.card-fan-player [data-card-id]')).map((element) => element.getAttribute('data-card-id')).find((id) => id.endsWith('-3-clubs'))`);
+    if (!groupedCardId) throw new Error('Carta 3 de paus nao encontrada para descarte do grupo');
+    await dragCardToDiscard(groupedDiscardCdp, 'TEST_MODE_E2E_GROUP_CARD_DISCARD', groupedCardId);
+    const markersAfterGroupedDiscard = await evaluate(groupedDiscardCdp, 'document.querySelectorAll(".playing-card-combo .combo-marker").length');
+    if (markersAfterGroupedDiscard >= 9) {
+      throw new Error(`Circulos do grupo quebrado permaneceram ativos: ${markersAfterGroupedDiscard}`);
+    }
+    await assertPlayerUnlocked(groupedDiscardCdp, 'TEST_MODE_E2E_GROUP_CARD_DISCARD');
+    const nextDrawRect = await getRect(groupedDiscardCdp, 'document.querySelector(\'button[aria-label="Comprar carta"]\')');
+    await clickRect(groupedDiscardCdp, nextDrawRect);
+    await waitForEval(
+      groupedDiscardCdp,
+      'nova compra apos descarte de carta do grupo',
+      'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.handSize === 10 && window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.canDropDiscard === true',
+      10000,
+    );
+    const clickDiscardCardRect = await getRect(groupedDiscardCdp, 'document.querySelector(\'.card-fan-player [data-card-id]\')');
+    await clickRect(groupedDiscardCdp, clickDiscardCardRect);
+    const clickDiscardPileRect = await getRect(groupedDiscardCdp, 'document.querySelector(\'.discard-button\')');
+    await clickRect(groupedDiscardCdp, clickDiscardPileRect);
+    await waitForEval(
+      groupedDiscardCdp,
+      'clique mais clique descartou normalmente',
+      'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "bot"',
+      10000,
+    );
+    await assertPlayerUnlocked(groupedDiscardCdp, 'TEST_MODE_E2E_CLICK_DISCARD');
+    const menuRect = await getRect(groupedDiscardCdp, 'document.querySelector(\'.menu-button\')');
+    await clickRect(groupedDiscardCdp, menuRect);
+    await waitForEval(groupedDiscardCdp, 'menu do modo teste aberto', 'Boolean(document.querySelector(".test-mode-menu-panel"))');
+    const restartRect = await getRect(
+      groupedDiscardCdp,
+      `Array.from(document.querySelectorAll('.test-mode-menu-panel button')).find((button) => button.textContent.includes('Reiniciar teste'))`,
+    );
+    await clickRect(groupedDiscardCdp, restartRect);
+    await waitForEval(
+      groupedDiscardCdp,
+      'modo teste reiniciado',
+      'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.currentTurn === "player" && window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.turnPhase === "PLAYER_MUST_DRAW" && window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__?.handSize === 9',
+      10000,
+    );
+    const scatteredCdp = groupedDiscardCdp;
+    await assertScatteredWinningHandBeat(scatteredCdp);
+
+    const finalSnapshot = await evaluate(scatteredCdp, 'window.__PIFE_DUELO_TEST_MODE_INTERACTION_SNAPSHOT__');
     console.log('TEST_MODE_DISCARD_UNLOCK_E2E_SUCCESS');
     console.log(JSON.stringify({
       cycleResults,
-      finalSnapshot: afterSecondDraw,
+      finalSnapshot,
     }, null, 2));
   } finally {
     if (browserSession) {

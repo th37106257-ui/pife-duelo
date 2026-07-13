@@ -56,7 +56,7 @@ function testVisualGroup(cards, start, end) {
   return null;
 }
 
-function findVisualGroups(cards) {
+export function findContiguousVisualGroups(cards = []) {
   const groups = [];
 
   for (let index = 0; index < cards.length; index += 1) {
@@ -179,7 +179,7 @@ function findWinningPartition(cards) {
 
 export function validatePifeHand(handCards = []) {
   const cards = Array.isArray(handCards) ? handCards.filter(Boolean) : [];
-  const visualGroups = findVisualGroups(cards);
+  const visualGroups = findContiguousVisualGroups(cards);
   const partition = cards.length >= 9 ? findWinningPartition(cards) : null;
   const groups = partition?.groups ?? [];
   const markedCardIds = groups.flatMap((group) => group.cards.map(getCardId));
@@ -239,6 +239,7 @@ export function analyzeHandGroups(handCards = []) {
     canKnock: validation.canBeat,
     validGroups: validation.validGroups,
     logicalGroups: validation.validGroups,
+    visualGroups: validation.visualGroups,
     markedCardIds: validation.markedCardIds,
     groupedCardCount: validation.groupedCardCount,
     remainingCards: validation.remainingCards,

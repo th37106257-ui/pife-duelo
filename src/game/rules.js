@@ -122,9 +122,10 @@ function getCombinationCandidates(cards) {
 
 export function detectValidCombinations(cards) {
   const analysis = analyzeHandGroups(cards);
+  const visualGroups = analysis.visualGroups ?? [];
   return {
-    validGroups: analysis.validGroups,
-    markedCardIds: analysis.markedCardIds,
+    validGroups: visualGroups,
+    markedCardIds: visualGroups.flatMap((group) => group.cards.map((card) => card.id)),
     canKnock: analysis.canKnock,
   };
 }
