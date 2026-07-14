@@ -3,6 +3,7 @@ import { reportClientError } from './errorReporter.js';
 import { getServerUrl } from './serverUrl.js';
 
 const CONNECTION_TIMEOUT_MS = 30000;
+const ENTRY_SESSION_STORAGE_PREFIX = 'pifeDuelo.entrySession.';
 const connectionSubscribers = new Set();
 const FRIENDLY_ENTRY_ACCESS_MESSAGE = '✅ Sua partida anterior foi encerrada. Você já pode escolher uma mesa novamente.';
 
@@ -81,6 +82,37 @@ function getWhatsAppJoinMatchId() {
   return decodeURIComponent(pathMatch?.[1] || new URLSearchParams(window.location.search).get('matchId') || '').trim();
 }
 
+function getEntrySessionStorageKey(matchId = getWhatsAppJoinMatchId()) {
+  return matchId ? `${ENTRY_SESSION_STORAGE_PREFIX}${matchId}` : `${ENTRY_SESSION_STORAGE_PREFIX}pending`;
+}
+
+function getStoredEntrySessionKey() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(getEntrySessionStorageKey()) || '';
+  } catch {
+    return '';
+  }
+}
+
+function storeEntrySessionKey(sessionKey) {
+  if (typeof window === 'undefined' || !sessionKey) return;
+  try {
+    window.localStorage.setItem(getEntrySessionStorageKey(), sessionKey);
+  } catch {
+    // A sessão ativa continua válida no servidor; o navegador apenas perde a recuperação local.
+  }
+}
+
+function clearEntrySessionKey(matchId = getWhatsAppJoinMatchId()) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(getEntrySessionStorageKey(matchId));
+  } catch {
+    // Sem efeito fora de navegadores com armazenamento disponível.
+  }
+}
+
 export function clearStaleMatchAccessFromUrl() {
   if (typeof window === 'undefined') return false;
   const url = new URL(window.location.href);
@@ -88,6 +120,8 @@ export function clearStaleMatchAccessFromUrl() {
     || url.searchParams.has('entry')
     || url.searchParams.has('matchId');
   if (!hadStaleMatchAccess) return false;
+
+  clearEntrySessionKey(getWhatsAppJoinMatchId());
 
   url.pathname = '/';
   url.searchParams.delete('entry');
@@ -113,6 +147,7 @@ function createSocket() {
   const paymentToken = getPaymentAccessToken();
   const entryToken = getWhatsAppEntryToken();
   const joinMatchId = getWhatsAppJoinMatchId();
+  const entrySessionKey = getStoredEntrySessionKey();
   console.info('[socket] URL usada para conectar:', socketUrl);
   if (joinMatchId) console.info('[socket] matchId recebido pelo link:', joinMatchId);
 
@@ -130,6 +165,7 @@ function createSocket() {
       ...(paymentToken ? { paymentToken } : {}),
       ...(entryToken ? { entryToken } : {}),
       ...(joinMatchId ? { joinMatchId } : {}),
+      ...(entrySessionKey ? { entrySessionKey } : {}),
     },
   });
 
@@ -148,6 +184,11 @@ function createSocket() {
 
   nextSocket.on('connection:success', (payload) => {
     nextSocket.connectionSuccess = payload;
+    const claimedSessionKey = payload?.entryAccess?.sessionKey;
+    if (claimedSessionKey) {
+      storeEntrySessionKey(claimedSessionKey);
+      nextSocket.auth = { ...nextSocket.auth, entrySessionKey: claimedSessionKey };
+    }
     publishConnectionState({
       status: 'connected',
       connected: true,

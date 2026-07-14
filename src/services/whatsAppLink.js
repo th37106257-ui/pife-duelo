@@ -32,3 +32,12 @@ export function buildWhatsAppMenuLink() {
 export function buildWhatsAppPlayLink() {
   return buildOfficialWhatsAppLink({ message: 'jogar' });
 }
+
+export function isWhatsAppFirstLobbyEnabled() {
+  const viteValue = import.meta.env?.VITE_WHATSAPP_FIRST_LOBBY_ENABLED;
+  if (typeof viteValue === 'string' && viteValue.trim()) {
+    return viteValue.trim().toLowerCase() === 'true';
+  }
+  return typeof __PIFE_WHATSAPP_FIRST_LOBBY_ENABLED__ !== 'undefined'
+    && __PIFE_WHATSAPP_FIRST_LOBBY_ENABLED__ === true;
+}

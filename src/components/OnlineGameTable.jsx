@@ -43,6 +43,21 @@ function buildOnlineResult(onlineGameState) {
     };
   }
 
+  if (['player_forfeit', 'surrender'].includes(onlineGameState.result.reason)) {
+    return {
+      matchId: onlineGameState.matchId,
+      type: won ? 'win' : 'loss',
+      winner: onlineGameState.result.winnerId,
+      title: won ? 'Seu adversário desistiu' : 'Partida encerrada por desistência',
+      emblem: won ? '🏆' : '🎴',
+      economy,
+      economicResult,
+      message: won
+        ? 'Seu adversário desistiu. Você venceu a partida.'
+        : 'Puxa, infelizmente você saiu da partida por desistência e perdeu esta entrada.',
+    };
+  }
+
   return {
     matchId: onlineGameState.matchId,
     type: won ? 'win' : 'loss',
@@ -536,10 +551,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     const accepted = await submitAction(() => surrenderOnlineMatch(actionPayload));
     if (!accepted) return;
     setMenuMode(null);
-    window.setTimeout(() => {
-      onLeaveOnline?.();
-    }, 220);
-  }, [actionPayload, onLeaveOnline, submitAction]);
+  }, [actionPayload, submitAction]);
 
   return (
     <main className="game-shell online-game-shell">

@@ -24,6 +24,10 @@ const parseBooleanDefault = (value, defaultValue) => {
   if (normalized === 'false') return false;
   return defaultValue;
 };
+const parsePositiveInteger = (value, defaultValue) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+};
 const normalizePhoneConfig = (value) => {
   const digits = String(value || '').replace(/\D/g, '');
   return digits.length >= 10 && digits.length <= 15 ? digits : '';
@@ -44,7 +48,8 @@ export const config = {
   ALLOWED_CLIENT_URLS: [...new Set(allowedClientUrls)],
   MAX_PLAYERS_PER_ROOM: 2,
   TURN_DURATION_SECONDS: 60,
-  QUEUE_TIMEOUT_SECONDS: 120,
+  MATCH_JOIN_TIMEOUT_SECONDS: parsePositiveInteger(process.env.MATCH_JOIN_TIMEOUT_SECONDS, 60),
+  QUEUE_TIMEOUT_SECONDS: parsePositiveInteger(process.env.MATCH_JOIN_TIMEOUT_SECONDS, 60),
   DISCONNECT_GRACE_SECONDS: Number(process.env.DISCONNECT_GRACE_SECONDS || 60),
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
   ADMIN_WHATSAPP_NUMBERS: parsePhoneList(
@@ -57,7 +62,9 @@ export const config = {
   WHATSAPP_SUPPORT_NUMBER: process.env.WHATSAPP_SUPPORT_NUMBER || '',
   WHATSAPP_PAYMENTS_ENABLED: parseBoolean(process.env.WHATSAPP_PAYMENTS_ENABLED),
   PAYMENT_GATE_ENABLED: parseBoolean(process.env.PAYMENT_GATE_ENABLED),
-  POST_MATCH_WHATSAPP_ENABLED: parseBooleanDefault(process.env.POST_MATCH_WHATSAPP_ENABLED, true),
+  POST_MATCH_WHATSAPP_ENABLED: parseBooleanDefault(process.env.POST_MATCH_WHATSAPP_ENABLED, false),
+  ADMIN_MATCH_SUMMARY_ENABLED: parseBoolean(process.env.ADMIN_MATCH_SUMMARY_ENABLED),
+  WHATSAPP_FIRST_LOBBY_ENABLED: parseBoolean(process.env.WHATSAPP_FIRST_LOBBY_ENABLED),
   WHATSAPP_CONNECTIVITY_TEST_ENABLED: parseBoolean(process.env.WHATSAPP_CONNECTIVITY_TEST_ENABLED),
   WHATSAPP_SAFE_ENTRY_ENABLED: parseBoolean(process.env.WHATSAPP_SAFE_ENTRY_ENABLED),
   WHATSAPP_ENTRY_STORE_PATH: process.env.WHATSAPP_ENTRY_STORE_PATH || defaultWhatsappEntryStorePath,

@@ -4,6 +4,7 @@ import { buildClientGameState } from '../game/clientState.js';
 import { logError, logInfo, logWarn } from '../utils/logger.js';
 import { recordClientError } from '../observabilityStore.js';
 import { createPostMatchFlow } from '../services/postMatchFlow.js';
+import { createRateLimiter } from '../security/rateLimiter.js';
 
 export function setupSocketServer(httpServer, {
   roomManager,
@@ -17,8 +18,10 @@ export function setupSocketServer(httpServer, {
   safeEntryEnabled = false,
   whatsappBot = null,
   whatsappMatchQueue = null,
+  postMatchFlow: sharedPostMatchFlow = null,
   corsOptions,
 } = {}) {
+  const actionRateLimiter = createRateLimiter();
   const io = new Server(httpServer, {
     cors: corsOptions ?? {
       origin: config.ALLOWED_CLIENT_URLS,
@@ -34,6 +37,16 @@ export function setupSocketServer(httpServer, {
     io.use((socket, next) => {
       const entryToken = String(socket.handshake.auth?.entryToken || '').trim();
       if (safeEntryEnabled && entryToken) {
+        const linkRate = actionRateLimiter.consume(
+          `link:${socket.handshake.address || 'unknown'}`,
+          { limit: 30, windowMs: 60_000 },
+        );
+        if (!linkRate.allowed) {
+          const error = new Error('ENTRY_LINK_RATE_LIMITED');
+          error.data = { code: 'ENTRY_ACCESS_DENIED' };
+          next(error);
+          return;
+        }
         const entry = entryService?.validateAccessToken(entryToken);
         if (!entry) {
           const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim() || null;
@@ -69,21 +82,47 @@ export function setupSocketServer(httpServer, {
           next(error);
           return;
         }
+        let accessSession = { entry, sessionKey: null, recovered: false };
+        if (config.WHATSAPP_FIRST_LOBBY_ENABLED) {
+          try {
+            accessSession = entryService.claimAccessSession({
+              entryId: entry.entryId,
+              sessionKey: String(socket.handshake.auth?.entrySessionKey || '').trim() || null,
+            });
+          } catch (sessionError) {
+            logWarn('WHATSAPP_ENTRY_DUPLICATE_SESSION_BLOCKED', {
+              entryId: entry.entryId,
+              requestedMatchId: requestedMatchId || null,
+              reason: sessionError.message,
+            });
+            const error = new Error(sessionError.message);
+            error.data = { code: 'ENTRY_ACCESS_DENIED', reason: sessionError.message };
+            next(error);
+            return;
+          }
+        }
+        const authorizedEntry = accessSession.entry;
         logInfo('WHATSAPP_ENTRY_LINK_OPENED', {
           socketId: socket.id,
           requestedMatchId: requestedMatchId || null,
           expectedMatchId,
-          linkedMatchId: entry.linkedMatchId ?? null,
-          entryId: entry.entryId,
-          selectedTable: entry.selectedTable,
-          matchFound: Boolean(entry.linkedMatchId || expectedMatchId),
+          linkedMatchId: authorizedEntry.linkedMatchId ?? null,
+          entryId: authorizedEntry.entryId,
+          selectedTable: authorizedEntry.selectedTable,
+          matchFound: Boolean(authorizedEntry.linkedMatchId || expectedMatchId),
+          sessionVersion: authorizedEntry.sessionVersion ?? null,
+          recoveredSession: Boolean(accessSession.recovered),
         });
         socket.entryAccess = {
-          entryId: entry.entryId,
-          selectedTable: entry.selectedTable,
-          linkedMatchId: entry.linkedMatchId ?? null,
-          whatsappMatchId: entry.whatsappMatchId ?? null,
+          entryId: authorizedEntry.entryId,
+          selectedTable: authorizedEntry.selectedTable,
+          linkedMatchId: authorizedEntry.linkedMatchId ?? null,
+          whatsappMatchId: authorizedEntry.whatsappMatchId ?? null,
           requestedMatchId: requestedMatchId || null,
+          preMatchDeadline: authorizedEntry.preMatchDeadline ?? null,
+          publicMatchReference: authorizedEntry.publicMatchReference ?? null,
+          sessionVersion: authorizedEntry.sessionVersion ?? null,
+          sessionKey: accessSession.sessionKey ?? null,
         };
       }
 
@@ -156,6 +195,8 @@ export function setupSocketServer(httpServer, {
     queuedPlayers: queueManager.getQueueSize(),
     paymentGateEnabled,
     safeEntryEnabled,
+    whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
+    matchJoinTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
     uptime: Math.round(process.uptime()),
   });
 
@@ -182,11 +223,12 @@ export function setupSocketServer(httpServer, {
     };
   };
 
-  const postMatchFlow = createPostMatchFlow({
+  const postMatchFlow = sharedPostMatchFlow ?? createPostMatchFlow({
     entryService,
     whatsappBot,
     whatsappMatchQueue,
     whatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
+    adminSummaryEnabled: config.ADMIN_MATCH_SUMMARY_ENABLED,
     logInfo,
     logWarn,
     logError,
@@ -251,6 +293,11 @@ export function setupSocketServer(httpServer, {
 
   const emitMatchFound = (entries) => {
     const [first, second] = entries;
+    const whatsappPreMatchIds = new Set(entries
+      .map((entry) => entry.entryId
+        ? entryService?.getEntry?.(entry.entryId, { includeSecrets: true })?.whatsappMatchId
+        : null)
+      .filter(Boolean));
     if (paymentGateEnabled) {
       entries.forEach((entry) => {
         const payment = paymentService.getPayment(entry.paymentId);
@@ -339,6 +386,9 @@ export function setupSocketServer(httpServer, {
         playerId: entry.playerId,
       });
     });
+    whatsappPreMatchIds.forEach((whatsappMatchId) => {
+      whatsappMatchQueue?.markMatchStarted?.(whatsappMatchId, onlineMatch.matchId);
+    });
     if (entries.some((entry) => entry.entryId)) {
       logInfo('WHATSAPP_ENTRIES_LINKED_TO_MATCH', {
         matchId: onlineMatch.matchId,
@@ -417,8 +467,12 @@ export function setupSocketServer(httpServer, {
       tableValue: entry.tableValue,
     });
     targetSocket?.emit('queueTimeout', {
-      message: 'Nenhum adversario encontrado. Tente novamente.',
-      canTryAgain: true,
+      message: abortResult?.paidEntryPreserved
+        ? 'Sua partida não iniciou. Sua entrada será encaminhada para revisão.'
+        : 'Sua partida não iniciou dentro do tempo de espera.',
+      canTryAgain: false,
+      publicReference: abortResult?.participants?.[0]?.publicMatchReference ?? null,
+      paidEntryPreserved: Boolean(abortResult?.paidEntryPreserved),
     });
   });
 
@@ -458,7 +512,13 @@ export function setupSocketServer(httpServer, {
         whatsappMatchId: socket.entryAccess.whatsappMatchId,
         requestedMatchId: socket.entryAccess.requestedMatchId,
         linkedMatchId: socket.entryAccess.linkedMatchId,
+        preMatchDeadline: socket.entryAccess.preMatchDeadline,
+        publicMatchReference: socket.entryAccess.publicMatchReference,
+        sessionVersion: socket.entryAccess.sessionVersion,
+        sessionKey: socket.entryAccess.sessionKey,
       } : null,
+      whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
+      matchJoinTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
     });
     broadcastServerStatus();
 
@@ -550,6 +610,29 @@ export function setupSocketServer(httpServer, {
         tableValue,
       });
 
+      if (config.WHATSAPP_FIRST_LOBBY_ENABLED && !socket.entryAccess && !socket.paymentAccess) {
+        logWarn('WHATSAPP_FIRST_DIRECT_QUEUE_BLOCKED', {
+          socketId: socket.id,
+          playerId: player.id,
+          tableValue,
+        });
+        const message = 'Para encontrar uma partida, acesse o Pife Duelo pelo WhatsApp.';
+        socket.emit('matchmakingError', { reason: 'WHATSAPP_ENTRY_REQUIRED', message });
+        ack?.({ ok: false, reason: 'WHATSAPP_ENTRY_REQUIRED', message, serverNow: Date.now() });
+        return;
+      }
+
+      const queueRate = actionRateLimiter.consume(`queue:${socket.entryAccess?.entryId || socket.id}`, {
+        limit: 8,
+        windowMs: 60_000,
+      });
+      if (!queueRate.allowed) {
+        const message = 'Muitas tentativas seguidas. Aguarde um instante e tente novamente.';
+        socket.emit('matchmakingError', { reason: 'RATE_LIMITED', message });
+        ack?.({ ok: false, reason: 'RATE_LIMITED', message, serverNow: Date.now() });
+        return;
+      }
+
       if (!queueManager.isValidTableValue(tableValue)) {
         logInfo('MATCHMAKING_ERROR', {
           socketId: socket.id,
@@ -600,11 +683,13 @@ export function setupSocketServer(httpServer, {
 
       if (socket.entryAccess) {
         try {
-          entryService.reserveQueueAccess({
+          const reservedEntry = entryService.reserveQueueAccess({
             entryId: socket.entryAccess.entryId,
             socketId: socket.id,
             selectedTable: tableValue,
           });
+          socket.entryAccess.preMatchDeadline = reservedEntry.preMatchDeadline ?? socket.entryAccess.preMatchDeadline;
+          socket.entryAccess.publicMatchReference = reservedEntry.publicMatchReference ?? socket.entryAccess.publicMatchReference;
         } catch (error) {
           logWarn('WHATSAPP_ENTRY_QUEUE_REJECTED', {
             socketId: socket.id,
@@ -645,6 +730,7 @@ export function setupSocketServer(httpServer, {
         tableValue,
         paymentId: socket.paymentAccess?.paymentId ?? null,
         entryId: socket.entryAccess?.entryId ?? null,
+        preMatchDeadline: socket.entryAccess?.preMatchDeadline ?? null,
       });
 
       if (queueResult.blocked) {
@@ -700,6 +786,7 @@ export function setupSocketServer(httpServer, {
         playerId: player.id,
         tableValue,
         queuePosition: queueResult.queuePosition,
+        preMatchDeadline: queueResult.entry.preMatchDeadline ?? null,
         serverNow: Date.now(),
       });
       socket.emit('queueJoined', {
@@ -707,6 +794,9 @@ export function setupSocketServer(httpServer, {
         tableValue,
         queuePosition: queueResult.queuePosition,
         waitingSince: queueResult.entry.joinedAt,
+        preMatchDeadline: queueResult.entry.preMatchDeadline ?? null,
+        publicMatchReference: socket.entryAccess?.publicMatchReference ?? null,
+        serverNow: Date.now(),
       });
 
       const matchEntries = queueManager.findMatch(tableValue);
@@ -715,7 +805,15 @@ export function setupSocketServer(httpServer, {
       }
     });
 
-    socket.on('leaveQueue', () => {
+    socket.on('leaveQueue', (payload = {}, ack) => {
+      const leaveRate = actionRateLimiter.consume(`cancel:${socket.entryAccess?.entryId || socket.id}`, {
+        limit: 6,
+        windowMs: 60_000,
+      });
+      if (!leaveRate.allowed) {
+        ack?.({ ok: false, reason: 'RATE_LIMITED', serverNow: Date.now() });
+        return;
+      }
       const leaveResult = queueManager.leaveQueue(player.id);
       if (paymentGateEnabled && leaveResult.entry?.paymentId) {
         paymentService.releaseAccessReservation({
@@ -751,6 +849,13 @@ export function setupSocketServer(httpServer, {
         removed: leaveResult.removed,
         playerName: updatedPlayer?.name ?? player.name,
       });
+      ack?.({
+        ok: true,
+        removed: leaveResult.removed,
+        aborted: Boolean(abortResult?.aborted),
+        publicReference: abortResult?.participants?.[0]?.publicMatchReference ?? null,
+        serverNow: Date.now(),
+      });
     });
 
     socket.on('requestQueueStatus', (payload = {}) => {
@@ -783,6 +888,33 @@ export function setupSocketServer(httpServer, {
     onSafe('resumeOnlineMatch', (payload = {}) => {
       const savedPlayerId = String(payload.playerId || '');
       const savedMatchId = String(payload.matchId || '');
+      const resumeRate = actionRateLimiter.consume(`recover:${socket.entryAccess?.entryId || savedPlayerId || socket.id}`, {
+        limit: 20,
+        windowMs: 60_000,
+      });
+      if (!resumeRate.allowed) {
+        rejectAction(socket, {
+          reason: 'RATE_LIMITED',
+          message: 'Muitas tentativas de recuperação. Aguarde um instante.',
+          action: 'resumeOnlineMatch',
+        });
+        return;
+      }
+      if (socket.entryAccess?.entryId) {
+        const authorizedEntry = entryService?.getEntry?.(socket.entryAccess.entryId, { includeSecrets: true });
+        if (
+          !authorizedEntry
+          || authorizedEntry.playerId !== savedPlayerId
+          || authorizedEntry.linkedMatchId !== savedMatchId
+        ) {
+          rejectAction(socket, {
+            reason: 'ENTRY_SESSION_MISMATCH',
+            message: 'Esta sessão não pertence à partida solicitada.',
+            action: 'resumeOnlineMatch',
+          });
+          return;
+        }
+      }
       const match = matchManager.reconnectOnlinePlayer(savedMatchId, savedPlayerId, socket.id);
 
       if (!match || (payload.roomId && match.roomId !== payload.roomId)) {
@@ -940,6 +1072,14 @@ export function setupSocketServer(httpServer, {
 
     onSafe('playerSurrender', (payload = {}, ack) => {
       const activePlayerId = getActivePlayerId();
+      const surrenderRate = actionRateLimiter.consume(`forfeit:${activePlayerId}`, {
+        limit: 3,
+        windowMs: 60_000,
+      });
+      if (!surrenderRate.allowed) {
+        ack?.({ ok: false, reason: 'RATE_LIMITED', serverNow: Date.now() });
+        return;
+      }
       const result = matchManager.surrenderOnlineMatch(payload.matchId, activePlayerId);
       if (result.blocked) {
         acknowledgeAction(ack, payload, result);
@@ -947,9 +1087,15 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
-      logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'surrender'));
+      logInfo('PLAYER_FORFEIT', {
+        matchId: result.gameState.matchId,
+        roomId: result.gameState.roomId,
+        forfeitingPlayerId: activePlayerId,
+        winnerId: result.gameState.result?.winnerId ?? null,
+      });
+      logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'player_forfeit'));
       acknowledgeAction(ack, payload, result);
-      void finishMatchAndNotify(result.gameState, 'surrender');
+      void finishMatchAndNotify(result.gameState, 'player_forfeit');
     });
 
     socket.on('disconnect', (reason) => {

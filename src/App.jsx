@@ -17,7 +17,7 @@ export default function App() {
   if (window.location.pathname === '/admin') {
     return <AdminPanel />
   }
-  if (params.get('online') === '1' || window.location.pathname.startsWith('/join/')) {
+  if (params.get('online') === '1' || window.location.pathname === '/lobby' || window.location.pathname.startsWith('/join/')) {
     return <MatchmakingScreen />
   }
 

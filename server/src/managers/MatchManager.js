@@ -706,12 +706,12 @@ export class MatchManager {
 
     this.clearTurnTimer(matchId);
     match.players.forEach((player) => this.clearDisconnectTimer(player.id));
-    const surrenderMatch = finishMatchState(match, 'surrender', winner.id);
+    const surrenderMatch = finishMatchState(match, 'player_forfeit', winner.id);
     const economicResult = this.createEconomicResult({
       gameState: surrenderMatch,
       winnerId: winner.id,
       loserId,
-      finishReason: 'surrender',
+      finishReason: 'player_forfeit',
       finishedAt: surrenderMatch.finishedAt,
     });
     const finishedGame = refreshGameCounts({
@@ -722,7 +722,7 @@ export class MatchManager {
         ...surrenderMatch.result,
         winnerId: winner.id,
         loserId,
-        reason: 'surrender',
+        reason: 'player_forfeit',
         turnsPlayed: match.turnNumber,
         economy: match.economy,
         economicResult,

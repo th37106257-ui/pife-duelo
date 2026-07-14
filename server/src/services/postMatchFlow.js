@@ -1,5 +1,6 @@
 import { calculatePrize } from '../../../src/shared/economy.js';
 import { maskPhone } from '../payments/PaymentService.js';
+import { buildPublicMatchReference } from './publicMatchReference.js';
 
 function money(value) {
   return `R$${Number(value || 0).toFixed(2).replace('.', ',')}`;
@@ -33,6 +34,9 @@ function victoryReasonLabel(reason) {
   if (normalized.includes('timeout')) return 'Timeout';
   if (normalized.includes('admin')) return 'Admin';
   if (normalized.includes('surrender')) return 'Desistência';
+  if (normalized.includes('forfeit')) return 'Desistência';
+  if (normalized.includes('cancel')) return 'Cancelamento antes do início';
+  if (normalized.includes('abort')) return 'Partida abortada antes do início';
   return 'Partida finalizada';
 }
 
@@ -53,6 +57,7 @@ function buildReport(gameState, reason) {
 
   return {
     matchId: gameState?.matchId ?? null,
+    publicReference: gameState?.publicMatchReference || buildPublicMatchReference(gameState?.matchId),
     roomId: gameState?.roomId ?? null,
     table: tableValue,
     tableLabel: money(tableValue),
@@ -65,6 +70,7 @@ function buildReport(gameState, reason) {
     durationLabel: formatDuration(durationSeconds),
     reason: reason || gameState?.result?.reason || gameState?.finishReason || 'match_finished',
     reasonLabel: victoryReasonLabel(reason || gameState?.result?.reason),
+    terminalStatus: 'finished',
     winnerId,
     loserId,
     winner: findPlayer(gameState, winnerId),
@@ -100,31 +106,36 @@ function resultText(report, won) {
   ].join('\n');
 }
 
-function adminReportText(report, { queueCleaned, entriesReleased }) {
+function adminReportText(report, { queueCleaned, entriesReleased, entryStatuses = [] }) {
   const winnerName = report.winner?.name ?? 'Não identificado';
   const loserName = report.loser?.name ?? 'Não identificado';
+  const participants = report.participantLabels?.length
+    ? report.participantLabels.join(' / ')
+    : 'não identificados';
 
   return [
     '📋 PARTIDA FINALIZADA',
     '',
-    `Match: #${report.matchId}`,
+    `Referência: ${report.publicReference}`,
     `Mesa: ${report.tableLabel}`,
     `Início: ${report.startedAtLabel}`,
     `Fim: ${report.finishedAtLabel}`,
     `Duração: ${report.durationLabel}`,
+    `Jogadores: ${participants}`,
     '',
     'Vencedor:',
-    `${winnerName} / ${report.winnerId ?? 'sem playerId'}`,
+    `${winnerName} / ${report.winnerLabel || 'não identificado'}`,
     '',
     'Perdedor:',
-    `${loserName} / ${report.loserId ?? 'sem playerId'}`,
+    `${loserName} / ${report.loserLabel || 'não identificado'}`,
     '',
     'Motivo:',
     report.reasonLabel,
     '',
     `Fila limpa: ${queueCleaned ? 'SIM' : 'NÃO/APENAS WEB'}`,
     `Entradas liberadas: ${entriesReleased ? 'SIM' : 'NÃO/APENAS WEB'}`,
-    'Estado da partida: finished',
+    `Status das entradas: ${entryStatuses.length ? entryStatuses.join(' / ') : 'não vinculado'}`,
+    `Estado da partida: ${report.terminalStatus || 'finished'}`,
   ].join('\n');
 }
 
@@ -138,11 +149,13 @@ export function createPostMatchFlow({
   whatsappBot = null,
   whatsappMatchQueue = null,
   whatsappEnabled = true,
+  adminSummaryEnabled = false,
   logInfo = () => {},
   logWarn = () => {},
   logError = () => {},
 } = {}) {
   const processedMatches = new Set();
+  const adminSummaries = new Set();
 
   async function notifyPlayer(entry, report, won) {
     const target = entry?.notifyTo;
@@ -159,16 +172,40 @@ export function createPostMatchFlow({
   }
 
   async function notifyAdmins(report, cleanup) {
+    const summaryKey = report.publicReference || buildPublicMatchReference(report.matchId);
+    if (!adminSummaryEnabled) {
+      logInfo('ADMIN_MATCH_SUMMARY_SKIPPED_DISABLED', { publicReference: summaryKey, reason: report.reason });
+      return false;
+    }
+    if (adminSummaries.has(summaryKey)) return false;
     const adminNumbers = whatsappBot?.adminNumbers ?? [];
-    if (!whatsappBot?.send || !adminNumbers.length) return false;
+    if (!whatsappBot?.send || !adminNumbers.length) {
+      logError('ADMIN_MATCH_SUMMARY_FAILED', { publicReference: summaryKey, reason: 'admin_or_sender_not_configured' });
+      return false;
+    }
 
+    logInfo('ADMIN_MATCH_SUMMARY_ATTEMPT', {
+      publicReference: summaryKey,
+      reason: report.reason,
+      admins: adminNumbers.map(maskPhone),
+    });
     const text = adminReportText(report, cleanup);
     const results = await Promise.allSettled(adminNumbers.map((phone) => whatsappBot.send(phone, text)));
     const sent = results.some((result) => result.status === 'fulfilled');
     if (sent) {
-      logInfo('ADMIN_MATCH_REPORT_SENT', {
-        matchId: report.matchId,
+      adminSummaries.add(summaryKey);
+      logInfo('ADMIN_MATCH_SUMMARY_SUCCESS', {
+        publicReference: summaryKey,
         admins: adminNumbers.map(maskPhone),
+      });
+      logInfo('ADMIN_MATCH_REPORT_SENT', {
+        publicReference: summaryKey,
+        admins: adminNumbers.map(maskPhone),
+      });
+    } else {
+      logError('ADMIN_MATCH_SUMMARY_FAILED', {
+        publicReference: summaryKey,
+        reason: 'all_delivery_attempts_failed',
       });
     }
     return sent;
@@ -187,7 +224,13 @@ export function createPostMatchFlow({
     if (processedMatches.has(matchId)) {
       logWarn('MATCH_FINISH_ALREADY_PROCESSED', { matchId, reason });
       if (typeof emitResult === 'function') emitResult(gameState, 'matchFinished');
-      return { ok: true, alreadyProcessed: true, report: buildReport(gameState, reason) };
+      const repeatedReport = buildReport(gameState, reason);
+      const adminSent = await notifyAdmins(repeatedReport, {
+        queueCleaned: true,
+        entriesReleased: true,
+        entryStatuses: [],
+      });
+      return { ok: true, alreadyProcessed: true, report: repeatedReport, adminSent };
     }
 
     processedMatches.add(matchId);
@@ -231,6 +274,9 @@ export function createPostMatchFlow({
     }
 
     const report = buildReport(gameState, reason);
+    report.participantLabels = releasedEntries.map((entry) => entry.phoneMasked).filter(Boolean);
+    report.winnerLabel = entryForPlayer(releasedEntries, report.winnerId)?.phoneMasked ?? null;
+    report.loserLabel = entryForPlayer(releasedEntries, report.loserId)?.phoneMasked ?? null;
     if (typeof emitResult === 'function') emitResult(gameState, 'matchFinished');
 
     if (!whatsappEnabled) {
@@ -244,34 +290,7 @@ export function createPostMatchFlow({
         table: report.table,
         reason,
       });
-      logInfo('MATCH_FINISH_COMPLETED', {
-        matchId,
-        table: report.table,
-        winnerId: report.winnerId,
-        loserId: report.loserId,
-        reason: report.reason,
-        duration: report.durationSeconds,
-        releasedEntries: releasedEntries.length,
-        queueRemoved: queueCleanup.length,
-        winnerSent,
-        loserSent,
-        adminSent,
-        whatsappDisabled: true,
-      });
-      return {
-        ok: true,
-        alreadyProcessed: false,
-        report,
-        releasedEntries,
-        queueCleanup,
-        winnerSent,
-        loserSent,
-        adminSent,
-        whatsappDisabled: true,
-      };
-    }
-
-    try {
+    } else try {
       const winnerEntry = entryForPlayer(releasedEntries, report.winnerId);
       const loserEntry = entryForPlayer(releasedEntries, report.loserId);
 
@@ -288,10 +307,6 @@ export function createPostMatchFlow({
         });
       }
 
-      adminSent = await notifyAdmins(report, {
-        queueCleaned: queueCleanup.length > 0 || releasedEntries.length > 0,
-        entriesReleased: releasedEntries.length > 0,
-      });
     } catch (error) {
       logError('POST_MATCH_CLEANUP_ERROR', {
         matchId,
@@ -302,6 +317,20 @@ export function createPostMatchFlow({
       logWarn('POST_MATCH_FALLBACK_WEB_USED', {
         matchId,
         reason: 'whatsapp_notification_failed',
+      });
+    }
+
+    try {
+      adminSent = await notifyAdmins(report, {
+        queueCleaned: queueCleanup.length > 0 || releasedEntries.length > 0,
+        entriesReleased: releasedEntries.length > 0,
+        entryStatuses: releasedEntries.map((entry) => entry.status).filter(Boolean),
+      });
+    } catch (error) {
+      logError('ADMIN_MATCH_SUMMARY_FAILED', {
+        publicReference: report.publicReference,
+        reason: 'summary_exception',
+        message: error?.message ?? String(error),
       });
     }
 
@@ -317,6 +346,7 @@ export function createPostMatchFlow({
       winnerSent,
       loserSent,
       adminSent,
+      whatsappDisabled: !whatsappEnabled,
     });
 
     return {
@@ -328,10 +358,45 @@ export function createPostMatchFlow({
       winnerSent,
       loserSent,
       adminSent,
+      whatsappDisabled: !whatsappEnabled,
     };
   }
 
-  return { finishMatchAndNotify };
+  async function notifyPendingMatchTerminal(result = {}) {
+    const matchId = String(result.matchId || '').trim();
+    if (!matchId) return { ok: false, reason: 'missing_match_id' };
+    const participants = result.participants ?? [];
+    const finishedAt = new Date().toISOString();
+    const report = {
+      matchId,
+      publicReference: buildPublicMatchReference(matchId),
+      table: result.table ?? participants[0]?.selectedTable ?? null,
+      tableLabel: money(result.table ?? participants[0]?.selectedTable),
+      startedAt: null,
+      finishedAt,
+      startedAtLabel: '--:--:--',
+      finishedAtLabel: formatClock(finishedAt),
+      durationLabel: '00m00s',
+      reason: result.reason || 'pre_start_match_aborted',
+      reasonLabel: victoryReasonLabel(result.reason || 'pre_start_match_aborted'),
+      terminalStatus: 'aborted',
+      winnerId: null,
+      loserId: null,
+      winner: null,
+      loser: null,
+      participantLabels: participants.map((entry) => entry.phoneMasked).filter(Boolean),
+      winnerLabel: null,
+      loserLabel: null,
+    };
+    const sent = await notifyAdmins(report, {
+      queueCleaned: true,
+      entriesReleased: participants.length > 0,
+      entryStatuses: participants.map((entry) => entry.status).filter(Boolean),
+    });
+    return { ok: true, sent, report };
+  }
+
+  return { finishMatchAndNotify, notifyPendingMatchTerminal };
 }
 
 export default createPostMatchFlow;

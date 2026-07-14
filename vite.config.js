@@ -8,10 +8,18 @@ export default defineConfig(({ mode }) => {
     || process.env.WHATSAPP_BOT_NUMBER
     || env.WHATSAPP_BOT_NUMBER
     || ''
+  const whatsappFirstLobbyEnabled = String(
+    process.env.VITE_WHATSAPP_FIRST_LOBBY_ENABLED
+      || env.VITE_WHATSAPP_FIRST_LOBBY_ENABLED
+      || process.env.WHATSAPP_FIRST_LOBBY_ENABLED
+      || env.WHATSAPP_FIRST_LOBBY_ENABLED
+      || 'false'
+  ).toLowerCase() === 'true'
 
   return {
     define: {
-      __PIFE_PUBLIC_WHATSAPP_BOT_NUMBER__: JSON.stringify(publicWhatsAppBotNumber)
+      __PIFE_PUBLIC_WHATSAPP_BOT_NUMBER__: JSON.stringify(publicWhatsAppBotNumber),
+      __PIFE_WHATSAPP_FIRST_LOBBY_ENABLED__: JSON.stringify(whatsappFirstLobbyEnabled)
     },
     plugins: [react()],
     server: {

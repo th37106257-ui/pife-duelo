@@ -1,6 +1,9 @@
 import { createId } from '../utils/createId.js';
 import { calculatePrize } from '../../../src/shared/economy.js';
 import { maskPhone, normalizePhone } from '../payments/PaymentService.js';
+import { config } from '../config.js';
+import { createRateLimiter } from '../security/rateLimiter.js';
+import { buildPublicMatchReference } from './publicMatchReference.js';
 
 const TABLE_QUEUE_IDS = new Map([
   [2, 'mesa_2'],
@@ -75,6 +78,8 @@ export class MatchQueue {
     entryService,
     paymentsEnabled = false,
     releaseOnlineQueueEntry = () => ({ removed: false }),
+    preMatchTimeoutSeconds = config.MATCH_JOIN_TIMEOUT_SECONDS,
+    onPendingMatchTerminal = null,
     clock = Date.now,
     logInfo = () => {},
     logWarn = () => {},
@@ -83,12 +88,17 @@ export class MatchQueue {
     this.entryService = entryService;
     this.paymentsEnabled = Boolean(paymentsEnabled);
     this.releaseOnlineQueueEntry = releaseOnlineQueueEntry;
+    this.preMatchTimeoutSeconds = Number(preMatchTimeoutSeconds) || 60;
+    this.onPendingMatchTerminal = onPendingMatchTerminal;
     this.clock = clock;
     this.logInfo = logInfo;
     this.logWarn = logWarn;
     this.logError = logError;
     this.queues = new Map([...TABLE_QUEUE_IDS.values()].map((id) => [id, []]));
     this.activeMatchesByPhone = new Map();
+    this.pendingMatchTimeouts = new Map();
+    this.pendingTerminalResults = new Map();
+    this.rateLimiter = createRateLimiter({ clock });
   }
 
   isConfigured() {
@@ -218,6 +228,18 @@ export class MatchQueue {
     const safeMatchId = String(matchId || '').trim();
     const normalizedCancelledBy = normalizePhone(cancelledBy);
     if (!safeMatchId) return { aborted: false, reason: 'missing_match_id', participants: [] };
+    const previousTerminal = this.pendingTerminalResults.get(safeMatchId);
+    if (previousTerminal) {
+      const repeatedResult = { ...previousTerminal, alreadyProcessed: true };
+      void Promise.resolve(this.onPendingMatchTerminal?.(repeatedResult)).catch((error) => {
+        this.logError('ADMIN_MATCH_SUMMARY_FAILED', {
+          publicReference: buildPublicMatchReference(safeMatchId),
+          reason: 'pending_match_terminal_retry_failed',
+          message: error?.message ?? String(error),
+        });
+      });
+      return repeatedResult;
+    }
 
     this.logInfo('MATCH_ABORT_REQUESTED', {
       matchId: safeMatchId,
@@ -235,6 +257,11 @@ export class MatchQueue {
 
     if (!result.aborted) return result;
 
+    const pendingTimeout = this.pendingMatchTimeouts.get(safeMatchId);
+    if (pendingTimeout) clearTimeout(pendingTimeout);
+    this.pendingMatchTimeouts.delete(safeMatchId);
+    this.pendingTerminalResults.set(safeMatchId, result);
+
     if (result.alreadyProcessed) {
       for (const [phone, activeMatch] of this.activeMatchesByPhone.entries()) {
         if (String(activeMatch?.matchId || '') === safeMatchId) this.activeMatchesByPhone.delete(phone);
@@ -246,11 +273,13 @@ export class MatchQueue {
         participantCount: result.participants?.length ?? 0,
         alreadyProcessed: true,
       });
-      return {
+      const alreadyProcessedResult = {
         ...result,
         removedFromQueues: 0,
         onlineQueueReleases: [],
       };
+      void Promise.resolve(this.onPendingMatchTerminal?.(alreadyProcessedResult)).catch(() => {});
+      return alreadyProcessedResult;
     }
 
     const participantEntryIds = new Set((result.participants ?? []).map((entry) => entry.entryId).filter(Boolean));
@@ -295,6 +324,7 @@ export class MatchQueue {
         matchId: safeMatchId,
         reason,
         previousQueueSocketId: entry.previousQueueSocketId ?? null,
+        paidEntryPreserved: Boolean(entry.paidConfirmed),
       }) ?? { removed: false };
       this.logInfo('MATCH_LINK_INVALIDATED', {
         matchId: safeMatchId,
@@ -331,11 +361,75 @@ export class MatchQueue {
       releasedOnlineSessions: onlineQueueReleases.filter((item) => item?.removed).length,
     });
 
-    return {
+    const completedResult = {
       ...result,
       removedFromQueues,
       onlineQueueReleases,
     };
+    this.pendingTerminalResults.set(safeMatchId, completedResult);
+    void Promise.resolve(this.onPendingMatchTerminal?.(completedResult)).catch((error) => {
+      this.logError('ADMIN_MATCH_SUMMARY_FAILED', {
+        publicReference: buildPublicMatchReference(safeMatchId),
+        reason: 'pending_match_terminal_handler_failed',
+        message: error?.message ?? String(error),
+      });
+    });
+    return completedResult;
+  }
+
+  setPendingMatchTerminalHandler(handler) {
+    this.onPendingMatchTerminal = typeof handler === 'function' ? handler : null;
+  }
+
+  schedulePendingMatchTimeout({ matchId, preMatchDeadline }) {
+    const safeMatchId = String(matchId || '').trim();
+    const deadlineMs = Date.parse(preMatchDeadline);
+    if (!safeMatchId || !Number.isFinite(deadlineMs)) return false;
+    const previous = this.pendingMatchTimeouts.get(safeMatchId);
+    if (previous) clearTimeout(previous);
+    const timeout = setTimeout(() => {
+      this.pendingMatchTimeouts.delete(safeMatchId);
+      this.abortMatchAndReleaseParticipants({
+        matchId: safeMatchId,
+        reason: 'queue_timeout_before_start',
+        cancelledBy: null,
+      });
+    }, Math.max(0, deadlineMs - this.clock()));
+    timeout.unref?.();
+    this.pendingMatchTimeouts.set(safeMatchId, timeout);
+    return true;
+  }
+
+  restorePendingMatchTimeouts() {
+    const restored = new Set();
+    const entries = this.entryService?.listEntries?.() ?? [];
+    entries.forEach((entry) => {
+      if (!entry.whatsappMatchId || entry.linkedMatchId || !entry.preMatchDeadline) return;
+      if (restored.has(entry.whatsappMatchId)) return;
+      restored.add(entry.whatsappMatchId);
+      this.schedulePendingMatchTimeout({
+        matchId: entry.whatsappMatchId,
+        preMatchDeadline: entry.preMatchDeadline,
+      });
+    });
+    this.logInfo('PRE_MATCH_DEADLINES_RESTORED', { count: restored.size });
+    return restored.size;
+  }
+
+  markMatchStarted(whatsappMatchId, onlineMatchId) {
+    const safeMatchId = String(whatsappMatchId || '').trim();
+    if (!safeMatchId) return false;
+    const timeout = this.pendingMatchTimeouts.get(safeMatchId);
+    if (timeout) clearTimeout(timeout);
+    this.pendingMatchTimeouts.delete(safeMatchId);
+    for (const activeMatch of this.activeMatchesByPhone.values()) {
+      if (String(activeMatch?.matchId || '') !== safeMatchId) continue;
+      activeMatch.whatsappMatchId = safeMatchId;
+      activeMatch.matchId = onlineMatchId || safeMatchId;
+      activeMatch.status = 'playing';
+      activeMatch.onlineMatchId = onlineMatchId || null;
+    }
+    return true;
   }
 
   clearPlayerState(playerPhone, { actor = null, reason = 'player_requested_cancel' } = {}) {
@@ -769,6 +863,11 @@ export class MatchQueue {
     });
     if (!phone) return { blocked: true, reason: 'invalid_phone' };
     if (!tableValue || !queueId) return { blocked: true, reason: 'invalid_table' };
+    const rate = this.rateLimiter.consume(`queue:${phone}`, { limit: 8, windowMs: 60_000 });
+    if (!rate.allowed) {
+      this.logWarn('WHATSAPP_QUEUE_RATE_LIMITED', { phone: maskPhone(phone), tableValue });
+      return { blocked: true, reason: 'rate_limited' };
+    }
     this.syncQueueFromStore();
     console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
 
@@ -995,6 +1094,8 @@ export class MatchQueue {
 
     const players = queue.splice(0, 2);
     const matchId = createId('whatsapp_match');
+    const preMatchDeadline = new Date(this.clock() + this.preMatchTimeoutSeconds * 1000).toISOString();
+    const publicReference = buildPublicMatchReference(matchId);
     console.log('[5.3] jogadores pareados:', players[0]?.phoneMasked, players[1]?.phoneMasked);
     this.logInfo('Jogadores pareados:', {
       tableValue,
@@ -1010,6 +1111,7 @@ export class MatchQueue {
         actor: 'whatsapp-queue',
         source: 'whatsapp-queue-match',
         matchId,
+        preMatchDeadline,
       });
       player.accessLink = refreshed?.accessLink ?? player.accessLink;
       console.log('[5.3] link gerado:', maskAccessLink(player.accessLink));
@@ -1036,6 +1138,8 @@ export class MatchQueue {
       tableValue,
       roomUrl,
       createdAt: nowIso(this.clock),
+      preMatchDeadline,
+      publicReference,
       players: players.map((player) => ({
         phoneMasked: player.phoneMasked,
         sendTo: player.playerPhone,
@@ -1052,12 +1156,15 @@ export class MatchQueue {
         tableValue,
         entryId: player.entryId,
         status: 'approved_for_queue',
+        preMatchDeadline,
       });
     });
+    this.schedulePendingMatchTimeout({ matchId, preMatchDeadline });
 
     console.log('[5.3] estado atual das filas:', queueSnapshot(this.queues));
     this.logInfo('Match criada:', {
       matchId,
+      publicReference,
       roomId: match.roomId,
       tableId: queueId,
       tableValue,
@@ -1086,6 +1193,7 @@ export class MatchQueue {
       tableId: queueId,
       players: players.map((player) => player.phoneMasked),
       links: players.map((player) => maskAccessLink(player.accessLink)),
+      preMatchDeadline,
       queueSizeAfterMatch: queue.length,
     });
     this.logInfo('WHATSAPP_QUEUE_STATE', {

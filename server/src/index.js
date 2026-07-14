@@ -24,6 +24,7 @@ import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
 import { MatchQueue } from './services/matchQueue.js';
 import { createPostMatchFlow } from './services/postMatchFlow.js';
+import { buildPublicMatchReference } from './services/publicMatchReference.js';
 import {
   getDailyObservabilityMetrics,
   getErrorCountSince,
@@ -71,7 +72,14 @@ const metaCloudClient = whatsappProviderContext.metaCloudClient;
 const whatsappMatchQueue = new MatchQueue({
   entryService: whatsappEntryService,
   paymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED && config.PAYMENT_GATE_ENABLED,
-  releaseOnlineQueueEntry: ({ entryId, matchId, reason, previousQueueSocketId }) => {
+  preMatchTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
+  releaseOnlineQueueEntry: ({
+    entryId,
+    matchId,
+    reason,
+    previousQueueSocketId,
+    paidEntryPreserved = false,
+  }) => {
     const leaveResult = queueManager.leaveQueueByEntryId(entryId);
     const socketId = leaveResult.entry?.socketId || previousQueueSocketId || null;
     const targetSocket = socketId ? socketManager.getSocket(socketId) : null;
@@ -79,8 +87,12 @@ const whatsappMatchQueue = new MatchQueue({
       targetSocket.entryAccess = null;
       targetSocket.emit('matchAborted', {
         matchId,
+        publicReference: buildPublicMatchReference(matchId),
         reason,
-        message: 'Sua partida anterior foi encerrada. Voce ja pode escolher uma mesa novamente.',
+        paidEntryPreserved,
+        message: reason === 'queue_timeout_before_start'
+          ? 'Sua partida não iniciou dentro do tempo de espera.'
+          : 'Sua partida não iniciou e foi encerrada com segurança.',
       });
     }
     return {
@@ -112,10 +124,13 @@ const postMatchFlow = createPostMatchFlow({
   whatsappBot: whatsappPaymentBot,
   whatsappMatchQueue,
   whatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
+  adminSummaryEnabled: config.ADMIN_MATCH_SUMMARY_ENABLED,
   logInfo,
   logWarn,
   logError,
 });
+whatsappMatchQueue.setPendingMatchTerminalHandler((result) => postMatchFlow.notifyPendingMatchTerminal(result));
+whatsappMatchQueue.restorePendingMatchTimeouts();
 const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
   && config.PAYMENT_GATE_ENABLED
   && getPaymentConfigurationErrors().length === 0;
@@ -522,6 +537,7 @@ app.get('/health', (request, response) => {
       whatsappPaymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED,
       gateEnabled: config.PAYMENT_GATE_ENABLED,
       postMatchWhatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
+      adminMatchSummaryEnabled: config.ADMIN_MATCH_SUMMARY_ENABLED,
     },
     whatsapp: {
       provider: config.WHATSAPP_PROVIDER,
@@ -530,6 +546,7 @@ app.get('/health', (request, response) => {
       connectivityTestEnabled: whatsappConnectivityTestEnabled,
       configured: whatsappConnectivityConfigured,
       safeEntryEnabled: whatsappSafeEntryEnabled,
+      whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
       safeEntryConfigured: getWhatsAppEntryConfigurationErrors().length === 0,
       entryStorePersisted: Boolean(config.WHATSAPP_ENTRY_STORE_PATH),
       publicGameUrlConfigured: Boolean(config.PUBLIC_GAME_URL),
@@ -574,6 +591,8 @@ app.get('/api/status', (request, response) => {
     maxPlayersPerRoom: config.MAX_PLAYERS_PER_ROOM,
     turnDurationSeconds: config.TURN_DURATION_SECONDS,
     queueTimeoutSeconds: config.QUEUE_TIMEOUT_SECONDS,
+    matchJoinTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
+    whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
     rooms: roomManager.listRooms().length,
     matches: matchManager.listMatches().length,
     queuedPlayers: queueManager.getQueueSize(),
@@ -1401,6 +1420,7 @@ const io = setupSocketServer(server, {
   safeEntryEnabled: whatsappSafeEntryEnabled,
   whatsappBot: whatsappPaymentBot,
   whatsappMatchQueue,
+  postMatchFlow,
 });
 
 const stuckMatchMonitor = setInterval(() => {

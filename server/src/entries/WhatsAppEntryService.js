@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { calculatePrize } from '../../../src/shared/economy.js';
 import { maskPhone, normalizePhone } from '../payments/PaymentService.js';
+import { buildPublicMatchReference } from '../services/publicMatchReference.js';
 
 export const WHATSAPP_ENTRY_STATUSES = new Set([
   'pending_admin_validation',
@@ -25,6 +26,7 @@ const ACTIVE_STATUSES = new Set([
   'queued',
   'linked',
   'playing',
+  'refund_pending',
   'requeued_after_opponent_cancel',
   'admin_review',
 ]);
@@ -68,9 +70,12 @@ function invalidateMatchLinks() {
   return {
     accessTokenHash: null,
     accessExpiresAt: null,
+    accessSessionTokenHash: null,
+    accessSessionClaimedAt: null,
     whatsappMatchId: null,
     roomUrl: null,
     linkSentAt: null,
+    preMatchDeadline: null,
   };
 }
 
@@ -82,10 +87,10 @@ function releaseFreePlayer({ wasCancelledByPlayer }) {
   };
 }
 
-function restorePaidEntry({ current, wasCancelledByPlayer, at }) {
+function restorePaidEntry({ current }) {
   return {
-    status: wasCancelledByPlayer ? 'admin_review' : 'requeued_after_opponent_cancel',
-    queuedAt: wasCancelledByPlayer ? null : at,
+    status: 'refund_pending',
+    queuedAt: null,
     whatsappReplyTo: current.whatsappReplyTo || current.phone || null,
   };
 }
@@ -96,7 +101,14 @@ function buildSafePathSegment(value) {
 
 export function sanitizeWhatsAppEntry(entry) {
   if (!entry) return null;
-  const { phone, accessTokenHash, queueSocketId, whatsappReplyTo, ...safe } = entry;
+  const {
+    phone,
+    accessTokenHash,
+    accessSessionTokenHash,
+    queueSocketId,
+    whatsappReplyTo,
+    ...safe
+  } = entry;
   return {
     ...structuredClone(safe),
     phoneMasked: maskPhone(phone),
@@ -274,7 +286,7 @@ export class WhatsAppEntryService {
         ...current,
         paidConfirmed: paidConfirmed ? true : current.paidConfirmed,
         ...(paidConfirmed
-          ? restorePaidEntry({ current, wasCancelledByPlayer, at })
+          ? restorePaidEntry({ current })
           : releaseFreePlayer({ wasCancelledByPlayer })),
         ...invalidateMatchLinks(),
         queueSocketId: null,
@@ -284,7 +296,7 @@ export class WhatsAppEntryService {
         updatedAt: at,
         auditLog: [...current.auditLog, auditEntry({
           action: paidConfirmed
-            ? (wasCancelledByPlayer ? 'paid_entry_sent_to_admin_review_after_abort' : 'paid_entry_restored_after_match_abort')
+            ? 'paid_entry_sent_to_refund_pending_after_abort'
             : (wasCancelledByPlayer ? 'entry_cancelled_before_match_start' : 'entry_released_after_match_abort'),
           actor: String(actor || normalizedCancelledBy || 'system'),
           at,
@@ -611,11 +623,17 @@ export class WhatsAppEntryService {
       rejectionReason: null,
       accessTokenHash: null,
       accessExpiresAt: null,
+      accessSessionTokenHash: null,
+      accessSessionClaimedAt: null,
+      accessUsedAt: null,
+      sessionVersion: 0,
       queueSocketId: null,
       queuedAt: null,
       whatsappReplyTo: null,
       linkedMatchId: null,
       whatsappMatchId: null,
+      publicMatchReference: null,
+      preMatchDeadline: null,
       playerId: null,
       roomUrl: null,
       linkSentAt: null,
@@ -649,6 +667,10 @@ export class WhatsAppEntryService {
       approvedAt: at,
       accessTokenHash: this.hashToken(token),
       accessExpiresAt,
+      accessSessionTokenHash: null,
+      accessSessionClaimedAt: null,
+      accessUsedAt: null,
+      sessionVersion: Math.max(1, Number(current.sessionVersion) || 0),
       updatedAt: at,
       auditLog: [...current.auditLog, auditEntry({
         action: 'entry_approved_for_queue',
@@ -758,7 +780,12 @@ export class WhatsAppEntryService {
     return includeSecrets ? entries : entries.map(sanitizeWhatsAppEntry);
   }
 
-  refreshQueueAccessLink(entryId, { actor = 'system', source = 'whatsapp-queue-match', matchId = null } = {}) {
+  refreshQueueAccessLink(entryId, {
+    actor = 'system',
+    source = 'whatsapp-queue-match',
+    matchId = null,
+    preMatchDeadline = null,
+  } = {}) {
     const token = this.tokenFactory();
     const at = nowIso(this.clock);
     const accessExpiresAt = new Date(this.clock() + this.accessTtlMs).toISOString();
@@ -771,7 +798,15 @@ export class WhatsAppEntryService {
         status: 'approved_for_queue',
         accessTokenHash: this.hashToken(token),
         accessExpiresAt,
+        accessSessionTokenHash: null,
+        accessSessionClaimedAt: null,
+        accessUsedAt: null,
+        sessionVersion: (Number(current.sessionVersion) || 0) + 1,
         whatsappMatchId: safeMatchId || current.whatsappMatchId || null,
+        publicMatchReference: safeMatchId
+          ? buildPublicMatchReference(safeMatchId)
+          : current.publicMatchReference || null,
+        preMatchDeadline: preMatchDeadline || current.preMatchDeadline || null,
         roomUrl: safeMatchId ? `${this.publicGameUrl}/join/${buildSafePathSegment(safeMatchId)}` : current.roomUrl,
         updatedAt: at,
         auditLog: [...current.auditLog, auditEntry({
@@ -800,6 +835,8 @@ export class WhatsAppEntryService {
         status: 'expired',
         accessTokenHash: null,
         accessExpiresAt: null,
+        accessSessionTokenHash: null,
+        accessSessionClaimedAt: null,
         queuedAt: null,
         whatsappReplyTo: null,
         updatedAt: at,
@@ -824,6 +861,9 @@ export class WhatsAppEntryService {
         approvedAt: null,
         accessTokenHash: null,
         accessExpiresAt: null,
+        accessSessionTokenHash: null,
+        accessSessionClaimedAt: null,
+        accessUsedAt: null,
         updatedAt: at,
         auditLog: [...current.auditLog, auditEntry({
           action: 'entry_approval_rolled_back',
@@ -843,6 +883,36 @@ export class WhatsAppEntryService {
     if (entry.status === 'requeued_after_opponent_cancel' && !entry.whatsappMatchId) return null;
     if (entry.accessExpiresAt && Date.parse(entry.accessExpiresAt) <= this.clock()) return null;
     return sanitizeWhatsAppEntry(entry);
+  }
+
+  claimAccessSession({ entryId, sessionKey = null } = {}) {
+    const current = this.store.getEntry(entryId);
+    if (!current || !TOKEN_VALID_STATUSES.has(current.status)) throw new Error('ENTRY_ACCESS_DENIED');
+    if (current.accessExpiresAt && Date.parse(current.accessExpiresAt) <= this.clock()) throw new Error('ENTRY_ACCESS_EXPIRED');
+
+    if (current.accessSessionTokenHash) {
+      if (!sessionKey || this.hashToken(sessionKey) !== current.accessSessionTokenHash) {
+        throw new Error('ENTRY_DUPLICATE_SESSION');
+      }
+      return { entry: sanitizeWhatsAppEntry(current), sessionKey: null, recovered: true };
+    }
+
+    const nextSessionKey = this.tokenFactory();
+    const at = nowIso(this.clock);
+    const updated = this.store.updateEntry(entryId, (entry) => ({
+      ...entry,
+      accessSessionTokenHash: this.hashToken(nextSessionKey),
+      accessSessionClaimedAt: at,
+      accessUsedAt: entry.accessUsedAt || at,
+      updatedAt: at,
+      auditLog: [...entry.auditLog, auditEntry({
+        action: 'entry_access_session_claimed',
+        actor: 'system',
+        at,
+        details: { sessionVersion: Number(entry.sessionVersion) || 1 },
+      })],
+    }));
+    return { entry: sanitizeWhatsAppEntry(updated), sessionKey: nextSessionKey, recovered: false };
   }
 
   reserveQueueAccess({ entryId, socketId, selectedTable }) {
@@ -920,6 +990,13 @@ export class WhatsAppEntryService {
           status: 'finished',
           queueSocketId: null,
           queuedAt: null,
+          accessTokenHash: null,
+          accessExpiresAt: null,
+          accessSessionTokenHash: null,
+          accessSessionClaimedAt: null,
+          preMatchDeadline: null,
+          roomUrl: null,
+          linkSentAt: null,
           finishedAt: current.finishedAt || at,
           updatedAt: at,
           auditLog: [...current.auditLog, auditEntry({

@@ -40,7 +40,8 @@ export class QueueManager {
       tableValue,
       paymentId: player.paymentId ?? null,
       entryId: player.entryId ?? null,
-      joinedAt: new Date().toISOString(),
+      joinedAt: player.joinedAt || new Date().toISOString(),
+      preMatchDeadline: player.preMatchDeadline || null,
     };
     const queue = this.queues.get(tableValue);
     queue.push(entry);
@@ -137,6 +138,7 @@ export class QueueManager {
         queueSize: 0,
         waitingPlayers: 0,
         maxWaitSeconds: this.timeoutSeconds,
+        preMatchDeadline: null,
       };
     }
 
@@ -146,6 +148,7 @@ export class QueueManager {
       queueSize,
       waitingPlayers: queueSize,
       maxWaitSeconds: this.timeoutSeconds,
+      preMatchDeadline: this.queues.get(normalizedTable)?.[0]?.preMatchDeadline ?? null,
     };
   }
 
@@ -158,13 +161,17 @@ export class QueueManager {
   }
 
   scheduleTimeout(entry) {
+    const deadlineMs = entry.preMatchDeadline ? Date.parse(entry.preMatchDeadline) : NaN;
+    const delayMs = Number.isFinite(deadlineMs)
+      ? Math.max(0, deadlineMs - Date.now())
+      : this.timeoutSeconds * 1000;
     const timeout = setTimeout(() => {
       const currentEntry = this.playerEntries.get(entry.playerId);
       if (!currentEntry) return;
 
       this.removeEntry(currentEntry);
       this.onTimeout?.(currentEntry);
-    }, this.timeoutSeconds * 1000);
+    }, delayMs);
     timeout.unref?.();
 
     this.timeouts.set(entry.playerId, timeout);

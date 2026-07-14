@@ -26,6 +26,7 @@ function getReasonLabel(reason) {
     timeout: 'Tempo esgotado',
     disconnect: 'Abandono',
     surrender: 'Desistencia',
+    player_forfeit: 'Desistencia',
     integrity_error: 'Erro de integridade',
   };
   return labels[reason] ?? reason ?? '-';

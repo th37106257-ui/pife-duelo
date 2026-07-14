@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import OnlineGameTable from './OnlineGameTable.jsx';
 import MatchHistoryScreen from './MatchHistoryScreen.jsx';
+import WhatsAppLobbyFallback from './WhatsAppLobbyFallback.jsx';
 import {
   clearStaleMatchAccessFromUrl,
   connectSocket,
@@ -11,6 +12,7 @@ import {
 } from '../services/socket.js';
 import { resumeOnlineMatch, startOnlineListeners, stopOnlineListeners } from '../services/onlineGameSocket.js';
 import { formatMoney, listOfficialTables } from '../shared/economy.js';
+import { isWhatsAppFirstLobbyEnabled } from '../services/whatsAppLink.js';
 
 const TABLE_OPTIONS = listOfficialTables();
 const ACTIVE_MATCH_STORAGE_KEY = 'pifeDuelo.activeOnlineMatch';
@@ -65,6 +67,13 @@ function formatTime(seconds) {
   return `${minutes}:${remainingSeconds}`;
 }
 
+function buildPreMatchReviewMessage(publicReference) {
+  const reference = String(publicReference || '').trim();
+  return reference
+    ? `Minha partida nao iniciou e quero verificar minha entrada. Codigo: ${reference}`
+    : 'Minha partida nao iniciou e quero verificar minha entrada.';
+}
+
 function joinQueueWithConfirmation(socket, payload) {
   return new Promise((resolve, reject) => {
     socket.timeout(8000).emit('joinQueue', payload, (error, acknowledgement = {}) => {
@@ -94,6 +103,8 @@ export default function MatchmakingScreen() {
   const [actionError, setActionError] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [remainingSeconds, setRemainingSeconds] = useState(60);
+  const [terminalFlow, setTerminalFlow] = useState(null);
   const [onlinePlayers, setOnlinePlayers] = useState(null);
   const [serverConnection, setServerConnection] = useState(getSocketConnectionState);
   const waitingSinceRef = useRef(null);
@@ -103,8 +114,11 @@ export default function MatchmakingScreen() {
   const directJoinAttemptedRef = useRef(false);
   const recoveryInProgressRef = useRef(false);
   const recoveryLoggedMatchRef = useRef(null);
+  const terminalFlowRef = useRef(null);
   const directJoinMatchId = useMemo(() => readJoinMatchIdFromUrl(), []);
   const hasDirectEntryLink = useMemo(() => Boolean(readEntryTokenFromUrl()), []);
+  const whatsappFirstLobbyEnabled = useMemo(() => isWhatsAppFirstLobbyEnabled(), []);
+  const hasStoredSession = useMemo(() => Boolean(readStoredMatchSession()), []);
 
   const opponent = useMemo(
     () => matchInfo?.players?.find((player) => player.position === 'top') ?? null,
@@ -129,10 +143,20 @@ export default function MatchmakingScreen() {
       }
 
       setElapsedSeconds(Math.max(0, Math.floor((Date.now() - waitingSinceRef.current) / 1000)));
+      const deadline = Date.parse(queueInfo?.preMatchDeadline || '');
+      if (Number.isFinite(deadline)) {
+        const nextRemaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+        setRemainingSeconds(nextRemaining);
+        if (nextRemaining === 0) getSocket()?.emit('requestQueueStatus', { tableValue });
+      }
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [status]);
+  }, [queueInfo?.preMatchDeadline, status, tableValue]);
+
+  useEffect(() => {
+    terminalFlowRef.current = terminalFlow;
+  }, [terminalFlow]);
 
   const normalizeOnlineState = (payload) => ({
     isOnlineMode: true,
@@ -247,6 +271,8 @@ export default function MatchmakingScreen() {
       console.info('[socket] entrada na fila confirmada:', payload);
       waitingSinceRef.current = new Date(payload.waitingSince).getTime();
       setElapsedSeconds(0);
+      const deadline = Date.parse(payload.preMatchDeadline || '');
+      setRemainingSeconds(Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : 60);
       setQueueInfo(payload);
       setErrorMessage('');
       setStatus('searching');
@@ -256,6 +282,17 @@ export default function MatchmakingScreen() {
       waitingSinceRef.current = null;
       setQueueInfo(null);
       setElapsedSeconds(0);
+      if (whatsappFirstLobbyEnabled && hasDirectEntryLink) {
+        if (!terminalFlowRef.current) {
+          setTerminalFlow({
+            title: 'Espera cancelada',
+            message: 'Sua partida não iniciou. Você já pode voltar ao WhatsApp.',
+            autoRedirect: true,
+          });
+        }
+        setStatus('terminal');
+        return;
+      }
       setStatus('idle');
     };
 
@@ -264,7 +301,18 @@ export default function MatchmakingScreen() {
       setQueueInfo(null);
       setElapsedSeconds(0);
       setErrorMessage(payload.message);
-      setStatus('timeout');
+      if (whatsappFirstLobbyEnabled) {
+        setTerminalFlow({
+          title: 'Tempo de espera encerrado',
+          message: payload.message || 'Sua partida não iniciou dentro do prazo. Sua entrada foi liberada com segurança.',
+          publicReference: payload.publicReference || null,
+          whatsappMessage: buildPreMatchReviewMessage(payload.publicReference),
+          autoRedirect: true,
+        });
+        setStatus('terminal');
+      } else {
+        setStatus('timeout');
+      }
     };
 
     const onQueueStatus = (payload) => {
@@ -292,13 +340,29 @@ export default function MatchmakingScreen() {
       setElapsedSeconds(0);
       setActionError('');
       setErrorMessage(payload.message || 'Sua partida anterior foi encerrada. Voce ja pode escolher uma mesa novamente.');
-      setStatus('idle');
+      if (whatsappFirstLobbyEnabled) {
+        setTerminalFlow({
+          title: payload.reason === 'queue_timeout_before_start' ? 'Partida não iniciada' : 'Partida encerrada',
+          message: payload.paidEntryPreserved
+            ? 'Sua partida não iniciou. Sua entrada será encaminhada para revisão.'
+            : (payload.message || 'Sua partida anterior foi encerrada. Você já pode voltar ao WhatsApp.'),
+          publicReference: payload.publicReference || null,
+          whatsappMessage: payload.paidEntryPreserved || payload.publicReference
+            ? buildPreMatchReviewMessage(payload.publicReference)
+            : 'menu',
+          autoRedirect: true,
+        });
+        setStatus('terminal');
+      } else {
+        setStatus('idle');
+      }
       console.info('LOBBY_STATE_RESET_AFTER_ABORT', {
         matchId: maskClientId(previousMatchId),
         cleared: true,
       });
 
       disconnectSocket();
+      if (whatsappFirstLobbyEnabled) return;
       window.setTimeout(async () => {
         try {
           const freshSocket = await connectSocket();
@@ -529,6 +593,15 @@ export default function MatchmakingScreen() {
         }
       } catch (error) {
         if (error?.code === 'ENTRY_ACCESS_DENIED' && !cancelled) {
+          if (whatsappFirstLobbyEnabled) {
+            setTerminalFlow({
+              title: 'Link indisponível',
+              message: 'Este link expirou, já foi utilizado em outra sessão ou a partida foi encerrada.',
+              autoRedirect: true,
+            });
+            setStatus('terminal');
+            return;
+          }
           try {
             const freshSocket = await connectSocket();
             if (cancelled) return;
@@ -639,7 +712,16 @@ export default function MatchmakingScreen() {
     setMatchInfo(null);
     setQueueInfo(null);
     setActionError('');
-    setStatus('idle');
+    if (whatsappFirstLobbyEnabled) {
+      setTerminalFlow({
+        title: 'Partida finalizada',
+        message: 'Sua partida foi encerrada. Volte ao WhatsApp para jogar novamente.',
+        autoRedirect: false,
+      });
+      setStatus('terminal');
+    } else {
+      setStatus('idle');
+    }
   };
 
   if (onlineGameState) {
@@ -654,6 +736,27 @@ export default function MatchmakingScreen() {
 
   if (showHistory) {
     return <MatchHistoryScreen onBack={() => setShowHistory(false)} />;
+  }
+
+  if (whatsappFirstLobbyEnabled && (status === 'terminal' || terminalFlow)) {
+    return (
+      <WhatsAppLobbyFallback
+        title={terminalFlow?.title}
+        message={terminalFlow?.message}
+        publicReference={terminalFlow?.publicReference}
+        autoRedirect={Boolean(terminalFlow?.autoRedirect)}
+        whatsappMessage={terminalFlow?.whatsappMessage || 'menu'}
+      />
+    );
+  }
+
+  if (whatsappFirstLobbyEnabled && !hasDirectEntryLink && !hasStoredSession) {
+    return (
+      <WhatsAppLobbyFallback
+        title="Pife Duelo pelo WhatsApp"
+        message="Para encontrar uma partida, acesse o Pife Duelo pelo WhatsApp."
+      />
+    );
   }
 
   return (
@@ -732,10 +835,10 @@ export default function MatchmakingScreen() {
           <div className="matchmaking-waiting">
             <strong>Mesa R${queueInfo?.tableValue ?? tableValue}</strong>
             <p>Procurando adversario...</p>
-            <span>{formatTime(elapsedSeconds)}</span>
+            <span>{queueInfo?.preMatchDeadline ? formatTime(remainingSeconds) : formatTime(elapsedSeconds)}</span>
             <small>Posicao na fila: {queueInfo?.queuePosition ?? 1}</small>
             <button type="button" onClick={handleCancel}>
-              Cancelar
+              Cancelar espera
             </button>
           </div>
         ) : null}

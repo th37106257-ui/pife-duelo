@@ -1298,8 +1298,8 @@ runTest('sair da partida online registra abandono e vencedor adversario', () => 
   assert.equal(result.gameState.status, 'finished');
   assert.equal(result.gameState.result.winnerId, playerB);
   assert.equal(result.gameState.result.loserId, playerA);
-  assert.equal(result.gameState.result.reason, 'surrender');
-  assert.equal(record.finishReason, 'surrender');
+  assert.equal(result.gameState.result.reason, 'player_forfeit');
+  assert.equal(record.finishReason, 'player_forfeit');
   assert.equal(audit.logs.some((entry) => entry.action === 'player_surrender'), true);
 });
 

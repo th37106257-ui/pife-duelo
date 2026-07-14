@@ -40,6 +40,7 @@ function reasonLabel(reason) {
     timeout: 'Timeout',
     disconnect: 'Abandono',
     surrender: 'Desistencia',
+    player_forfeit: 'Desistencia',
     integrity_error: 'Integridade',
     admin_closed: 'Admin',
     stuck_match: 'Travada',

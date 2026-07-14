@@ -733,10 +733,10 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 
   const firstEntry = store.listEntries().find((entry) => entry.phone === firstPhone);
   const secondEntry = store.listEntries().find((entry) => entry.phone === secondPhone);
-  assert.equal(firstEntry.status, 'admin_review');
-  assert.equal(secondEntry.status, 'requeued_after_opponent_cancel');
-  assert.ok(firstEntry.auditLog.some((item) => item.action === 'paid_entry_sent_to_admin_review_after_abort'));
-  assert.ok(secondEntry.auditLog.some((item) => item.action === 'paid_entry_restored_after_match_abort'));
+  assert.equal(firstEntry.status, 'refund_pending');
+  assert.equal(secondEntry.status, 'refund_pending');
+  assert.ok(firstEntry.auditLog.some((item) => item.action === 'paid_entry_sent_to_refund_pending_after_abort'));
+  assert.ok(secondEntry.auditLog.some((item) => item.action === 'paid_entry_sent_to_refund_pending_after_abort'));
   assert.equal(entryService.validateAccessToken(secondOldToken), null);
   assert.ok(logs.some((log) => log.event === 'MATCH_LINK_INVALIDATED'));
   assert.ok(sentMessages.some((message) => (
@@ -746,7 +746,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 
   const paidMenuResult = await bot.handleConnectivityWebhook(createWebhook(secondPhone, 'menu', secondReplyJid));
   assert.equal(paidMenuResult.type, 'whatsapp_paid_entry_preserved');
-  assert.equal(store.listEntries().find((entry) => entry.phone === secondPhone).status, 'requeued_after_opponent_cancel');
+  assert.equal(store.listEntries().find((entry) => entry.phone === secondPhone).status, 'refund_pending');
 
   const adminPhone = '5511999990000';
   const adminCancelledPhone = '551188881003';
@@ -765,7 +765,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   ));
   assert.equal(adminCancel.type, 'entry_admin_paid_decision');
   assert.equal(store.listEntries().find((entry) => entry.phone === adminCancelledPhone).status, 'cancelled_by_admin');
-  assert.equal(store.listEntries().find((entry) => entry.phone === adminPreservedOpponent).status, 'requeued_after_opponent_cancel');
+  assert.equal(store.listEntries().find((entry) => entry.phone === adminPreservedOpponent).status, 'refund_pending');
   assert.ok(adminPairLinks.every((token) => entryService.validateAccessToken(token) === null));
   assert.equal(matchQueue.activeMatchesByPhone.has(adminCancelledPhone), false);
   assert.equal(matchQueue.activeMatchesByPhone.has(adminPreservedOpponent), false);
@@ -792,8 +792,8 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   });
   assert.equal(abort.aborted, true);
   assert.equal(abort.paidEntryPreserved, true);
-  assert.equal(runtime.store.listEntries().find((entry) => entry.phone === firstPhone).status, 'admin_review');
-  assert.equal(runtime.store.listEntries().find((entry) => entry.phone === secondPhone).status, 'requeued_after_opponent_cancel');
+  assert.equal(runtime.store.listEntries().find((entry) => entry.phone === firstPhone).status, 'refund_pending');
+  assert.equal(runtime.store.listEntries().find((entry) => entry.phone === secondPhone).status, 'refund_pending');
   assert.ok(runtime.store.listEntries()
     .filter((entry) => [firstPhone, secondPhone].includes(entry.phone))
     .every((entry) => entry.paidConfirmed === true));

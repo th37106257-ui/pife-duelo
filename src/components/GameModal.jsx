@@ -17,14 +17,14 @@ export default function GameModal({
   const showEconomy = !isTestMode && Boolean(economy || economicResult);
   const testModeWon = isTestMode && (result?.type === 'win' || winner === 'player');
   const title = isOnlinePostMatch
-    ? '🏆 Partida finalizada'
+    ? result?.title ?? '🏆 Partida finalizada'
     : isTestMode
       ? testModeWon
         ? '🎉 Parabéns, você venceu!'
         : '😅 Quase lá!'
       : result?.title ?? (result?.type === 'win' ? 'Vitória' : 'Derrota');
   const message = isOnlinePostMatch
-    ? 'Sua partida foi encerrada.\nToque em Jogar pelo WhatsApp para escolher uma nova mesa.'
+    ? result?.message ?? 'Sua partida foi encerrada.\nToque em Jogar pelo WhatsApp para escolher uma nova mesa.'
     : isTestMode
       ? testModeWon
         ? 'Você já entendeu como o Pife Duelo funciona.\nAgora, se quiser, volte ao WhatsApp e entre em uma mesa valendo.\n\n💰 Jogue com responsabilidade.\n🔞 Apenas para maiores de 18 anos.'
