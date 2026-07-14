@@ -1,14 +1,28 @@
-export function getOfficialWhatsAppBotNumber() {
-  return String(import.meta.env.VITE_WHATSAPP_BOT_NUMBER || '').replace(/\D/g, '');
+function normalizeWhatsAppPhone(phone) {
+  return String(phone || '').replace(/\D/g, '');
 }
 
-export function buildOfficialWhatsAppLink({ message = 'menu' } = {}) {
-  const botNumber = getOfficialWhatsAppBotNumber();
-  const encodedText = encodeURIComponent(String(message || 'menu'));
+export function buildWhatsAppChatUrl({ phone, message = 'jogar' } = {}) {
+  const normalizedPhone = normalizeWhatsAppPhone(phone);
+  if (!normalizedPhone) return null;
 
-  return botNumber
-    ? `https://wa.me/${botNumber}?text=${encodedText}`
-    : `https://wa.me/?text=${encodedText}`;
+  const normalizedMessage = String(message || 'jogar').trim() || 'jogar';
+  return `https://wa.me/${normalizedPhone}?text=${encodeURIComponent(normalizedMessage)}`;
+}
+
+export function getOfficialWhatsAppBotNumber() {
+  const viteNumber = import.meta.env?.VITE_WHATSAPP_BOT_NUMBER ?? '';
+  const buildTimeNumber = typeof __PIFE_PUBLIC_WHATSAPP_BOT_NUMBER__ === 'undefined'
+    ? ''
+    : __PIFE_PUBLIC_WHATSAPP_BOT_NUMBER__;
+  return normalizeWhatsAppPhone(viteNumber || buildTimeNumber);
+}
+
+export function buildOfficialWhatsAppLink({ message = 'jogar' } = {}) {
+  return buildWhatsAppChatUrl({
+    phone: getOfficialWhatsAppBotNumber(),
+    message,
+  });
 }
 
 export function buildWhatsAppMenuLink() {

@@ -18,7 +18,7 @@ import {
   surrenderOnlineMatch,
 } from '../services/onlineGameSocket.js';
 import { playSoundEffect } from '../services/soundEffects.js';
-import { buildWhatsAppMenuLink } from '../services/whatsAppLink.js';
+import { buildWhatsAppPlayLink } from '../services/whatsAppLink.js';
 import { formatMoney } from '../shared/economy.js';
 import { validatePifeHand } from '../shared/pifeRules.js';
 
@@ -216,7 +216,6 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const canBeat = handValidation.canBeat && canAct;
   const result = buildOnlineResult(onlineGameState);
   const showKnockReveal = onlineGameState.result?.reason === 'knock';
-  const hasWhatsAppReturn = Boolean(onlineGameState.fromWhatsAppEntry || onlineGameState.entryAccess?.entryId);
   const turnDurationSeconds = onlineGameState.turnDurationSeconds ?? 60;
   const playerTurnStatus = onlineGameState.isYourTurn ? 'Sua vez' : 'Aguarde';
   const opponentTurnStatus = onlineGameState.isYourTurn ? 'Aguarde' : 'Adversario';
@@ -361,8 +360,20 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   ]);
 
   const handleOpenWhatsApp = useCallback(() => {
-    window.location.href = buildWhatsAppMenuLink();
-  }, []);
+    const link = buildWhatsAppPlayLink();
+    if (!link) {
+      console.error('POST_MATCH_WHATSAPP_LINK_MISSING', {
+        mode: 'online',
+        matchId: onlineGameState.matchId,
+        playerId: onlineGameState.playerId,
+      });
+      setLocalActionError('Nao foi possivel abrir o WhatsApp agora. Tente novamente em instantes.');
+      if (actionErrorTimeoutRef.current) window.clearTimeout(actionErrorTimeoutRef.current);
+      actionErrorTimeoutRef.current = window.setTimeout(() => setLocalActionError(''), 3200);
+      return;
+    }
+    window.location.assign(link);
+  }, [onlineGameState.matchId, onlineGameState.playerId]);
 
   useEffect(() => {
     if (!onlineGameState.result) return;
@@ -557,7 +568,6 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
             result={showKnockReveal ? null : result}
             onRestart={onLeaveOnline}
             isOnlinePostMatch={Boolean(result)}
-            hasWhatsAppReturn={hasWhatsAppReturn}
             onOpenWhatsApp={handleOpenWhatsApp}
           />
           <EndGameReveal
@@ -567,7 +577,6 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
             currentPlayerId={onlineGameState.playerId}
             onNewMatch={onLeaveOnline}
             isOnlinePostMatch={showKnockReveal}
-            hasWhatsAppReturn={hasWhatsAppReturn}
             onOpenWhatsApp={handleOpenWhatsApp}
           />
           {economy ? (

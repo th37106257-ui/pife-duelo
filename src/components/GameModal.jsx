@@ -9,7 +9,6 @@ export default function GameModal({
   onExitToMenu,
   onGoToPaidFlow,
   isOnlinePostMatch = false,
-  hasWhatsAppReturn = false,
   onOpenWhatsApp,
 }) {
   const winner = result?.winner ?? (result?.type === 'win' ? 'player' : 'bot');
@@ -25,9 +24,7 @@ export default function GameModal({
         : '😅 Quase lá!'
       : result?.title ?? (result?.type === 'win' ? 'Vitória' : 'Derrota');
   const message = isOnlinePostMatch
-    ? hasWhatsAppReturn
-      ? 'O resultado foi enviado para seu WhatsApp.\nVolte para o WhatsApp para jogar novamente.'
-      : 'Sua partida foi encerrada.\nEscolha uma opção abaixo para continuar pelo site.'
+    ? 'Sua partida foi encerrada.\nToque em Jogar pelo WhatsApp para escolher uma nova mesa.'
     : isTestMode
       ? testModeWon
         ? 'Você já entendeu como o Pife Duelo funciona.\nAgora, se quiser, volte ao WhatsApp e entre em uma mesa valendo.\n\n💰 Jogue com responsabilidade.\n🔞 Apenas para maiores de 18 anos.'
@@ -93,24 +90,12 @@ export default function GameModal({
             ) : null}
             {isOnlinePostMatch ? (
               <div className="modal-actions">
-                {hasWhatsAppReturn ? (
-                  <button type="button" onClick={onOpenWhatsApp}>
-                    Abrir WhatsApp
-                  </button>
-                ) : (
-                  <>
-                    <button type="button" onClick={onRestart}>Jogar novamente</button>
-                    <button type="button" className="modal-secondary-action" onClick={onRestart}>Ver mesas</button>
-                  </>
-                )}
-                <button type="button" className={hasWhatsAppReturn ? 'modal-secondary-action' : 'modal-ghost-action'} onClick={onRestart}>
+                <button type="button" onClick={onOpenWhatsApp}>
+                  Jogar pelo WhatsApp
+                </button>
+                <button type="button" className="modal-secondary-action" onClick={onRestart}>
                   Voltar ao lobby
                 </button>
-                {!hasWhatsAppReturn ? (
-                  <button type="button" className="modal-ghost-action" onClick={onOpenWhatsApp}>
-                    Suporte
-                  </button>
-                ) : null}
               </div>
             ) : isTestMode ? (
               <div className="modal-actions">

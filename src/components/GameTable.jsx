@@ -746,25 +746,43 @@ export default function GameTable() {
   const openWhatsAppFromTestMode = useCallback(() => {
     if (testModeWhatsAppOpeningRef.current) return;
     testModeWhatsAppOpeningRef.current = true;
+    const link = buildWhatsAppPlayLink();
+    if (!link) {
+      console.error('POST_MATCH_WHATSAPP_LINK_MISSING', {
+        mode: 'test',
+        matchId: matchMeta.matchId,
+      });
+      showToast('Nao foi possivel abrir o WhatsApp agora. Tente novamente em instantes.');
+      testModeWhatsAppOpeningRef.current = false;
+      return;
+    }
     console.info('TEST_MODE_GO_TO_WHATSAPP', {
       from: 'test_mode_result',
       matchId: matchMeta.matchId,
     });
-    window.location.href = buildWhatsAppPlayLink();
+    window.location.assign(link);
     window.setTimeout(() => {
       testModeWhatsAppOpeningRef.current = false;
     }, 1800);
-  }, [matchMeta.matchId]);
+  }, [matchMeta.matchId, showToast]);
 
   const copyWhatsAppLinkFromTestMode = useCallback(async () => {
     const link = buildWhatsAppPlayLink();
+    if (!link) {
+      console.error('POST_MATCH_WHATSAPP_LINK_MISSING', {
+        mode: 'test',
+        matchId: matchMeta.matchId,
+      });
+      showToast('Nao foi possivel abrir o WhatsApp agora. Tente novamente em instantes.');
+      return;
+    }
     try {
       await navigator.clipboard?.writeText?.(link);
       showToast('Link do WhatsApp copiado.');
     } catch {
       showToast('Nao abriu? Copie o link e abra no navegador.');
     }
-  }, [showToast]);
+  }, [matchMeta.matchId, showToast]);
 
   const openTestModeMenu = useCallback(() => {
     if (!isTestMode) return;

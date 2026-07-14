@@ -188,6 +188,7 @@ class CdpClient {
 async function openCdpPage(url) {
   const port = 9222 + Math.floor(Math.random() * 800);
   const profileDir = await mkdtemp(join(tmpdir(), 'pife-test-mode-cdp-'));
+  const desktopMode = process.env.PIFE_E2E_DESKTOP === '1';
   const browserProcess = spawn(findEdgePath(), [
     `--remote-debugging-port=${port}`,
     '--remote-allow-origins=*',
@@ -197,7 +198,7 @@ async function openCdpPage(url) {
     '--disable-gpu-sandbox',
     '--no-first-run',
     '--no-default-browser-check',
-    '--window-size=420,860',
+    desktopMode ? '--window-size=1280,900' : '--window-size=420,860',
     'about:blank',
   ], {
     stdio: ['ignore', 'ignore', 'ignore'],
@@ -230,15 +231,16 @@ async function openCdpPage(url) {
   const cdp = new CdpClient(socket);
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
+  await cdp.send('Network.enable');
   await cdp.send('Log.enable');
   await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: 420,
-    height: 860,
-    deviceScaleFactor: 2,
-    mobile: true,
+    width: desktopMode ? 1280 : 420,
+    height: desktopMode ? 900 : 860,
+    deviceScaleFactor: desktopMode ? 1 : 2,
+    mobile: !desktopMode,
   });
   await cdp.send('Emulation.setTouchEmulationEnabled', {
-    enabled: true,
+    enabled: !desktopMode,
     maxTouchPoints: 1,
   });
 
@@ -299,6 +301,26 @@ async function waitForEvalBoolean(cdp, expression, timeoutMs = 1200) {
     await wait(120);
   }
   return false;
+}
+
+async function waitForNavigationRequest(cdp, expectedUrl, startIndex, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const navigation = cdp.events.slice(startIndex).find((event) => {
+      const url = event.params?.request?.url ?? event.params?.url ?? '';
+      return url === expectedUrl;
+    });
+    if (navigation) return navigation.params?.request?.url ?? navigation.params?.url;
+    await wait(120);
+  }
+  const navigationEvents = cdp.events.slice(startIndex)
+    .filter((event) => event.method.startsWith('Page.frame') || event.method === 'Network.requestWillBeSent')
+    .map((event) => ({
+      method: event.method,
+      url: event.params?.request?.url ?? event.params?.url ?? null,
+      reason: event.params?.reason ?? null,
+    }));
+  throw new Error(`Navegacao direta para o WhatsApp nao ocorreu: ${expectedUrl}. Eventos: ${JSON.stringify(navigationEvents)}`);
 }
 
 async function getRect(cdp, expression) {
@@ -599,9 +621,34 @@ async function assertScatteredWinningHandBeat(cdp) {
     groups: document.querySelectorAll('.endgame-groups .winning-group').length,
     cards: document.querySelectorAll('.endgame-groups .endgame-card').length,
     whatsappButton: Array.from(document.querySelectorAll('.endgame-panel button')).some((button) => button.textContent.includes('WhatsApp')),
+    whatsappLink: document.querySelector('.endgame-whatsapp-fallback')?.textContent?.trim() ?? '',
   })`);
-  if (revealSummary.groups !== 3 || revealSummary.cards !== 9 || !revealSummary.whatsappButton) {
+  if (
+    revealSummary.groups !== 3
+    || revealSummary.cards !== 9
+    || !revealSummary.whatsappButton
+    || !/^https:\/\/wa\.me\/\d+\?text=jogar$/.test(revealSummary.whatsappLink)
+  ) {
     throw new Error(`Tela final incompleta: ${JSON.stringify(revealSummary)}`);
+  }
+
+  if (process.env.PIFE_E2E_CLICK_WHATSAPP === '1') {
+    await evaluate(
+      cdp,
+      `Array.from(document.querySelectorAll('.endgame-panel button')).find((button) => button.textContent.includes('Jogar pelo WhatsApp'))?.scrollIntoView({ block: 'center' })`,
+    );
+    await wait(500);
+    const eventStartIndex = cdp.events.length;
+    const whatsappButtonRect = await getRect(
+      cdp,
+      `Array.from(document.querySelectorAll('.endgame-panel button')).find((button) => button.textContent.includes('Jogar pelo WhatsApp'))`,
+    );
+    await clickRect(cdp, whatsappButtonRect);
+    revealSummary.navigationUrl = await waitForNavigationRequest(
+      cdp,
+      revealSummary.whatsappLink,
+      eventStartIndex,
+    );
   }
   return revealSummary;
 }

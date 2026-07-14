@@ -59,9 +59,9 @@ class ResultRenderBoundary extends Component {
             <p className="endgame-subtitle">O jogo terminou, mas houve um erro ao mostrar os detalhes das cartas.</p>
             <p className="endgame-footer">Voce ja pode voltar ao lobby ou abrir o WhatsApp para continuar.</p>
             <div className="modal-actions">
-              {this.props.hasWhatsAppReturn ? (
+              {this.props.onOpenWhatsApp ? (
                 <button type="button" className="endgame-button" onClick={this.props.onOpenWhatsApp}>
-                  Abrir WhatsApp
+                  Jogar pelo WhatsApp
                 </button>
               ) : null}
               <button type="button" className="modal-ghost-action" onClick={this.props.onNewMatch}>
@@ -85,7 +85,6 @@ export default function EndGameReveal({
   onNewMatch,
   isOnlinePostMatch = false,
   isTestModePostMatch = false,
-  hasWhatsAppReturn = false,
   onOpenWhatsApp,
   onCopyWhatsAppLink,
   onExitToMenu,
@@ -128,7 +127,6 @@ export default function EndGameReveal({
       matchId={matchId}
       reason={result?.reason ?? null}
       mode={isTestModePostMatch ? 'test' : isOnlinePostMatch ? 'online' : 'local'}
-      hasWhatsAppReturn={hasWhatsAppReturn}
       onOpenWhatsApp={onOpenWhatsApp}
       onNewMatch={onNewMatch}
     >
@@ -224,9 +222,7 @@ export default function EndGameReveal({
               </>
             ) : isOnlinePostMatch ? (
               <p className="endgame-footer">
-                {hasWhatsAppReturn
-                  ? 'O resultado foi enviado para seu WhatsApp. Volte para o WhatsApp para jogar novamente.'
-                  : 'Sua partida foi encerrada. Você já pode escolher uma mesa novamente.'}
+                Sua partida foi encerrada. Toque em Jogar pelo WhatsApp para escolher uma nova mesa.
               </p>
             ) : null}
             {economy || economicResult ? (
@@ -260,20 +256,9 @@ export default function EndGameReveal({
               </div>
             ) : isOnlinePostMatch ? (
               <div className="modal-actions">
-                {hasWhatsAppReturn ? (
-                  <button type="button" className="endgame-button" onClick={onOpenWhatsApp}>
-                    Abrir WhatsApp
-                  </button>
-                ) : (
-                  <>
-                    <button type="button" className="endgame-button" onClick={onNewMatch}>
-                      Jogar novamente
-                    </button>
-                    <button type="button" className="modal-secondary-action" onClick={onNewMatch}>
-                      Ver mesas
-                    </button>
-                  </>
-                )}
+                <button type="button" className="endgame-button" onClick={onOpenWhatsApp}>
+                  Jogar pelo WhatsApp
+                </button>
                 <button type="button" className="modal-ghost-action" onClick={onNewMatch}>
                   Voltar ao lobby
                 </button>
