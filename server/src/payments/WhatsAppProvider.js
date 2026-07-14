@@ -187,6 +187,24 @@ export class WhatsAppProvider {
     return result;
   }
 
+  async editTrackedMessage(payload = {}) {
+    const active = this.getActiveProviderName();
+    if (active !== 'evolution' || !this.evolutionClient?.isConfigured?.()) {
+      return { ok: false, reason: 'WHATSAPP_PANEL_OPERATION_UNSUPPORTED', provider: active };
+    }
+    return this.evolutionClient.editTrackedMessage?.(payload)
+      ?? { ok: false, reason: 'WHATSAPP_PANEL_OPERATION_UNSUPPORTED', provider: active };
+  }
+
+  async deleteTrackedMessage(payload = {}) {
+    const active = this.getActiveProviderName();
+    if (active !== 'evolution' || !this.evolutionClient?.isConfigured?.()) {
+      return { ok: false, reason: 'WHATSAPP_PANEL_OPERATION_UNSUPPORTED', provider: active };
+    }
+    return this.evolutionClient.deleteTrackedMessage?.(payload)
+      ?? { ok: false, reason: 'WHATSAPP_PANEL_OPERATION_UNSUPPORTED', provider: active };
+  }
+
   async sendText(phone, text, options = {}) {
     const result = await this.sendWhatsAppMessage(phone, text, {
       ...options,

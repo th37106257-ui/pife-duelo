@@ -150,11 +150,13 @@ assert.equal(botPendingResult.type, 'whatsapp_entry_pending_admin');
 assert.equal(botPendingResult.entryId, 'E2000');
 assert.equal(botStore.listEntries().length, 1);
 assert.equal(botStore.getEntry('E2000').status, 'pending_admin_validation');
-assert.match(botMessages.at(-1).text, /Aguarde a liberação do admin/);
+assert.match(botMessages.at(-1).text, /Entrada de teste.*Aguarde/i);
 assert.doesNotMatch(botMessages.at(-1).text, /chave pix|https?:\/\//i);
 
-await bot.handleConnectivityWebhook(entryWebhook(botPlayer, 'menu'));
-await bot.handleConnectivityWebhook(entryWebhook(botPlayer, '1'));
+const pendingMenu = await bot.handleConnectivityWebhook(entryWebhook(botPlayer, 'menu'));
+assert.equal(pendingMenu.type, 'whatsapp_context_menu_sent');
+assert.equal(botStore.getEntry('E2000').status, 'pending_admin_validation');
+bot.setConversationState(botPlayer, 'choosing_table', 2);
 const lockedResult = await bot.handleConnectivityWebhook(entryWebhook(botPlayer, '2'));
 assert.equal(lockedResult.reason, 'ENTRY_TABLE_LOCKED');
 assert.equal(botStore.getEntry('E2000').selectedTable, 2);

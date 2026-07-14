@@ -109,7 +109,7 @@ assert.equal(first.alreadyProcessed, false);
 assert.equal(second.alreadyProcessed, true);
 assert.equal(emitted, 2);
 assert.equal(sentMessages.length, 3);
-assert.match(sentMessages[0].text, /Você venceu no Pife Duelo/);
+assert.match(sentMessages[0].text, /Você venceu no Pife Duelo/i);
 assert.match(sentMessages[1].text, /Resultado: Derrota/);
 assert.match(sentMessages[2].text, /PARTIDA FINALIZADA/);
 assert.equal(matchQueue.findActiveMatch('5511999991111'), null);
@@ -135,7 +135,7 @@ const pendingSummary = await flow.notifyPendingMatchTerminal({
   ],
 });
 assert.equal(pendingSummary.sent, true);
-assert.match(sentMessages.at(-1).text, /Estado da partida: aborted/);
+assert.match(sentMessages.at(-1).text, /Estado da partida: aborted/i);
 assert.match(sentMessages.at(-1).text, /Status das entradas: refund_pending \/ refund_pending/);
 
 let retryAttempts = 0;

@@ -1,4 +1,34 @@
 import { maskPhone, normalizePhone } from './PaymentService.js';
+import { buildPublicMatchReference } from '../services/publicMatchReference.js';
+import { WhatsAppConversationUiService } from '../services/WhatsAppConversationUiService.js';
+import {
+  WHATSAPP_PLAYER_STATES,
+  activeMatch as activeMatchMessage,
+  adminReview as adminReviewMessage,
+  cancelConfirmation as cancelConfirmationMessage,
+  cancellationProtocol,
+  friendlyActionError,
+  howItWorksMenu,
+  invalidCommand,
+  mainMenu,
+  matchFinished as matchFinishedMessage,
+  matchFound as matchFoundMessage,
+  matchLinkReady as matchLinkReadyMessage,
+  otherQueue as otherQueueMessage,
+  paidEntryActive as paidEntryActiveMessage,
+  preMatchWaiting as preMatchWaitingMessage,
+  queueDuplicate as queueDuplicateMessage,
+  refundPending as refundPendingMessage,
+  ruleTopic,
+  rulesMenu,
+  supportContact,
+  supportMenu,
+  supportTopic,
+  tablesMenu,
+  testModeMessage,
+  unavailableLink,
+  waitingForOpponent,
+} from '../services/whatsappMessages.js';
 
 function sanitizeText(value) {
   return String(value || '')
@@ -98,8 +128,11 @@ const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
 const SUPPORT_COMMANDS = new Set(['4', 'suporte', 'atendimento', 'ajuda']);
 const PLAY_COMMANDS = new Set(['1', 'jogar', 'jogar valendo', 'valendo', 'ver mesas', 'mesas', 'mesa']);
-const TEST_MODE_COMMANDS = new Set(['2', 'modo teste', 'modo teste gratis', 'teste', 'testar', 'gratis', 'gratuito']);
+const HOW_IT_WORKS_COMMANDS = new Set(['2', 'como funciona', 'funcionamento']);
+const TEST_MODE_COMMANDS = new Set(['modo teste', 'modo teste gratis', 'teste', 'testar', 'gratis', 'gratuito']);
 const RULES_COMMANDS = new Set(['3', 'regras', 'regra', 'como jogar']);
+const STATUS_COMMANDS = new Set(['status', 'situacao']);
+const LINK_COMMANDS = new Set(['link', 'acesso', 'meu link']);
 const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
 
 function isAdminCommandText(command) {
@@ -117,14 +150,20 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (incoming.isGroup) return 'ignored_group';
   if (IDENTIFY_COMMANDS.has(command)) return 'identify';
   if (isAdminCommandText(command)) return 'admin_command';
+  if (currentState?.state === 'cancel_confirmation' && ['1', '2'].includes(command)) return 'cancel_confirmation';
+  if (currentState?.state === 'rules_menu' && /^[1-6]$/.test(command)) return 'rules_topic';
+  if (currentState?.state === 'support_menu' && /^[1-6]$/.test(command)) return 'support_topic';
   const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
   if (CANCEL_QUEUE_COMMANDS.has(command)) return 'cancel_queue';
   if (isTableSelectionInProgress) return 'table_selection';
   if (PLAY_COMMANDS.has(command)) return 'play_or_tables';
+  if (HOW_IT_WORKS_COMMANDS.has(command)) return 'how_it_works';
   if (TEST_MODE_COMMANDS.has(command)) return 'test_mode';
   if (RULES_COMMANDS.has(command)) return 'rules';
+  if (STATUS_COMMANDS.has(command)) return 'status';
+  if (LINK_COMMANDS.has(command)) return 'link';
   if (SUPPORT_COMMANDS.has(command)) return 'support';
   if (incoming.hasReceiptMedia) return 'receipt_media';
   return 'fallback_invalid';
@@ -312,6 +351,8 @@ export class WhatsAppPaymentBot {
     entryService,
     matchQueue,
     safeEntryEnabled = false,
+    paymentsEnabled = false,
+    cleanConversationEnabled = false,
     evolutionClient,
     pixKey,
     pixReceiver,
@@ -327,6 +368,7 @@ export class WhatsAppPaymentBot {
     this.entryService = entryService;
     this.matchQueue = matchQueue;
     this.safeEntryEnabled = Boolean(safeEntryEnabled);
+    this.paymentsEnabled = Boolean(paymentsEnabled);
     this.evolutionClient = evolutionClient;
     this.pixKey = String(pixKey || '');
     this.pixReceiver = String(pixReceiver || '');
@@ -340,6 +382,14 @@ export class WhatsAppPaymentBot {
     this.rateLimits = new Map();
     this.recentFingerprints = new Map();
     this.conversationStates = new Map();
+    this.conversationTasks = new Map();
+    this.conversationUi = new WhatsAppConversationUiService({
+      client: evolutionClient,
+      enabled: cleanConversationEnabled,
+      clock,
+      logInfo,
+      logWarn,
+    });
     this.webhookDiagnostics = {
       lastWebhookReceivedAt: null,
       lastWebhookEvent: null,
@@ -427,6 +477,109 @@ export class WhatsAppPaymentBot {
         reason: error.message,
       };
     }
+  }
+
+  async sendPanel(replyTo, playerPhone, state, content) {
+    return this.conversationUi.updateConversationPanel({
+      phone: playerPhone,
+      state,
+      content,
+      sendNew: (nextContent) => this.send(replyTo, nextContent, { replyType: 'transient_panel' }),
+    });
+  }
+
+  async sendPermanent(replyTo, playerPhone, content, metadata = {}) {
+    await this.conversationUi.retirePanel(playerPhone, { deleteMessage: true });
+    return this.send(replyTo, content, { ...metadata, replyType: metadata.replyType || 'permanent' });
+  }
+
+  enqueueConversation(phone, task) {
+    const key = normalizePhone(phone) || 'unknown';
+    const previous = this.conversationTasks.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(task);
+    this.conversationTasks.set(key, current);
+    return current.finally(() => {
+      if (this.conversationTasks.get(key) === current) this.conversationTasks.delete(key);
+    });
+  }
+
+  getPlayerContext(phone) {
+    const normalizedPhone = normalizePhone(phone);
+    const queue = this.matchQueue?.findPlayerQueue?.(normalizedPhone) ?? null;
+    const entry = this.entryService?.getActiveEntryForPhone?.(normalizedPhone) ?? null;
+    const latestEntry = this.entryService?.listEntriesForPhone?.(normalizedPhone)?.[0] ?? null;
+    const status = entry?.status ?? (queue ? 'approved_for_queue' : latestEntry?.status ?? null);
+    const table = entry?.selectedTable ?? queue?.tableValue ?? latestEntry?.selectedTable ?? null;
+    const matchId = entry?.linkedMatchId
+      ?? entry?.whatsappMatchId
+      ?? latestEntry?.linkedMatchId
+      ?? latestEntry?.whatsappMatchId
+      ?? null;
+    const publicReference = entry?.publicMatchReference
+      ?? latestEntry?.publicMatchReference
+      ?? (matchId ? buildPublicMatchReference(matchId) : null);
+    let state = WHATSAPP_PLAYER_STATES.IDLE;
+
+    if (status === 'refund_pending') state = WHATSAPP_PLAYER_STATES.REFUND_PENDING;
+    else if (['admin_review', 'abandoned_before_start', 'pending_admin_validation'].includes(status)) {
+      state = WHATSAPP_PLAYER_STATES.ADMIN_REVIEW;
+    } else if (['playing', 'linked'].includes(status) || Boolean(entry?.playingAt || entry?.linkedMatchId)) {
+      state = WHATSAPP_PLAYER_STATES.MATCH_STARTED;
+    } else if (status === 'queued' && entry?.whatsappMatchId) {
+      state = WHATSAPP_PLAYER_STATES.PRE_MATCH_WAITING;
+    } else if (entry?.whatsappMatchId && entry?.linkSentAt) {
+      state = WHATSAPP_PLAYER_STATES.MATCH_LINK_READY;
+    } else if (queue || ['approved_for_queue', 'queued', 'requeued_after_opponent_cancel'].includes(status)) {
+      state = WHATSAPP_PLAYER_STATES.WAITING_FOR_OPPONENT;
+    } else if (latestEntry?.status === 'finished') {
+      state = WHATSAPP_PLAYER_STATES.MATCH_FINISHED;
+    }
+
+    const paidConfirmed = Boolean(entry?.paidConfirmed || latestEntry?.paidConfirmed);
+    const canCancel = [
+      WHATSAPP_PLAYER_STATES.WAITING_FOR_OPPONENT,
+      WHATSAPP_PLAYER_STATES.MATCH_LINK_READY,
+      WHATSAPP_PLAYER_STATES.PRE_MATCH_WAITING,
+    ].includes(state) && !paidConfirmed;
+    return {
+      state,
+      status,
+      table,
+      matchId,
+      publicReference,
+      entry,
+      latestEntry,
+      queue,
+      paidConfirmed,
+      canCancel,
+    };
+  }
+
+  messageForContext(context) {
+    switch (context.state) {
+      case WHATSAPP_PLAYER_STATES.WAITING_FOR_OPPONENT:
+        return waitingForOpponent(context);
+      case WHATSAPP_PLAYER_STATES.MATCH_LINK_READY:
+        return matchLinkReadyMessage(context);
+      case WHATSAPP_PLAYER_STATES.PRE_MATCH_WAITING:
+        return preMatchWaitingMessage(context);
+      case WHATSAPP_PLAYER_STATES.MATCH_STARTED:
+        return activeMatchMessage(context);
+      case WHATSAPP_PLAYER_STATES.MATCH_FINISHED:
+        return matchFinishedMessage();
+      case WHATSAPP_PLAYER_STATES.ADMIN_REVIEW:
+        return adminReviewMessage(context);
+      case WHATSAPP_PLAYER_STATES.REFUND_PENDING:
+        return refundPendingMessage(context);
+      default:
+        return mainMenu({ paymentsEnabled: this.paymentsEnabled });
+    }
+  }
+
+  async renderCurrentContext(replyTo, playerPhone) {
+    const context = this.getPlayerContext(playerPhone);
+    await this.sendPanel(replyTo, playerPhone, context.state, this.messageForContext(context));
+    return context;
   }
 
   async getWhatsAppStatusText() {
@@ -523,16 +676,7 @@ export class WhatsAppPaymentBot {
   }
 
   safeMenuText() {
-    return [
-      '\u{1F3B4} Bem-vindo ao Pife Duelo!',
-      '',
-      'Escolha uma op\u00e7\u00e3o:',
-      '',
-      '1\uFE0F\u20E3 Jogar valendo',
-      '2\uFE0F\u20E3 Modo teste gr\u00e1tis',
-      '3\uFE0F\u20E3 Regras',
-      '4\uFE0F\u20E3 Suporte',
-    ].join('\n');
+    return mainMenu({ paymentsEnabled: this.paymentsEnabled });
   }
 
   buildTestModeLink() {
@@ -541,48 +685,15 @@ export class WhatsAppPaymentBot {
   }
 
   safeTestModeText(testModeLink = this.buildTestModeLink()) {
-    return [
-      '\u{1F3AE} Modo Teste gr\u00e1tis liberado!',
-      '',
-      'Aqui voc\u00ea pode conhecer o Pife Duelo sem pagar nada e sem pr\u00eamio.',
-      '',
-      '\u2705 Sem Pix',
-      '\u2705 Sem aposta',
-      '\u2705 Sem pr\u00eamio',
-      '\u2705 Apenas para testar a gameplay',
-      '',
-      'Clique no link abaixo para jogar no modo teste:',
-      '',
-      testModeLink,
-    ].join('\n');
+    return testModeMessage(testModeLink);
   }
 
   safeTablesText() {
-    return [
-      'Escolha sua mesa:',
-      '',
-      '1\uFE0F\u20E3 Mesa R$2,00 \u2014 vencedor recebe R$3,60',
-      '2\uFE0F\u20E3 Mesa R$5,00 \u2014 vencedor recebe R$9,00',
-      '3\uFE0F\u20E3 Mesa R$10,00 \u2014 vencedor recebe R$17,00',
-      '4\uFE0F\u20E3 Mesa R$20,00 \u2014 vencedor recebe R$32,80',
-      '',
-      'Digite o n\u00famero da mesa desejada.',
-    ].join('\n');
+    return tablesMenu({ paymentsEnabled: this.paymentsEnabled });
   }
 
   safeRulesText() {
-    return [
-      '\u{1F4DC} Regras b\u00e1sicas do Pife Duelo:',
-      '',
-      '* Partida 1x1',
-      '* Voc\u00ea joga no seu turno',
-      '* Pode comprar do monte ou do descarte',
-      '* Depois deve descartar uma carta',
-      '* Para vencer, forme combina\u00e7\u00f5es v\u00e1lidas do Pife',
-      '* Tempo por jogada: 60 segundos',
-      '* Se o tempo acabar, o sistema faz jogada autom\u00e1tica',
-      '* Ap\u00f3s pagamento confirmado, n\u00e3o h\u00e1 cancelamento autom\u00e1tico',
-    ].join('\n');
+    return rulesMenu();
   }
 
   buildSupportLink() {
@@ -591,53 +702,19 @@ export class WhatsAppPaymentBot {
   }
 
   safeSupportText({ activeContext = null } = {}) {
-    const supportLink = this.buildSupportLink();
-    const lines = [
-      '\u{1F4DE} Suporte Pife Duelo',
-      '',
-      'Para falar com o suporte, toque no link abaixo:',
-      '',
-      supportLink || 'Suporte temporariamente indispon\u00edvel. Responda aqui descrevendo o problema.',
-      '',
-      'Se voc\u00ea j\u00e1 pagou ou est\u00e1 com problema em uma partida, envie:',
-      '\u2022 seu n\u00famero',
-      '\u2022 mesa escolhida',
-      '\u2022 print do erro',
-      '\u2022 comprovante, se houver pagamento',
-      '',
-      'Tamb\u00e9m pode responder aqui descrevendo o problema.',
-    ];
-
-    if (activeContext) {
-      lines.push(
-        '',
-        'Identificamos que voc\u00ea pode ter uma entrada ativa. Fale com o suporte antes de cancelar ou sair.',
-      );
-    }
-
-    return lines.join('\n');
+    return supportContact({
+      supportLink: this.buildSupportLink(),
+      publicReference: activeContext?.publicReference ?? null,
+      hasActiveContext: Boolean(activeContext),
+    });
   }
 
   getSupportContext(phone) {
-    const activeMatch = this.matchQueue?.findActiveMatch?.(phone) ?? null;
-    const activeEntry = this.entryService?.getActiveEntryForPhone?.(phone) ?? null;
-    const activeQueue = this.matchQueue?.findPlayerQueue?.(phone) ?? null;
-    const status = activeMatch?.status
-      ?? activeEntry?.status
-      ?? (activeQueue ? 'queued' : null);
-    const table = activeMatch?.tableValue
-      ?? activeEntry?.selectedTable
-      ?? activeQueue?.tableValue
-      ?? null;
-    const matchId = activeMatch?.matchId
-      ?? activeEntry?.linkedMatchId
-      ?? null;
-
+    const playerContext = this.getPlayerContext(phone);
     return {
-      status,
-      table,
-      matchId,
-      hasActiveContext: Boolean(activeMatch || activeEntry || activeQueue),
+      ...playerContext,
+      hasActiveContext: playerContext.state !== WHATSAPP_PLAYER_STATES.IDLE
+        && playerContext.state !== WHATSAPP_PLAYER_STATES.MATCH_FINISHED,
     };
   }
 
@@ -652,20 +729,16 @@ export class WhatsAppPaymentBot {
       originIp,
     });
 
-    await this.send(replyTo, this.safeSupportText({
-      activeContext: context.hasActiveContext ? context : null,
+    this.setConversationState(incoming.phone, 'support_menu');
+    await this.sendPanel(replyTo, incoming.phone, 'SUPPORT_MENU', supportMenu({
+      publicReference: context.publicReference,
     }));
 
-    this.logInfo('WHATSAPP_SUPPORT_LINK_SENT', {
-      playerId: maskPhone(incoming.phone),
-      supportNumber: maskPhone(this.supportNumber),
-    });
-
     return {
-      type: 'whatsapp_support_sent',
+      type: 'whatsapp_support_menu_sent',
       decision: 'reply_sent',
       reason: 'support_requested',
-      state: this.getConversationState(incoming.phone).state,
+      state: 'support_menu',
       status: context.status,
       table: context.table,
       matchId: context.matchId,
@@ -674,6 +747,19 @@ export class WhatsAppPaymentBot {
   }
 
   safeTableSelectedText(amount, { entryRegistered = false } = {}) {
+    if (!this.paymentsEnabled) {
+      return [
+        '*MESA SELECIONADA*',
+        '',
+        `Mesa: R$${Number(amount).toFixed(2).replace('.', ',')}`,
+        entryRegistered
+          ? 'Sua Entrada de teste foi registrada. Aguarde a próxima orientação.'
+          : 'A seleção foi registrada somente para teste da conversa.',
+        '',
+        '_Nenhum valor foi cobrado e não há prêmio real nesta fase._',
+        'Digite *status* para consultar ou *menu* para ver opções seguras.',
+      ].join('\n');
+    }
     if (entryRegistered) {
       return [
         `\u2705 Mesa selecionada: R$${Number(amount).toFixed(2).replace('.', ',')}.`,
@@ -963,6 +1049,8 @@ export class WhatsAppPaymentBot {
   }
 
   safeQueueJoinedText(amount) {
+    return waitingForOpponent({ table: amount });
+    /* istanbul ignore next */
     return [
       `✅ Você entrou na fila da Mesa R$${Number(amount).toFixed(0)}.`,
       'Aguardando outro jogador entrar...',
@@ -972,14 +1060,20 @@ export class WhatsAppPaymentBot {
   }
 
   safeQueueDuplicateText() {
+    return queueDuplicateMessage({ table: arguments[0]?.table ?? arguments[0]?.tableValue ?? null });
+    /* istanbul ignore next */
     return '⏳ Você já está aguardando um adversário nesta mesa.';
   }
 
   safeActiveMatchText() {
+    return activeMatchMessage(arguments[0] || {});
+    /* istanbul ignore next */
     return '⚠️ Você já está em uma partida ativa.';
   }
 
   safeMatchFoundText(amount, accessLink) {
+    return matchFoundMessage({ table: amount, accessLink, publicReference: arguments[2] ?? null });
+    /* istanbul ignore next */
     return [
       '🎮 Partida encontrada!',
       `Mesa: R$${Number(amount).toFixed(0)}`,
@@ -990,14 +1084,20 @@ export class WhatsAppPaymentBot {
   }
 
   safeOtherQueueText() {
+    return otherQueueMessage({ table: arguments[0]?.table ?? arguments[0]?.tableValue ?? null });
+    /* istanbul ignore next */
     return '⏳ Você já está aguardando adversário em outra mesa. Aguarde ou digite menu.';
   }
 
   safeQueueCancelledText() {
+    return cancellationProtocol();
+    /* istanbul ignore next */
     return '\u2705 Sua entrada foi cancelada. Voc\u00ea voltou ao menu.';
   }
 
   safePaidEntryActiveText(entry = null) {
+    return paidEntryActiveMessage({ table: entry?.selectedTable ?? null });
+    /* istanbul ignore next */
     const amount = entry?.selectedTable ? ` na Mesa R$${Number(entry.selectedTable).toFixed(0)}` : '';
     return [
       `✅ Você possui uma entrada paga ativa${amount}.`,
@@ -1013,7 +1113,225 @@ export class WhatsAppPaymentBot {
     ].join('\n');
   }
 
-  async handleConnectivityWebhook(payload, { originIp = null } = {}) {
+  async handleRulesTopic(incoming, { replyTo, command, originIp }) {
+    this.setConversationState(incoming.phone, 'rules_menu');
+    await this.sendPanel(replyTo, incoming.phone, `RULES_${command}`, ruleTopic(command));
+    return {
+      type: 'whatsapp_rules_topic_sent',
+      decision: 'reply_sent',
+      reason: `rules_topic_${command}`,
+      state: 'rules_menu',
+      originIp,
+    };
+  }
+
+  async handleSupportTopic(incoming, { replyTo, command, originIp }) {
+    const context = this.getSupportContext(incoming.phone);
+    if (command === '6') {
+      await this.sendPermanent(replyTo, incoming.phone, supportContact({
+        supportLink: this.buildSupportLink(),
+        publicReference: context.publicReference,
+        hasActiveContext: context.hasActiveContext,
+      }), { replyType: 'support_protocol' });
+      this.logInfo('WHATSAPP_SUPPORT_LINK_SENT', {
+        playerId: maskPhone(incoming.phone),
+        supportNumber: maskPhone(this.supportNumber),
+        publicReference: context.publicReference,
+      });
+      return {
+        type: 'whatsapp_support_link_sent',
+        decision: 'reply_sent',
+        reason: 'support_contact_requested',
+        state: 'support_menu',
+        originIp,
+      };
+    }
+
+    this.setConversationState(incoming.phone, 'support_menu');
+    await this.sendPanel(replyTo, incoming.phone, `SUPPORT_${command}`, supportTopic(command, {
+      publicReference: context.publicReference,
+    }));
+    return {
+      type: 'whatsapp_support_topic_sent',
+      decision: 'reply_sent',
+      reason: `support_topic_${command}`,
+      state: 'support_menu',
+      originIp,
+    };
+  }
+
+  async handleStatusCommand(incoming, { replyTo, originIp }) {
+    const context = await this.renderCurrentContext(replyTo, incoming.phone);
+    return {
+      type: 'whatsapp_status_sent',
+      decision: 'reply_sent',
+      reason: 'status_requested',
+      state: context.state,
+      originIp,
+    };
+  }
+
+  async handleLinkCommand(incoming, { replyTo, originIp }) {
+    const context = this.getPlayerContext(incoming.phone);
+    const entry = context.entry;
+    if (
+      context.state === WHATSAPP_PLAYER_STATES.MATCH_LINK_READY
+      && entry?.entryId
+      && entry?.whatsappMatchId
+    ) {
+      try {
+        const refreshed = this.entryService.refreshQueueAccessLink(entry.entryId, {
+          actor: incoming.phone,
+          source: 'whatsapp-link-recovery',
+          matchId: entry.whatsappMatchId,
+          preMatchDeadline: entry.preMatchDeadline,
+        });
+        this.entryService?.markLinkDelivery?.(entry.entryId, { sent: true });
+        await this.sendPermanent(replyTo, incoming.phone, matchFoundMessage({
+          table: context.table,
+          accessLink: refreshed.accessLink,
+          publicReference: context.publicReference,
+        }), { replyType: 'match_link' });
+        return {
+          type: 'whatsapp_match_link_recovered',
+          decision: 'reply_sent',
+          reason: 'match_link_recovered',
+          state: context.state,
+          originIp,
+        };
+      } catch (error) {
+        this.logWarn('WHATSAPP_MATCH_LINK_RECOVERY_FAILED', {
+          playerId: maskPhone(incoming.phone),
+          publicReference: context.publicReference,
+          reason: error.message,
+        });
+        await this.sendPanel(replyTo, incoming.phone, 'LINK_UNAVAILABLE', unavailableLink());
+        return {
+          type: 'whatsapp_match_link_unavailable',
+          decision: 'reply_sent',
+          reason: 'match_link_recovery_failed',
+          state: context.state,
+          originIp,
+        };
+      }
+    }
+
+    if ([WHATSAPP_PLAYER_STATES.PRE_MATCH_WAITING, WHATSAPP_PLAYER_STATES.MATCH_STARTED].includes(context.state)) {
+      await this.sendPanel(replyTo, incoming.phone, context.state, this.messageForContext(context));
+    } else {
+      await this.sendPanel(replyTo, incoming.phone, 'LINK_UNAVAILABLE', unavailableLink());
+    }
+    return {
+      type: 'whatsapp_match_link_unavailable',
+      decision: 'reply_sent',
+      reason: 'no_recoverable_link',
+      state: context.state,
+      originIp,
+    };
+  }
+
+  async handleMenuCommand(incoming, { replyTo, originIp }) {
+    const context = this.getPlayerContext(incoming.phone);
+    if ([WHATSAPP_PLAYER_STATES.IDLE, WHATSAPP_PLAYER_STATES.MATCH_FINISHED].includes(context.state)) {
+      this.setConversationState(incoming.phone, 'idle');
+      await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', mainMenu({ paymentsEnabled: this.paymentsEnabled }));
+      return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
+    }
+
+    this.setConversationState(incoming.phone, 'idle');
+    await this.sendPanel(replyTo, incoming.phone, context.state, this.messageForContext(context));
+    return {
+      type: 'whatsapp_context_menu_sent',
+      decision: 'reply_sent',
+      reason: 'menu_preserved_active_state',
+      state: context.state,
+      originIp,
+    };
+  }
+
+  async handleCancelCommand(incoming, { replyTo, originIp }) {
+    const context = this.getPlayerContext(incoming.phone);
+    if (context.state === WHATSAPP_PLAYER_STATES.MATCH_STARTED) {
+      await this.sendPanel(replyTo, incoming.phone, context.state, activeMatchMessage(context));
+      return { type: 'whatsapp_cancel_blocked_match_started', decision: 'reply_sent', reason: 'match_started', state: context.state, originIp };
+    }
+    if ([WHATSAPP_PLAYER_STATES.ADMIN_REVIEW, WHATSAPP_PLAYER_STATES.REFUND_PENDING].includes(context.state) || context.paidConfirmed) {
+      await this.sendPermanent(replyTo, incoming.phone, paidEntryActiveMessage(context), { replyType: 'financial_warning' });
+      return { type: 'whatsapp_cancel_blocked_preserved_entry', decision: 'reply_sent', reason: 'entry_preserved', state: context.state, originIp };
+    }
+    if (!context.canCancel) {
+      await this.sendPanel(replyTo, incoming.phone, context.state, this.messageForContext(context));
+      return { type: 'whatsapp_cancel_empty', decision: 'reply_sent', reason: 'no_cancelable_wait', state: context.state, originIp };
+    }
+
+    this.setConversationState(incoming.phone, 'cancel_confirmation', context.table);
+    await this.sendPanel(replyTo, incoming.phone, 'CANCEL_CONFIRMATION', cancelConfirmationMessage(context));
+    return { type: 'whatsapp_cancel_confirmation', decision: 'reply_sent', reason: 'cancel_confirmation_required', state: 'cancel_confirmation', originIp };
+  }
+
+  async notifyCancellationParticipants(clearResult, initiatorPhone) {
+    const released = clearResult?.releasedParticipants ?? [];
+    for (const entry of released) {
+      if (!entry?.playerPhone || entry.playerPhone === initiatorPhone || !entry.notifyTo) continue;
+      this.setConversationState(entry.playerPhone, 'idle');
+      await this.sendPermanent(entry.notifyTo, entry.playerPhone, clearResult.paidEntryPreserved
+        ? paidEntryActiveMessage({ table: entry.selectedTable })
+        : [
+            '*SALA DE ESPERA ENCERRADA*',
+            '',
+            'A Partida ainda não havia começado. Os acessos antigos foram invalidados e sua Entrada gratuita foi liberada.',
+            'Digite *jogar* para escolher outra Mesa.',
+          ].join('\n'), { replyType: 'cancellation_protocol' });
+    }
+  }
+
+  async handleCancelConfirmation(incoming, { replyTo, command, originIp }) {
+    if (command === '1') {
+      this.setConversationState(incoming.phone, 'idle');
+      const context = await this.renderCurrentContext(replyTo, incoming.phone);
+      return { type: 'whatsapp_cancel_aborted', decision: 'reply_sent', reason: 'continue_waiting', state: context.state, originIp };
+    }
+
+    const before = this.getPlayerContext(incoming.phone);
+    const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {
+      actor: incoming.phone,
+      reason: 'whatsapp_cancel_confirmed',
+    });
+    if (clearResult?.paidEntryPreserved || clearResult?.realMatchPreserved) {
+      this.setConversationState(incoming.phone, 'idle');
+      const after = this.getPlayerContext(incoming.phone);
+      await this.sendPermanent(replyTo, incoming.phone, this.messageForContext(after), { replyType: 'entry_preserved' });
+      return { type: 'whatsapp_cancel_blocked_preserved', decision: 'reply_sent', reason: 'server_preserved_entry', state: after.state, originIp };
+    }
+    if (!clearResult?.cleared) {
+      this.setConversationState(incoming.phone, 'idle');
+      await this.sendPanel(replyTo, incoming.phone, 'ACTION_ERROR', friendlyActionError());
+      return { type: 'whatsapp_cancel_failed', decision: 'reply_sent', reason: 'server_cancel_not_confirmed', state: before.state, originIp };
+    }
+
+    await this.notifyCancellationParticipants(clearResult, incoming.phone);
+    this.setConversationState(incoming.phone, 'idle');
+    await this.sendPermanent(replyTo, incoming.phone, cancellationProtocol({
+      publicReference: before.publicReference,
+    }), { replyType: 'cancellation_protocol' });
+    await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', mainMenu({ paymentsEnabled: this.paymentsEnabled }));
+    return {
+      type: 'whatsapp_queue_cancelled',
+      decision: 'reply_sent',
+      reason: 'cancel_confirmed_after_server_update',
+      state: 'idle',
+      originIp,
+    };
+  }
+
+  async handleConnectivityWebhook(payload, options = {}) {
+    const incoming = parseIncomingMessage(payload);
+    return this.enqueueConversation(incoming.phone || incoming.replyTo, () => (
+      this.handleConnectivityWebhookNow(payload, options)
+    ));
+  }
+
+  async handleConnectivityWebhookNow(payload, { originIp = null } = {}) {
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
     this.webhookDiagnostics.lastWebhookReceivedAt = new Date(this.clock()).toISOString();
     this.webhookDiagnostics.lastWebhookEvent = payload?.event ?? null;
@@ -1099,8 +1417,11 @@ export class WhatsAppPaymentBot {
         || CANCEL_QUEUE_COMMANDS.has(command)
         || SUPPORT_COMMANDS.has(command)
         || PLAY_COMMANDS.has(command)
+        || HOW_IT_WORKS_COMMANDS.has(command)
         || TEST_MODE_COMMANDS.has(command)
         || RULES_COMMANDS.has(command)
+        || STATUS_COMMANDS.has(command)
+        || LINK_COMMANDS.has(command)
         || IDENTIFY_COMMANDS.has(command)
         || SAFE_TABLES.has(command)
         || isAdminCommandText(command)
@@ -1162,6 +1483,19 @@ export class WhatsAppPaymentBot {
       };
     }
     if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
+    if (currentState.state === 'cancel_confirmation' && ['1', '2'].includes(command)) {
+      return this.handleCancelConfirmation(incoming, { replyTo, command, originIp });
+    }
+    if (currentState.state === 'rules_menu' && /^[1-6]$/.test(command)) {
+      return this.handleRulesTopic(incoming, { replyTo, command, originIp });
+    }
+    if (currentState.state === 'support_menu' && /^[1-6]$/.test(command)) {
+      return this.handleSupportTopic(incoming, { replyTo, command, originIp });
+    }
+    if (STATUS_COMMANDS.has(command)) return this.handleStatusCommand(incoming, { replyTo, originIp });
+    if (LINK_COMMANDS.has(command)) return this.handleLinkCommand(incoming, { replyTo, originIp });
+    if (MENU_COMMANDS.has(command)) return this.handleMenuCommand(incoming, { replyTo, originIp });
+    if (CANCEL_QUEUE_COMMANDS.has(command)) return this.handleCancelCommand(incoming, { replyTo, originIp });
     const isTableSelectionInProgress = currentState.state === 'choosing_table' && SAFE_TABLES.has(command);
     if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) {
       return this.handleSupportRequest(incoming, { replyTo, originIp });
@@ -1291,15 +1625,20 @@ export class WhatsAppPaymentBot {
         const queueResult = this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
         if (queueResult.blocked) {
           if (queueResult.reason === 'already_in_queue') {
-            await this.send(replyTo, this.safeQueueDuplicateText());
+            await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', queueDuplicateMessage({
+              table: queueResult.queue?.tableValue ?? selectedTable,
+            }));
             return { type: 'whatsapp_queue_duplicate', decision: 'reply_sent', reason: 'already_in_queue', state: 'choosing_table', selectedTable, originIp };
           }
           if (queueResult.reason === 'already_in_active_match' || queueResult.reason === 'PLAYER_ALREADY_ACTIVE_MATCH') {
-            await this.send(replyTo, this.safeActiveMatchText());
+            const context = this.getPlayerContext(incoming.phone);
+            await this.sendPanel(replyTo, incoming.phone, 'MATCH_STARTED', activeMatchMessage(context));
             return { type: 'whatsapp_queue_active_match_blocked', decision: 'reply_sent', reason: queueResult.reason, state: 'table_selected', selectedTable, originIp };
           }
           if (queueResult.reason === 'already_in_other_queue') {
-            await this.send(replyTo, this.safeOtherQueueText());
+            await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', otherQueueMessage({
+              table: queueResult.queue?.tableValue ?? queueResult.queue?.entry?.tableValue,
+            }));
             return { type: 'whatsapp_queue_other_table_blocked', decision: 'reply_sent', reason: 'already_in_other_queue', state: 'choosing_table', selectedTable, originIp };
           }
           if (queueResult.reason === 'ENTRY_TABLE_LOCKED') {
@@ -1348,7 +1687,11 @@ export class WhatsAppPaymentBot {
               let lastError = null;
               for (const sendTarget of sendTargets) {
                 try {
-                  await this.send(sendTarget, this.safeMatchFoundText(matchTable, player.accessLink));
+                  await this.sendPermanent(sendTarget, player.sendTo, this.safeMatchFoundText(
+                    matchTable,
+                    player.accessLink,
+                    queueResult.match.publicReference,
+                  ), { replyType: 'match_link' });
                   sent = true;
                   break;
                 } catch (targetError) {
@@ -1423,7 +1766,7 @@ export class WhatsAppPaymentBot {
           };
         }
 
-        await this.send(replyTo, this.safeQueueJoinedText(selectedTable));
+        await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', waitingForOpponent({ table: selectedTable }));
         return {
           type: 'whatsapp_queue_joined',
           decision: 'reply_sent',
@@ -1465,9 +1808,28 @@ export class WhatsAppPaymentBot {
     }
 
     if (PLAY_COMMANDS.has(command)) {
+      const context = this.getPlayerContext(incoming.phone);
+      if (![WHATSAPP_PLAYER_STATES.IDLE, WHATSAPP_PLAYER_STATES.MATCH_FINISHED].includes(context.state)) {
+        await this.sendPanel(replyTo, incoming.phone, context.state, this.messageForContext(context));
+        return {
+          type: 'whatsapp_play_blocked_active_state',
+          decision: 'reply_sent',
+          reason: 'active_state_preserved',
+          state: context.state,
+          originIp,
+        };
+      }
       this.setConversationState(incoming.phone, 'choosing_table');
-      await this.send(replyTo, this.safeTablesText());
+      await this.sendPanel(replyTo, incoming.phone, 'TABLE_SELECTION', this.safeTablesText());
       return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
+    }
+
+    if (HOW_IT_WORKS_COMMANDS.has(command)) {
+      this.setConversationState(incoming.phone, 'how_it_works');
+      await this.sendPanel(replyTo, incoming.phone, 'HOW_IT_WORKS', howItWorksMenu({
+        paymentsEnabled: this.paymentsEnabled,
+      }));
+      return { type: 'whatsapp_how_it_works_sent', decision: 'reply_sent', reason: 'how_it_works_requested', state: 'how_it_works', originIp };
     }
 
     if (TEST_MODE_COMMANDS.has(command)) {
@@ -1478,7 +1840,7 @@ export class WhatsAppPaymentBot {
         testModeLink,
       });
       this.setConversationState(incoming.phone, 'idle');
-      await this.send(replyTo, this.safeTestModeText(testModeLink));
+      await this.sendPermanent(replyTo, incoming.phone, this.safeTestModeText(testModeLink), { replyType: 'test_mode_link' });
       this.matchQueue?.logInfo?.('WHATSAPP_TEST_MODE_LINK_SENT', {
         playerId: maskPhone(incoming.phone),
         link: testModeLink,
@@ -1494,16 +1856,24 @@ export class WhatsAppPaymentBot {
     }
 
     if (RULES_COMMANDS.has(command)) {
-      this.setConversationState(incoming.phone, 'idle');
-      await this.send(replyTo, this.safeRulesText());
-      return { type: 'whatsapp_rules_sent', decision: 'reply_sent', reason: 'rules_requested', state: 'idle', originIp };
+      this.setConversationState(incoming.phone, 'rules_menu');
+      await this.sendPanel(replyTo, incoming.phone, 'RULES_MENU', this.safeRulesText());
+      return { type: 'whatsapp_rules_sent', decision: 'reply_sent', reason: 'rules_requested', state: 'rules_menu', originIp };
     }
 
     if (SUPPORT_COMMANDS.has(command)) return this.handleSupportRequest(incoming, { replyTo, originIp });
 
-    this.setConversationState(incoming.phone, 'idle');
-    await this.send(replyTo, 'Op\u00e7\u00e3o inv\u00e1lida. Digite menu para ver as op\u00e7\u00f5es.');
-    return { type: 'whatsapp_invalid_option', decision: 'reply_sent', reason: 'invalid_option', state: 'idle', originIp };
+    if (currentState.state === 'rules_menu') {
+      await this.sendPanel(replyTo, incoming.phone, 'RULES_MENU', rulesMenu());
+      return { type: 'whatsapp_invalid_rules_option', decision: 'reply_sent', reason: 'invalid_rules_option', state: 'rules_menu', originIp };
+    }
+    if (currentState.state === 'support_menu') {
+      const context = this.getPlayerContext(incoming.phone);
+      await this.sendPanel(replyTo, incoming.phone, 'SUPPORT_MENU', supportMenu({ publicReference: context.publicReference }));
+      return { type: 'whatsapp_invalid_support_option', decision: 'reply_sent', reason: 'invalid_support_option', state: 'support_menu', originIp };
+    }
+    await this.sendPanel(replyTo, incoming.phone, 'INVALID_COMMAND', invalidCommand());
+    return { type: 'whatsapp_invalid_option', decision: 'reply_sent', reason: 'invalid_option', state: currentState.state, originIp };
   }
 
   menuText() {

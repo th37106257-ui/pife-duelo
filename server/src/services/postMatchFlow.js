@@ -1,6 +1,7 @@
 import { calculatePrize } from '../../../src/shared/economy.js';
 import { maskPhone } from '../payments/PaymentService.js';
 import { buildPublicMatchReference } from './publicMatchReference.js';
+import { postMatchAdminReport, postMatchPlayerResult } from './whatsappMessages.js';
 
 function money(value) {
   return `R$${Number(value || 0).toFixed(2).replace('.', ',')}`;
@@ -83,6 +84,8 @@ function buildReport(gameState, reason) {
 }
 
 function resultText(report, won) {
+  return postMatchPlayerResult(report, won);
+  /* istanbul ignore next */
   return [
     won ? '🏆 Você venceu no Pife Duelo!' : '🎴 Partida encerrada no Pife Duelo',
     '',
@@ -107,6 +110,8 @@ function resultText(report, won) {
 }
 
 function adminReportText(report, { queueCleaned, entriesReleased, entryStatuses = [] }) {
+  return postMatchAdminReport(report, { queueCleaned, entriesReleased, entryStatuses });
+  /* istanbul ignore next */
   const winnerName = report.winner?.name ?? 'Não identificado';
   const loserName = report.loser?.name ?? 'Não identificado';
   const participants = report.participantLabels?.length

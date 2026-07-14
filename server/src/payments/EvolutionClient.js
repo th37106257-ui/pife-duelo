@@ -31,6 +31,30 @@ function summarizeEvolutionResponse(responseBody) {
   };
 }
 
+function extractEvolutionMessageKey(responseBody = {}) {
+  const candidates = [
+    responseBody?.key,
+    responseBody?.message?.key,
+    responseBody?.data?.key,
+  ];
+  const key = candidates.find((candidate) => candidate && typeof candidate === 'object') ?? null;
+  if (!key?.id || !key?.remoteJid || key.fromMe !== true) return null;
+  return {
+    id: String(key.id),
+    remoteJid: String(key.remoteJid),
+    fromMe: true,
+    ...(key.participant ? { participant: String(key.participant) } : {}),
+  };
+}
+
+function isTrackedBotMessageKey(messageKey) {
+  return Boolean(
+    messageKey?.id
+    && messageKey?.remoteJid
+    && messageKey?.fromMe === true,
+  );
+}
+
 function sanitizeEvolutionResponse(responseBody, depth = 0) {
   if (responseBody == null) return responseBody;
   if (depth > 3) return '<nested>';
@@ -432,6 +456,7 @@ export class EvolutionClient {
           httpStatus: response.status ?? null,
           response: summarizeEvolutionResponse(responseBody),
           rawResponse: sanitizeEvolutionResponse(responseBody),
+          messageKey: extractEvolutionMessageKey(responseBody),
           request: this.buildSendPayloadPreview(phone, safeText),
         };
       } catch (error) {
@@ -466,6 +491,88 @@ export class EvolutionClient {
       error: errorMessage(lastError),
       request: this.buildSendPayloadPreview(phone, safeText),
     });
+  }
+
+  async editTrackedMessage({ phone, text, messageKey } = {}) {
+    if (!this.isConfigured()) return { ok: false, reason: 'EVOLUTION_API_NOT_CONFIGURED' };
+    if (!isTrackedBotMessageKey(messageKey)) return { ok: false, reason: 'INVALID_TRACKED_BOT_MESSAGE' };
+    const number = normalizeRecipient(phone || messageKey.remoteJid);
+    const safeText = String(text || '').trim().slice(0, 4000);
+    if (!number || !safeText) return { ok: false, reason: 'INVALID_WHATSAPP_MESSAGE' };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(
+        `${this.baseUrl}/chat/updateMessage/${encodeURIComponent(this.instanceName)}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.apiKey,
+          },
+          body: JSON.stringify({
+            number,
+            text: safeText,
+            key: {
+              id: messageKey.id,
+              remoteJid: messageKey.remoteJid,
+              fromMe: true,
+            },
+          }),
+          signal: controller.signal,
+        },
+      );
+      const responseBody = await response.json().catch(() => ({}));
+      return {
+        ok: response.ok,
+        httpStatus: response.status ?? null,
+        reason: response.ok ? null : `EVOLUTION_UPDATE_MESSAGE_FAILED_${response.status}`,
+        response: summarizeEvolutionResponse(responseBody),
+      };
+    } catch (error) {
+      return { ok: false, reason: errorMessage(error) };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async deleteTrackedMessage({ messageKey } = {}) {
+    if (!this.isConfigured()) return { ok: false, reason: 'EVOLUTION_API_NOT_CONFIGURED' };
+    if (!isTrackedBotMessageKey(messageKey)) return { ok: false, reason: 'INVALID_TRACKED_BOT_MESSAGE' };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(
+        `${this.baseUrl}/chat/deleteMessageForEveryone/${encodeURIComponent(this.instanceName)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.apiKey,
+          },
+          body: JSON.stringify({
+            id: messageKey.id,
+            remoteJid: messageKey.remoteJid,
+            fromMe: true,
+            ...(messageKey.participant ? { participant: messageKey.participant } : {}),
+          }),
+          signal: controller.signal,
+        },
+      );
+      const responseBody = await response.json().catch(() => ({}));
+      return {
+        ok: response.ok,
+        httpStatus: response.status ?? null,
+        reason: response.ok ? null : `EVOLUTION_DELETE_MESSAGE_FAILED_${response.status}`,
+        response: summarizeEvolutionResponse(responseBody),
+      };
+    } catch (error) {
+      return { ok: false, reason: errorMessage(error) };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async sendText(phone, text, options = {}) {
