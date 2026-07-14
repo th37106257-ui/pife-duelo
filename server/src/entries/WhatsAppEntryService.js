@@ -42,7 +42,8 @@ function isPaidConfirmedLikeEntry(entry) {
   );
   const matchLinkSent = Boolean(entry?.linkSentAt && entry?.whatsappMatchId);
   return Boolean(
-    adminConfirmed
+    entry?.paidConfirmed === true
+    || adminConfirmed
     || matchLinkSent
     || (
       entry?.approvedAt
@@ -61,6 +62,32 @@ function nowIso(clock) {
 
 function auditEntry({ action, actor, at, details = null }) {
   return { action, actor, at, details };
+}
+
+function invalidateMatchLinks() {
+  return {
+    accessTokenHash: null,
+    accessExpiresAt: null,
+    whatsappMatchId: null,
+    roomUrl: null,
+    linkSentAt: null,
+  };
+}
+
+function releaseFreePlayer({ wasCancelledByPlayer }) {
+  return {
+    status: wasCancelledByPlayer ? 'cancelled_by_player' : 'expired',
+    queuedAt: null,
+    whatsappReplyTo: null,
+  };
+}
+
+function restorePaidEntry({ current, wasCancelledByPlayer, at }) {
+  return {
+    status: wasCancelledByPlayer ? 'admin_review' : 'requeued_after_opponent_cancel',
+    queuedAt: wasCancelledByPlayer ? null : at,
+    whatsappReplyTo: current.whatsappReplyTo || current.phone || null,
+  };
 }
 
 function buildSafePathSegment(value) {
@@ -179,7 +206,125 @@ export class WhatsAppEntryService {
     };
   }
 
-  clearPlayerEntries(phone, { actor = 'system', source = 'clear-player-state' } = {}) {
+  getPreStartMatchForPhone(phone) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return null;
+    this.expirePendingEntries();
+    const entry = this.store.listEntries()
+      .filter((item) => (
+        item.phone === normalizedPhone
+        && ACTIVE_STATUSES.has(item.status)
+        && item.whatsappMatchId
+        && !item.linkedMatchId
+        && !item.playingAt
+      ))
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt) - Date.parse(left.updatedAt || left.createdAt))[0];
+    if (!entry) return null;
+    return {
+      entry: sanitizeWhatsAppEntry(entry),
+      matchId: entry.whatsappMatchId,
+      table: entry.selectedTable,
+      paidConfirmed: isPaidConfirmedLikeEntry(entry),
+    };
+  }
+
+  abortPreStartMatchAndReleaseParticipants({
+    matchId,
+    reason = 'pre_start_match_aborted',
+    cancelledBy = null,
+    actor = 'system',
+    forceFreeMode = false,
+  } = {}) {
+    const safeMatchId = String(matchId || '').trim();
+    const normalizedCancelledBy = normalizePhone(cancelledBy);
+    if (!safeMatchId) return { aborted: false, reason: 'missing_match_id', participants: [] };
+    this.expirePendingEntries();
+
+    const allEntries = this.store.listEntries();
+    const participants = allEntries.filter((entry) => (
+      entry.whatsappMatchId === safeMatchId
+      && ACTIVE_STATUSES.has(entry.status)
+      && !entry.linkedMatchId
+      && !entry.playingAt
+    ));
+
+    if (!participants.length) {
+      const previouslyAborted = allEntries
+        .filter((entry) => entry.abortedMatchId === safeMatchId)
+        .map((entry) => sanitizeWhatsAppEntry(entry));
+      return {
+        aborted: previouslyAborted.length > 0,
+        alreadyProcessed: previouslyAborted.length > 0,
+        reason: previouslyAborted.length > 0 ? 'already_aborted' : 'pre_start_match_not_found',
+        matchId: safeMatchId,
+        participants: previouslyAborted,
+      };
+    }
+
+    const at = nowIso(this.clock);
+    const released = participants.map((entry) => {
+      const previousStatus = entry.status;
+      const previousQueueSocketId = entry.queueSocketId || null;
+      const previousLinkTokenActive = Boolean(entry.accessTokenHash);
+      const notifyTo = entry.whatsappReplyTo || entry.phone || null;
+      const wasCancelledByPlayer = Boolean(normalizedCancelledBy && entry.phone === normalizedCancelledBy);
+      const paidConfirmed = entry.paidConfirmed === true
+        || (!forceFreeMode && isPaidConfirmedLikeEntry(entry));
+      const updated = this.store.updateEntry(entry.entryId, (current) => ({
+        ...current,
+        paidConfirmed: paidConfirmed ? true : current.paidConfirmed,
+        ...(paidConfirmed
+          ? restorePaidEntry({ current, wasCancelledByPlayer, at })
+          : releaseFreePlayer({ wasCancelledByPlayer })),
+        ...invalidateMatchLinks(),
+        queueSocketId: null,
+        playerId: null,
+        abortedMatchId: safeMatchId,
+        abortedAt: at,
+        updatedAt: at,
+        auditLog: [...current.auditLog, auditEntry({
+          action: paidConfirmed
+            ? (wasCancelledByPlayer ? 'paid_entry_sent_to_admin_review_after_abort' : 'paid_entry_restored_after_match_abort')
+            : (wasCancelledByPlayer ? 'entry_cancelled_before_match_start' : 'entry_released_after_match_abort'),
+          actor: String(actor || normalizedCancelledBy || 'system'),
+          at,
+          details: {
+            reason: String(reason || 'pre_start_match_aborted').slice(0, 120),
+            matchId: safeMatchId,
+            cancelledBy: normalizedCancelledBy ? maskPhone(normalizedCancelledBy) : null,
+            previousStatus,
+            forceFreeMode: Boolean(forceFreeMode),
+            paidConfirmed,
+          },
+        })],
+      }));
+      return {
+        ...sanitizeWhatsAppEntry(updated),
+        playerPhone: entry.phone,
+        notifyTo,
+        previousStatus,
+        previousQueueSocketId,
+        previousLinkTokenActive,
+        previousMatchId: safeMatchId,
+        linkInvalidated: true,
+        paidConfirmed,
+        restoredPaidEntry: paidConfirmed,
+      };
+    });
+
+    return {
+      aborted: true,
+      alreadyProcessed: false,
+      reason,
+      matchId: safeMatchId,
+      cancelledBy: normalizedCancelledBy || null,
+      table: participants[0]?.selectedTable ?? null,
+      paidEntryPreserved: released.some((entry) => entry.paidConfirmed),
+      participants: released,
+    };
+  }
+
+  clearPlayerEntries(phone, { actor = 'system', source = 'clear-player-state', forceFreeMode = false } = {}) {
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) return { cleared: 0, skipped: 0, paidEntryPreserved: false, entries: [] };
     this.expirePendingEntries();
@@ -195,7 +340,12 @@ export class WhatsAppEntryService {
       .filter((entry) => entry.phone === normalizedPhone && ACTIVE_STATUSES.has(entry.status))
       .forEach((entry) => {
         const isRealMatch = Boolean(entry.linkedMatchId || entry.playingAt || entry.status === 'playing' || entry.status === 'linked');
-        const paidConfirmed = isPaidConfirmedLikeEntry(entry);
+        const freeSafeEntry = Boolean(
+          forceFreeMode
+          && entry.mode === 'safe_test_without_pix'
+          && entry.paidConfirmed !== true,
+        );
+        const paidConfirmed = freeSafeEntry ? false : isPaidConfirmedLikeEntry(entry);
         if (paidConfirmed && !isRealMatch) {
           result.skipped += 1;
           result.paidEntryPreserved = true;
@@ -219,7 +369,9 @@ export class WhatsAppEntryService {
           });
           return;
         }
-        if (isRealMatch || !CLEARABLE_STATUSES.has(entry.status)) {
+        const clearableStatus = CLEARABLE_STATUSES.has(entry.status)
+          || (freeSafeEntry && ['requeued_after_opponent_cancel', 'admin_review'].includes(entry.status));
+        if (isRealMatch || !clearableStatus) {
           result.skipped += 1;
           result.entries.push({
             entryId: entry.entryId,
@@ -688,6 +840,7 @@ export class WhatsAppEntryService {
     const tokenHash = this.hashToken(token);
     const entry = this.store.listEntries().find((item) => item.accessTokenHash === tokenHash);
     if (!entry || !TOKEN_VALID_STATUSES.has(entry.status)) return null;
+    if (entry.status === 'requeued_after_opponent_cancel' && !entry.whatsappMatchId) return null;
     if (entry.accessExpiresAt && Date.parse(entry.accessExpiresAt) <= this.clock()) return null;
     return sanitizeWhatsAppEntry(entry);
   }

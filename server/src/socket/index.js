@@ -36,10 +36,16 @@ export function setupSocketServer(httpServer, {
       if (safeEntryEnabled && entryToken) {
         const entry = entryService?.validateAccessToken(entryToken);
         if (!entry) {
+          const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim() || null;
           logWarn('WHATSAPP_ENTRY_LINK_OPENED', {
             socketId: socket.id,
-            requestedMatchId: String(socket.handshake.auth?.joinMatchId || '').trim() || null,
+            requestedMatchId,
             matchFound: false,
+            reason: 'ENTRY_ACCESS_DENIED',
+          });
+          logWarn('STALE_MATCH_LINK_OPENED', {
+            socketId: socket.id,
+            requestedMatchId,
             reason: 'ENTRY_ACCESS_DENIED',
           });
           const error = new Error('ENTRY_ACCESS_DENIED');
@@ -390,7 +396,14 @@ export function setupSocketServer(httpServer, {
         reason: 'queue_timeout',
       });
     }
-    if (entry.entryId) {
+    const abortResult = entry.entryId && whatsappMatchQueue
+      ? whatsappMatchQueue.abortMatchAndReleaseParticipants({
+          matchId: entryService?.getEntry?.(entry.entryId)?.whatsappMatchId,
+          reason: 'queue_timeout_before_start',
+          cancelledBy: null,
+        })
+      : null;
+    if (entry.entryId && !abortResult?.aborted) {
       entryService?.releaseQueueAccess({
         entryId: entry.entryId,
         socketId: entry.socketId,
@@ -711,7 +724,14 @@ export function setupSocketServer(httpServer, {
           reason: 'queue_left',
         });
       }
-      if (leaveResult.entry?.entryId) {
+      const abortResult = leaveResult.entry?.entryId && whatsappMatchQueue
+        ? whatsappMatchQueue.abortMatchAndReleaseParticipants({
+            matchId: socket.entryAccess?.whatsappMatchId,
+            reason: 'player_left_before_start',
+            cancelledBy: entryService?.getEntry?.(leaveResult.entry.entryId, { includeSecrets: true })?.phone ?? null,
+          })
+        : null;
+      if (leaveResult.entry?.entryId && !abortResult?.aborted) {
         entryService?.releaseQueueAccess({
           entryId: leaveResult.entry.entryId,
           socketId: socket.id,

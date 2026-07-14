@@ -855,6 +855,14 @@ export class WhatsAppPaymentBot {
         await this.send(replyTo, invalidFormatText);
         return { type: 'entry_admin_invalid_format', decision: 'reply_sent', reason: 'invalid_target_phone' };
       }
+      const preStartMatch = this.entryService?.getPreStartMatchForPhone?.(targetPhone);
+      if (preStartMatch?.matchId) {
+        this.matchQueue?.abortMatchAndReleaseParticipants?.({
+          matchId: preStartMatch.matchId,
+          reason: `whatsapp_admin_${command}_before_start`,
+          cancelledBy: targetPhone,
+        });
+      }
       const result = this.entryService?.adminDecidePaidEntryForPhone?.(targetPhone, {
         actor: senderPhone,
         decision: decisionByCommand[command],
@@ -1171,6 +1179,49 @@ export class WhatsAppPaymentBot {
           decision: 'reply_sent',
           reason: 'real_match_not_cancelled',
           state: 'idle',
+          originIp,
+        };
+      }
+      if (clearResult?.preStartCancellation?.aborted) {
+        const releasedParticipants = clearResult.releasedParticipants ?? [];
+        const paidEntryPreserved = Boolean(clearResult.paidEntryPreserved);
+        for (const entry of releasedParticipants) {
+          if (entry.playerPhone) this.setConversationState(entry.playerPhone, 'idle');
+          if (!entry.notifyTo || entry.playerPhone === incoming.phone) continue;
+          await this.send(entry.notifyTo, paidEntryPreserved
+            ? [
+                'Sua partida pendente foi encerrada.',
+                'Sua entrada paga foi preservada e os links antigos foram invalidados.',
+                'Aguarde a recolocacao na mesma mesa ou a revisao do admin.',
+              ].join('\n')
+            : [
+                'Sua partida anterior foi encerrada.',
+                'Voce ja pode escolher uma mesa novamente.',
+                '',
+                this.safeMenuText(),
+              ].join('\n'));
+        }
+        await this.send(replyTo, paidEntryPreserved
+          ? [
+              'Sua partida pendente foi encerrada e os links antigos foram invalidados.',
+              'Sua entrada paga nao foi apagada nem consumida.',
+              'O admin deve revisar ou recolocar voce na mesma mesa.',
+            ].join('\n')
+          : [
+              this.safeQueueCancelledText(),
+              'Os dois jogadores foram liberados da partida pendente.',
+              '',
+              this.safeMenuText(),
+            ].join('\n'));
+        return {
+          type: paidEntryPreserved ? 'whatsapp_paid_pre_start_match_aborted' : 'whatsapp_pre_start_match_aborted',
+          decision: 'reply_sent',
+          reason: paidEntryPreserved
+            ? 'pre_start_match_aborted_paid_entries_preserved'
+            : 'pre_start_match_aborted_and_participants_released',
+          state: 'idle',
+          releasedParticipants: releasedParticipants.length,
+          paidEntryPreserved,
           originIp,
         };
       }

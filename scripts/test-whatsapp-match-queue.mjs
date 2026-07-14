@@ -3,6 +3,7 @@ import { WhatsAppEntryStore } from '../server/src/entries/WhatsAppEntryStore.js'
 import { WhatsAppEntryService } from '../server/src/entries/WhatsAppEntryService.js';
 import { WhatsAppPaymentBot } from '../server/src/payments/WhatsAppPaymentBot.js';
 import { MatchQueue } from '../server/src/services/matchQueue.js';
+import { QueueManager } from '../server/src/managers/QueueManager.js';
 
 let now = Date.parse('2026-06-29T10:00:00.000Z');
 let tokenSequence = 0;
@@ -37,11 +38,17 @@ function createWebhook(phone, text, replyJid = `${phone}@s.whatsapp.net`, { send
   };
 }
 
-function createBot(store = new WhatsAppEntryStore(), { sendText = null } = {}) {
+function createBot(store = new WhatsAppEntryStore(), {
+  sendText = null,
+  paymentsEnabled = false,
+  releaseOnlineQueueEntry = null,
+} = {}) {
   const entryService = createEntryService(store);
   const logs = [];
   const matchQueue = new MatchQueue({
     entryService,
+    paymentsEnabled,
+    releaseOnlineQueueEntry: releaseOnlineQueueEntry ?? (() => ({ removed: false })),
     clock: () => now,
     logInfo: (event, payload) => logs.push({ level: 'info', event, payload }),
     logWarn: (event, payload) => logs.push({ level: 'warn', event, payload }),
@@ -85,7 +92,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
-  const { bot, store, matchQueue, sentMessages, logs } = createBot();
+  const { bot, store, entryService, matchQueue, sentMessages, logs } = createBot();
   const testPhone = '551188889900';
 
   const menuResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'menu'));
@@ -177,7 +184,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
-  const { bot, store, matchQueue, sentMessages, logs } = createBot();
+  const { bot, store, entryService, matchQueue, sentMessages, logs } = createBot();
   const firstPhone = '551188880001';
   const secondPhone = '551188880002';
   const firstReplyJid = `${firstPhone}000@lid`;
@@ -238,10 +245,133 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(entries.every((entry) => entry.auditLog.some((item) => item.action === 'entry_approved_for_queue')));
   assert.ok(entries.every((entry) => entry.auditLog.some((item) => item.action === 'entry_link_sent')));
 
-  const paidCancelBlocked = await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'menu', firstReplyJid));
-  assert.equal(paidCancelBlocked.type, 'whatsapp_paid_entry_preserved');
-  assert.equal(store.listEntries().find((entry) => entry.phone === firstPhone).status, 'approved_for_queue');
-  assert.ok(logs.some((log) => log.event === 'PLAYER_CANCEL_BLOCKED_AFTER_PAYMENT'));
+  const freeAbort = await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'menu', firstReplyJid));
+  assert.equal(freeAbort.type, 'whatsapp_pre_start_match_aborted');
+  assert.equal(store.listEntries().find((entry) => entry.phone === firstPhone).status, 'cancelled_by_player');
+  assert.equal(store.listEntries().find((entry) => entry.phone === secondPhone).status, 'expired');
+  assert.ok(entries.every((entry) => entry.accessTokenHash));
+  assert.ok(matchUrls.every((url) => entryService.validateAccessToken(url.searchParams.get('entry')) === null));
+  assert.equal(matchQueue.activeMatchesByPhone.size, 0);
+  assert.ok(logs.some((log) => log.event === 'MATCH_ABORTED_BEFORE_START'));
+  assert.equal((await chooseTable(bot, firstPhone, '1', '2', firstReplyJid)).type, 'whatsapp_queue_joined');
+  assert.equal((await chooseTable(bot, secondPhone, '1', '3', secondReplyJid)).type, 'whatsapp_queue_joined');
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 1);
+  assert.equal(matchQueue.getQueueStatus(10).waitingPlayers, 1);
+}
+
+{
+  const onlineQueue = new QueueManager({ timeoutSeconds: 120 });
+  const releasedOnlineEntries = [];
+  const runtime = createBot(new WhatsAppEntryStore(), {
+    releaseOnlineQueueEntry: ({ entryId }) => {
+      const result = onlineQueue.leaveQueueByEntryId(entryId);
+      if (result.removed) releasedOnlineEntries.push(entryId);
+      return result;
+    },
+  });
+  const firstPhone = '551188880101';
+  const secondPhone = '551188880102';
+  await chooseTable(runtime.bot, firstPhone, '1', '2');
+  const paired = await chooseTable(runtime.bot, secondPhone, '1', '2');
+  assert.equal(paired.type, 'whatsapp_match_created');
+
+  const firstEntry = runtime.store.listEntries().find((entry) => entry.phone === firstPhone);
+  runtime.entryService.reserveQueueAccess({
+    entryId: firstEntry.entryId,
+    socketId: 'socket-opened-link',
+    selectedTable: 5,
+  });
+  onlineQueue.joinQueue({
+    playerId: 'player-opened-link',
+    socketId: 'socket-opened-link',
+    playerName: 'Jogador A',
+    tableValue: 5,
+    entryId: firstEntry.entryId,
+  });
+  assert.equal(onlineQueue.getQueueSize(5), 1);
+
+  const aborted = await runtime.bot.handleConnectivityWebhook(createWebhook(secondPhone, 'cancelar'));
+  assert.equal(aborted.type, 'whatsapp_pre_start_match_aborted');
+  assert.equal(onlineQueue.getQueueSize(5), 0);
+  assert.deepEqual(releasedOnlineEntries, [firstEntry.entryId]);
+  assert.equal(runtime.entryService.getActiveEntryForPhone(firstPhone), null);
+  assert.equal(runtime.entryService.getActiveEntryForPhone(secondPhone), null);
+
+  const repeatedAbort = runtime.matchQueue.abortMatchAndReleaseParticipants({
+    matchId: paired.matchId,
+    reason: 'repeated_abort_test',
+    cancelledBy: secondPhone,
+  });
+  assert.equal(repeatedAbort.aborted, true);
+  assert.equal(repeatedAbort.alreadyProcessed, true);
+  assert.equal(onlineQueue.getQueueSize(5), 0);
+  assert.deepEqual(releasedOnlineEntries, [firstEntry.entryId], 'Abort idempotente nao pode liberar a mesma reserva duas vezes.');
+
+  const newSelection = await chooseTable(runtime.bot, firstPhone, '1', '4');
+  assert.equal(newSelection.type, 'whatsapp_queue_joined');
+  assert.equal(newSelection.selectedTable, 20);
+  assert.equal(runtime.matchQueue.getQueueStatus(20).waitingPlayers, 1);
+}
+
+{
+  const initialNow = now;
+  const runtime = createBot();
+  const firstPhone = '551188880111';
+  const secondPhone = '551188880112';
+  await chooseTable(runtime.bot, firstPhone, '1', '2');
+  const paired = await chooseTable(runtime.bot, secondPhone, '1', '2');
+  assert.equal(paired.type, 'whatsapp_match_created');
+
+  const oldEntries = runtime.store.listEntries().filter((entry) => entry.whatsappMatchId === paired.matchId);
+  const oldTokens = runtime.sentMessages
+    .filter((message) => message.text.includes('Partida encontrada!'))
+    .slice(-2)
+    .map((message) => new URL(extractFirstUrl(message.text)).searchParams.get('entry'));
+  assert.equal(oldTokens.length, 2);
+  now = Math.max(...oldEntries.map((entry) => Date.parse(entry.accessExpiresAt))) + 1;
+
+  const newSelection = runtime.matchQueue.joinQueue(firstPhone, 20);
+  assert.equal(newSelection.blocked, false);
+  assert.equal(newSelection.entry.tableValue, 20);
+  assert.equal(runtime.entryService.getActiveEntryForPhone(secondPhone), null);
+  assert.ok(oldTokens.every((token) => runtime.entryService.validateAccessToken(token) === null));
+  assert.equal(runtime.matchQueue.activeMatchesByPhone.has(secondPhone), false);
+  assert.ok(runtime.logs.some((log) => log.event === 'PRE_START_MATCH_EXPIRED'));
+  now = initialNow;
+}
+
+{
+  const runtime = createBot();
+  const firstPhone = '551188880121';
+  const secondPhone = '551188880122';
+  await chooseTable(runtime.bot, firstPhone, '1', '3');
+  const paired = await chooseTable(runtime.bot, secondPhone, '1', '3');
+  assert.equal(paired.type, 'whatsapp_match_created');
+
+  const entries = runtime.store.listEntries().filter((entry) => entry.whatsappMatchId === paired.matchId);
+  entries.forEach((entry, index) => {
+    const socketId = `socket-real-match-${index + 1}`;
+    runtime.entryService.reserveQueueAccess({
+      entryId: entry.entryId,
+      socketId,
+      selectedTable: 10,
+    });
+    runtime.entryService.linkToMatch({
+      entryId: entry.entryId,
+      socketId,
+      matchId: 'online-match-started',
+      playerId: `player-${index + 1}`,
+    });
+  });
+
+  const protectedResult = runtime.matchQueue.abortMatchAndReleaseParticipants({
+    matchId: paired.matchId,
+    reason: 'must_not_abort_started_match',
+    cancelledBy: firstPhone,
+  });
+  assert.equal(protectedResult.aborted, false);
+  assert.ok(entries.every((entry) => runtime.store.getEntry(entry.entryId).status === 'playing'));
+  assert.ok(entries.every((entry) => runtime.store.getEntry(entry.entryId).linkedMatchId === 'online-match-started'));
 }
 
 {
@@ -476,6 +606,39 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
+  const { bot, store, entryService, matchQueue, logs } = createBot();
+  const stalePhone = '551188880092';
+  const created = entryService.createEntry({ phone: stalePhone, selectedTable: 5, source: 'legacy-requeued-test' });
+  entryService.approveEntry({
+    entryId: created.entryId,
+    actor: 'whatsapp-queue',
+    source: 'legacy-requeued-test',
+  });
+  const refreshed = entryService.refreshQueueAccessLink(created.entryId, {
+    actor: 'whatsapp-queue',
+    source: 'legacy-requeued-test',
+    matchId: 'whatsapp_match-legacy',
+  });
+  entryService.markLinkDelivery(created.entryId, { sent: true });
+  const legacyToken = new URL(refreshed.accessLink).searchParams.get('entry');
+  store.updateEntry(created.entryId, (entry) => ({
+    ...entry,
+    status: 'requeued_after_opponent_cancel',
+    whatsappMatchId: null,
+    roomUrl: null,
+  }));
+
+  assert.equal(entryService.validateAccessToken(legacyToken), null, 'Link antigo requeued sem match deve permanecer invalido.');
+  bot.setConversationState(stalePhone, 'choosing_table');
+  const newTable = await bot.handleConnectivityWebhook(createWebhook(stalePhone, '4'));
+  assert.equal(newTable.type, 'whatsapp_queue_joined');
+  assert.equal(newTable.selectedTable, 20);
+  assert.equal(store.getEntry(created.entryId).status, 'expired');
+  assert.equal(matchQueue.getQueueStatus(20).waitingPlayers, 1);
+  assert.ok(logs.some((log) => log.event === 'STALE_FREE_ENTRY_RELEASED_ON_SELECTION'));
+}
+
+{
   const { bot, store, entryService, sentMessages } = createBot();
   const adminPhone = '5511999990000';
   const resetPhone = '551188880091';
@@ -546,7 +709,9 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 }
 
 {
-  const { bot, store, entryService, matchQueue, sentMessages, logs } = createBot();
+  const { bot, store, entryService, matchQueue, sentMessages, logs } = createBot(new WhatsAppEntryStore(), {
+    paymentsEnabled: true,
+  });
   const firstPhone = '551188881001';
   const secondPhone = '551188881002';
   const firstReplyJid = `${firstPhone}@s.whatsapp.net`;
@@ -563,25 +728,75 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const secondOldToken = new URL(secondOldLink).searchParams.get('entry');
 
   const cancelResult = await bot.handleConnectivityWebhook(createWebhook(firstPhone, 'sair', firstReplyJid));
-  assert.equal(cancelResult.type, 'whatsapp_paid_entry_preserved');
+  assert.equal(cancelResult.type, 'whatsapp_paid_pre_start_match_aborted');
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
 
   const firstEntry = store.listEntries().find((entry) => entry.phone === firstPhone);
   const secondEntry = store.listEntries().find((entry) => entry.phone === secondPhone);
-  assert.equal(firstEntry.status, 'approved_for_queue');
-  assert.equal(secondEntry.status, 'approved_for_queue');
-  assert.ok(firstEntry.auditLog.some((item) => item.action === 'player_cancel_blocked_after_payment'));
-  assert.equal(entryService.validateAccessToken(secondOldToken)?.status, 'approved_for_queue');
-  assert.ok(logs.some((log) => log.event === 'PLAYER_CANCEL_BLOCKED_AFTER_PAYMENT'));
+  assert.equal(firstEntry.status, 'admin_review');
+  assert.equal(secondEntry.status, 'requeued_after_opponent_cancel');
+  assert.ok(firstEntry.auditLog.some((item) => item.action === 'paid_entry_sent_to_admin_review_after_abort'));
+  assert.ok(secondEntry.auditLog.some((item) => item.action === 'paid_entry_restored_after_match_abort'));
+  assert.equal(entryService.validateAccessToken(secondOldToken), null);
+  assert.ok(logs.some((log) => log.event === 'MATCH_LINK_INVALIDATED'));
   assert.ok(sentMessages.some((message) => (
     message.phone === firstPhone
     || message.phone === firstReplyJid
-  ) && message.text.includes('entrada paga ativa')));
+  ) && message.text.includes('nao foi apagada nem consumida')));
 
   const paidMenuResult = await bot.handleConnectivityWebhook(createWebhook(secondPhone, 'menu', secondReplyJid));
   assert.equal(paidMenuResult.type, 'whatsapp_paid_entry_preserved');
-  assert.equal(store.listEntries().find((entry) => entry.phone === secondPhone).status, 'approved_for_queue');
-  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+  assert.equal(store.listEntries().find((entry) => entry.phone === secondPhone).status, 'requeued_after_opponent_cancel');
+
+  const adminPhone = '5511999990000';
+  const adminCancelledPhone = '551188881003';
+  const adminPreservedOpponent = '551188881004';
+  await chooseTable(bot, adminCancelledPhone, '1', '3');
+  const adminPair = await chooseTable(bot, adminPreservedOpponent, '1', '3');
+  assert.equal(adminPair.type, 'whatsapp_match_created');
+  const adminPairLinks = sentMessages
+    .filter((message) => message.text.includes('Partida encontrada!') && message.text.includes('Mesa: R$10'))
+    .slice(-2)
+    .map((message) => new URL(extractFirstUrl(message.text)).searchParams.get('entry'));
+
+  const adminCancel = await bot.handleConnectivityWebhook(createWebhook(
+    adminPhone,
+    `admin cancelar ${adminCancelledPhone}`,
+  ));
+  assert.equal(adminCancel.type, 'entry_admin_paid_decision');
+  assert.equal(store.listEntries().find((entry) => entry.phone === adminCancelledPhone).status, 'cancelled_by_admin');
+  assert.equal(store.listEntries().find((entry) => entry.phone === adminPreservedOpponent).status, 'requeued_after_opponent_cancel');
+  assert.ok(adminPairLinks.every((token) => entryService.validateAccessToken(token) === null));
+  assert.equal(matchQueue.activeMatchesByPhone.has(adminCancelledPhone), false);
+  assert.equal(matchQueue.activeMatchesByPhone.has(adminPreservedOpponent), false);
+}
+
+{
+  const runtime = createBot();
+  const firstPhone = '551188881021';
+  const secondPhone = '551188881022';
+  await chooseTable(runtime.bot, firstPhone, '1', '2');
+  const paired = await chooseTable(runtime.bot, secondPhone, '1', '2');
+  assert.equal(paired.type, 'whatsapp_match_created');
+  runtime.store.listEntries()
+    .filter((entry) => entry.whatsappMatchId === paired.matchId)
+    .forEach((entry) => runtime.store.updateEntry(entry.entryId, (current) => ({
+      ...current,
+      paidConfirmed: true,
+    })));
+
+  const abort = runtime.matchQueue.abortMatchAndReleaseParticipants({
+    matchId: paired.matchId,
+    reason: 'paid_record_must_survive_even_with_flags_off',
+    cancelledBy: firstPhone,
+  });
+  assert.equal(abort.aborted, true);
+  assert.equal(abort.paidEntryPreserved, true);
+  assert.equal(runtime.store.listEntries().find((entry) => entry.phone === firstPhone).status, 'admin_review');
+  assert.equal(runtime.store.listEntries().find((entry) => entry.phone === secondPhone).status, 'requeued_after_opponent_cancel');
+  assert.ok(runtime.store.listEntries()
+    .filter((entry) => [firstPhone, secondPhone].includes(entry.phone))
+    .every((entry) => entry.paidConfirmed === true));
 }
 
 {
@@ -590,6 +805,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const paidPhone = '551188881010';
   const paidEntry = entryService.createEntry({ phone: paidPhone, selectedTable: 10, source: 'paid-reset-test' });
   entryService.approveEntry({ entryId: paidEntry.entryId, actor: 'admin-test', source: 'paid-reset-test' });
+  store.updateEntry(paidEntry.entryId, (entry) => ({ ...entry, paidConfirmed: true }));
   entryService.markLinkDelivery(paidEntry.entryId, { sent: true });
 
   const resetPaid = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `resetar ${paidPhone}`));
@@ -602,6 +818,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const paidCancelPhone = '551188881011';
   const paidCancelEntry = entryService.createEntry({ phone: paidCancelPhone, selectedTable: 5, source: 'paid-cancel-test' });
   entryService.approveEntry({ entryId: paidCancelEntry.entryId, actor: 'admin-test', source: 'paid-cancel-test' });
+  store.updateEntry(paidCancelEntry.entryId, (entry) => ({ ...entry, paidConfirmed: true }));
   entryService.markLinkDelivery(paidCancelEntry.entryId, { sent: true });
   const adminCancel = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `admin cancelar ${paidCancelPhone}`));
   assert.equal(adminCancel.type, 'entry_admin_paid_decision');
@@ -611,6 +828,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const paidRefundPhone = '551188881012';
   const paidRefundEntry = entryService.createEntry({ phone: paidRefundPhone, selectedTable: 20, source: 'paid-refund-test' });
   entryService.approveEntry({ entryId: paidRefundEntry.entryId, actor: 'admin-test', source: 'paid-refund-test' });
+  store.updateEntry(paidRefundEntry.entryId, (entry) => ({ ...entry, paidConfirmed: true }));
   entryService.markLinkDelivery(paidRefundEntry.entryId, { sent: true });
   const adminRefund = await bot.handleConnectivityWebhook(createWebhook(adminPhone, `admin reembolsar ${paidRefundPhone}`));
   assert.equal(adminRefund.type, 'entry_admin_paid_decision');

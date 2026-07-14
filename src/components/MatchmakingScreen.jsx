@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import OnlineGameTable from './OnlineGameTable.jsx';
 import MatchHistoryScreen from './MatchHistoryScreen.jsx';
 import {
+  clearStaleMatchAccessFromUrl,
   connectSocket,
   disconnectSocket,
   getSocket,
@@ -273,6 +274,41 @@ export default function MatchmakingScreen() {
       }));
     };
 
+    const onMatchAborted = (payload = {}) => {
+      const previousMatchId = activeSessionRef.current?.matchId
+        ?? onlineGameStateRef.current?.matchId
+        ?? payload.matchId
+        ?? directJoinMatchId
+        ?? null;
+      waitingSinceRef.current = null;
+      activeSessionRef.current = null;
+      onlineGameStateRef.current = null;
+      clearStoredMatchSession();
+      clearStaleMatchAccessFromUrl();
+      setLockedTableValue(null);
+      setQueueInfo(null);
+      setMatchInfo(null);
+      setOnlineGameState(null);
+      setElapsedSeconds(0);
+      setActionError('');
+      setErrorMessage(payload.message || 'Sua partida anterior foi encerrada. Voce ja pode escolher uma mesa novamente.');
+      setStatus('idle');
+      console.info('LOBBY_STATE_RESET_AFTER_ABORT', {
+        matchId: maskClientId(previousMatchId),
+        cleared: true,
+      });
+
+      disconnectSocket();
+      window.setTimeout(async () => {
+        try {
+          const freshSocket = await connectSocket();
+          attachListeners(freshSocket);
+        } catch (error) {
+          setErrorMessage(error.message || 'Servidor indisponivel. Tente conectar novamente.');
+        }
+      }, 0);
+    };
+
     const onMatchFound = (payload) => {
       console.info('[socket] match_found recebido:', payload.roomId);
       waitingSinceRef.current = null;
@@ -365,6 +401,7 @@ export default function MatchmakingScreen() {
       queueLeft: onQueueLeft,
       queueTimeout: onQueueTimeout,
       queueStatus: onQueueStatus,
+      matchAborted: onMatchAborted,
       matchFound: onMatchFound,
       matchmakingError: onMatchmakingError,
       disconnect: onDisconnect,
@@ -491,6 +528,21 @@ export default function MatchmakingScreen() {
           await enterOnlineQueue({ automatic: true });
         }
       } catch (error) {
+        if (error?.code === 'ENTRY_ACCESS_DENIED' && !cancelled) {
+          try {
+            const freshSocket = await connectSocket();
+            if (cancelled) return;
+            attachListeners(freshSocket);
+            freshSocket.emit('requestServerStatus');
+            setStatus('idle');
+            setErrorMessage(error.message || 'Sua partida anterior foi encerrada. Voce ja pode escolher uma mesa novamente.');
+            return;
+          } catch (reconnectError) {
+            setOnlinePlayers(null);
+            setErrorMessage(reconnectError.message || 'Servidor indisponivel. Tente novamente.');
+            return;
+          }
+        }
         setOnlinePlayers(null);
         setErrorMessage(error.message || 'Servidor indisponivel. Tente novamente.');
       }

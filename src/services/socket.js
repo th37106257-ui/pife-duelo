@@ -81,6 +81,25 @@ function getWhatsAppJoinMatchId() {
   return decodeURIComponent(pathMatch?.[1] || new URLSearchParams(window.location.search).get('matchId') || '').trim();
 }
 
+export function clearStaleMatchAccessFromUrl() {
+  if (typeof window === 'undefined') return false;
+  const url = new URL(window.location.href);
+  const hadStaleMatchAccess = /^\/join\/[^/]+\/?$/.test(url.pathname)
+    || url.searchParams.has('entry')
+    || url.searchParams.has('matchId');
+  if (!hadStaleMatchAccess) return false;
+
+  url.pathname = '/';
+  url.searchParams.delete('entry');
+  url.searchParams.delete('matchId');
+  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  console.info('LOBBY_STATE_RESET_AFTER_ABORT', {
+    route: window.location.pathname,
+    staleMatchAccessRemoved: true,
+  });
+  return true;
+}
+
 function isPaymentAccessError(error) {
   return error?.data?.code === 'PAYMENT_REQUIRED' || error?.message === 'PAYMENT_REQUIRED';
 }
@@ -219,11 +238,19 @@ export async function connectSocket() {
       socket.io.off('reconnect_failed', onReconnectFailed);
     };
 
-    const fail = (message) => {
+    const fail = (message, { resetEntryAccess = false, code = null } = {}) => {
       cleanup();
       socketConnectPromise = null;
-      socket.disconnect();
+      const failedSocket = socket;
+      failedSocket?.disconnect();
+      if (resetEntryAccess && failedSocket) {
+        failedSocket.removeAllListeners();
+        failedSocket.io.removeAllListeners();
+        if (socket === failedSocket) socket = null;
+        clearStaleMatchAccessFromUrl();
+      }
       const error = new Error(message);
+      if (code) error.code = code;
       publishConnectionState({
         status: 'error',
         connected: false,
@@ -245,7 +272,10 @@ export async function connectSocket() {
 
     const onConnectError = (error) => {
       if (isEntryAccessError(error)) {
-        fail(FRIENDLY_ENTRY_ACCESS_MESSAGE);
+        fail(FRIENDLY_ENTRY_ACCESS_MESSAGE, {
+          resetEntryAccess: true,
+          code: 'ENTRY_ACCESS_DENIED',
+        });
         return;
       }
       if (isPaymentAccessError(error)) {

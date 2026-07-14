@@ -70,6 +70,24 @@ const evolutionClient = whatsappProviderContext.client;
 const metaCloudClient = whatsappProviderContext.metaCloudClient;
 const whatsappMatchQueue = new MatchQueue({
   entryService: whatsappEntryService,
+  paymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED && config.PAYMENT_GATE_ENABLED,
+  releaseOnlineQueueEntry: ({ entryId, matchId, reason, previousQueueSocketId }) => {
+    const leaveResult = queueManager.leaveQueueByEntryId(entryId);
+    const socketId = leaveResult.entry?.socketId || previousQueueSocketId || null;
+    const targetSocket = socketId ? socketManager.getSocket(socketId) : null;
+    if (targetSocket) {
+      targetSocket.entryAccess = null;
+      targetSocket.emit('matchAborted', {
+        matchId,
+        reason,
+        message: 'Sua partida anterior foi encerrada. Voce ja pode escolher uma mesa novamente.',
+      });
+    }
+    return {
+      removed: Boolean(leaveResult.removed),
+      socketNotified: Boolean(targetSocket),
+    };
+  },
   logInfo,
   logWarn,
   logError,

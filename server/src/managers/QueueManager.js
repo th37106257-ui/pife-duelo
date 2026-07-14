@@ -71,6 +71,16 @@ export class QueueManager {
     return { removed: true, entry };
   }
 
+  leaveQueueByEntryId(entryId) {
+    const safeEntryId = String(entryId || '').trim();
+    if (!safeEntryId) return { removed: false };
+    const entry = this.getQueue().find((item) => String(item.entryId || '') === safeEntryId);
+    if (!entry) return { removed: false };
+
+    this.removeEntry(entry);
+    return { removed: true, entry };
+  }
+
   getQueue(tableValue = null) {
     const normalizedTable = tableValue === null ? null : normalizeTableValue(tableValue);
     if (normalizedTable) {
