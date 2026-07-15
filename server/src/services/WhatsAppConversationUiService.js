@@ -24,6 +24,7 @@ export class WhatsAppConversationUiService {
     client,
     enabled = false,
     preferEdit = false,
+    deleteReplacedMessages = false,
     clock = Date.now,
     ttlMs = DEFAULT_TTL_MS,
     logInfo = noop,
@@ -34,6 +35,9 @@ export class WhatsAppConversationUiService {
     // A Evolution pode responder HTTP 200 para edição sem confirmar que a
     // alteração apareceu no WhatsApp real. Entrega nova vem primeiro por padrão.
     this.preferEdit = Boolean(preferEdit);
+    // "Apagar para todos" deixa o aviso "Mensagem apagada" no WhatsApp.
+    // Manter mensagens anteriores e a opção mais previsível para o jogador.
+    this.deleteReplacedMessages = Boolean(deleteReplacedMessages);
     this.clock = clock;
     this.ttlMs = ttlMs;
     this.logInfo = logInfo;
@@ -191,7 +195,12 @@ export class WhatsAppConversationUiService {
         this.panels.delete(normalizedPhone);
       }
 
-      if (previous?.messageKey && messageKey && previous.messageKey.id !== messageKey.id) {
+      if (
+        this.deleteReplacedMessages
+        && previous?.messageKey
+        && messageKey
+        && previous.messageKey.id !== messageKey.id
+      ) {
         this.logInfo('WHATSAPP_PANEL_DELETE_ATTEMPT', {
           phone: maskPhone(normalizedPhone),
           state: previous.currentPanelState,
@@ -220,6 +229,12 @@ export class WhatsAppConversationUiService {
             reason: safeError(error),
           });
         }
+      } else if (previous?.messageKey && messageKey && previous.messageKey.id !== messageKey.id) {
+        this.logInfo('WHATSAPP_PANEL_PREVIOUS_RETAINED', {
+          phone: maskPhone(normalizedPhone),
+          state: previous.currentPanelState,
+          reason: 'avoid_deleted_message_placeholder',
+        });
       }
 
       return { ...result, panelCreated: Boolean(messageKey), panelState: state };

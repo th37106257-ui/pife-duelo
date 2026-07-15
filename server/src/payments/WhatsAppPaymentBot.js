@@ -506,7 +506,7 @@ export class WhatsAppPaymentBot {
   }
 
   async sendPermanent(replyTo, playerPhone, content, metadata = {}) {
-    await this.conversationUi.retirePanel(playerPhone, { deleteMessage: true });
+    await this.conversationUi.retirePanel(playerPhone, { deleteMessage: false });
     return this.send(replyTo, content, { ...metadata, replyType: metadata.replyType || 'permanent' });
   }
 

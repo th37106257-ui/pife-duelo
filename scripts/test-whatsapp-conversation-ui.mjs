@@ -42,6 +42,7 @@ const jid = `${phone}@s.whatsapp.net`;
     client,
     enabled: true,
     preferEdit: true,
+    deleteReplacedMessages: true,
     logInfo: (event, payload) => logs.push({ level: 'info', event, payload }),
     logWarn: (event, payload) => logs.push({ level: 'warn', event, payload }),
   });
@@ -110,10 +111,11 @@ const jid = `${phone}@s.whatsapp.net`;
 
   assert.equal(sends, 2);
   assert.equal(edits.length, 0);
-  assert.equal(deletes.length, 1);
+  assert.equal(deletes.length, 0);
   assert.equal(ui.getPanel(phone).currentPanelMessageId, 'safe-2');
   assert.equal(logs.some((item) => item.event === 'WHATSAPP_PANEL_REPLACEMENT_SENT_FIRST'), true);
   assert.equal(logs.some((item) => item.event === 'WHATSAPP_PANEL_EDIT_SKIPPED_UNCONFIRMED_DELIVERY'), true);
+  assert.equal(logs.some((item) => item.event === 'WHATSAPP_PANEL_PREVIOUS_RETAINED'), true);
 }
 
 {

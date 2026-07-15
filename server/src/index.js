@@ -603,7 +603,7 @@ app.get('/health', (request, response) => {
       lastSendAttemptAt: whatsappDiagnostics.lastSendAttemptAt ?? null,
       lastSendSuccessAt: whatsappDiagnostics.lastSendSuccessAt ?? null,
       lastSendErrorAt: whatsappDiagnostics.lastSendErrorAt ?? null,
-      panelDeliveryMode: 'send_then_delete',
+      panelDeliveryMode: 'send_only',
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,
