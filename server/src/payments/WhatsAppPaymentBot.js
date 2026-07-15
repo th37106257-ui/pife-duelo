@@ -2,6 +2,12 @@ import { maskPhone, normalizePhone } from './PaymentService.js';
 import { buildPublicMatchReference } from '../services/publicMatchReference.js';
 import { WhatsAppConversationUiService } from '../services/WhatsAppConversationUiService.js';
 import {
+  availableUpdates,
+  publicProjectStatus,
+  publicUpdatesMenu,
+  upcomingUpdates,
+} from '../services/publicRoadmap.js';
+import {
   WHATSAPP_PLAYER_STATES,
   activeMatch as activeMatchMessage,
   adminReview as adminReviewMessage,
@@ -134,6 +140,15 @@ const RULES_COMMANDS = new Set(['3', 'regras', 'regra', 'como jogar']);
 const STATUS_COMMANDS = new Set(['status', 'situacao']);
 const LINK_COMMANDS = new Set(['link', 'acesso', 'meu link']);
 const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
+const UPDATES_COMMANDS = new Set(['5', 'atualizacoes', 'atualizacao', 'novidades', 'roadmap']);
+const UPDATE_SECTION_COMMANDS = new Map([
+  ['1', 'available'],
+  ['novidades disponiveis', 'available'],
+  ['2', 'upcoming'],
+  ['proximos recursos', 'upcoming'],
+  ['3', 'status'],
+  ['status do projeto', 'status'],
+]);
 
 function isAdminCommandText(command) {
   return (
@@ -153,6 +168,8 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (currentState?.state === 'cancel_confirmation' && ['1', '2'].includes(command)) return 'cancel_confirmation';
   if (currentState?.state === 'rules_menu' && /^[1-6]$/.test(command)) return 'rules_topic';
   if (currentState?.state === 'support_menu' && /^[1-6]$/.test(command)) return 'support_topic';
+  if (currentState?.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command)) return 'updates_section';
+  if (UPDATES_COMMANDS.has(command) || (currentState?.state === 'updates_menu' && command === 'voltar')) return 'updates';
   const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
@@ -694,6 +711,63 @@ export class WhatsAppPaymentBot {
 
   safeRulesText() {
     return rulesMenu();
+  }
+
+  publicRoadmapOptions() {
+    return {
+      featureFlags: {
+        paymentsEnabled: this.paymentsEnabled,
+        whatsappPaymentsEnabled: this.paymentsEnabled,
+        gateEnabled: this.paymentsEnabled,
+      },
+    };
+  }
+
+  async handleUpdatesRequest(incoming, { replyTo, originIp }) {
+    this.setConversationState(incoming.phone, 'updates_menu');
+    await this.sendPanel(
+      replyTo,
+      incoming.phone,
+      'PUBLIC_UPDATES_MENU',
+      publicUpdatesMenu(this.publicRoadmapOptions()),
+    );
+    this.logInfo('WHATSAPP_PUBLIC_UPDATES_REQUEST', {
+      playerId: maskPhone(incoming.phone),
+      playerState: this.getPlayerContext(incoming.phone).state,
+      originIp,
+    });
+    return {
+      type: 'whatsapp_public_updates_sent',
+      decision: 'reply_sent',
+      reason: 'public_updates_requested',
+      state: 'updates_menu',
+      originIp,
+    };
+  }
+
+  async handleUpdatesSection(incoming, { replyTo, command, originIp }) {
+    const section = UPDATE_SECTION_COMMANDS.get(command);
+    const options = this.publicRoadmapOptions();
+    const content = section === 'available'
+      ? availableUpdates(options)
+      : section === 'upcoming'
+        ? upcomingUpdates(options)
+        : publicProjectStatus(options);
+    this.setConversationState(incoming.phone, 'updates_menu');
+    await this.sendPanel(replyTo, incoming.phone, `PUBLIC_UPDATES_${section.toUpperCase()}`, content);
+    this.logInfo('WHATSAPP_PUBLIC_UPDATES_SECTION_SENT', {
+      playerId: maskPhone(incoming.phone),
+      section,
+      originIp,
+    });
+    return {
+      type: 'whatsapp_public_updates_section_sent',
+      decision: 'reply_sent',
+      reason: `public_updates_${section}`,
+      section,
+      state: 'updates_menu',
+      originIp,
+    };
   }
 
   buildSupportLink() {
@@ -1423,6 +1497,8 @@ export class WhatsAppPaymentBot {
         || STATUS_COMMANDS.has(command)
         || LINK_COMMANDS.has(command)
         || IDENTIFY_COMMANDS.has(command)
+        || UPDATES_COMMANDS.has(command)
+        || (currentState.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command))
         || SAFE_TABLES.has(command)
         || isAdminCommandText(command)
       ),
@@ -1491,6 +1567,12 @@ export class WhatsAppPaymentBot {
     }
     if (currentState.state === 'support_menu' && /^[1-6]$/.test(command)) {
       return this.handleSupportTopic(incoming, { replyTo, command, originIp });
+    }
+    if (currentState.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command)) {
+      return this.handleUpdatesSection(incoming, { replyTo, command, originIp });
+    }
+    if (UPDATES_COMMANDS.has(command) || (currentState.state === 'updates_menu' && command === 'voltar')) {
+      return this.handleUpdatesRequest(incoming, { replyTo, originIp });
     }
     if (STATUS_COMMANDS.has(command)) return this.handleStatusCommand(incoming, { replyTo, originIp });
     if (LINK_COMMANDS.has(command)) return this.handleLinkCommand(incoming, { replyTo, originIp });
@@ -1871,6 +1953,15 @@ export class WhatsAppPaymentBot {
       const context = this.getPlayerContext(incoming.phone);
       await this.sendPanel(replyTo, incoming.phone, 'SUPPORT_MENU', supportMenu({ publicReference: context.publicReference }));
       return { type: 'whatsapp_invalid_support_option', decision: 'reply_sent', reason: 'invalid_support_option', state: 'support_menu', originIp };
+    }
+    if (currentState.state === 'updates_menu') {
+      await this.sendPanel(
+        replyTo,
+        incoming.phone,
+        'PUBLIC_UPDATES_MENU',
+        publicUpdatesMenu(this.publicRoadmapOptions()),
+      );
+      return { type: 'whatsapp_invalid_updates_option', decision: 'reply_sent', reason: 'invalid_updates_option', state: 'updates_menu', originIp };
     }
     await this.sendPanel(replyTo, incoming.phone, 'INVALID_COMMAND', invalidCommand());
     return { type: 'whatsapp_invalid_option', decision: 'reply_sent', reason: 'invalid_option', state: currentState.state, originIp };

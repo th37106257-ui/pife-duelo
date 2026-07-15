@@ -25,6 +25,7 @@ export function mainMenu({ paymentsEnabled = false } = {}) {
     '2 — Como funciona',
     '3 — Regras do Pife',
     '4 — Suporte',
+    '5 — Atualizações',
     '',
     paymentsEnabled
       ? '_Escolha uma opção para continuar._'
