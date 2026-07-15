@@ -41,6 +41,7 @@ const jid = `${phone}@s.whatsapp.net`;
   const ui = new WhatsAppConversationUiService({
     client,
     enabled: true,
+    preferEdit: true,
     logInfo: (event, payload) => logs.push({ level: 'info', event, payload }),
     logWarn: (event, payload) => logs.push({ level: 'warn', event, payload }),
   });
@@ -78,6 +79,41 @@ const jid = `${phone}@s.whatsapp.net`;
   const serializedLogs = JSON.stringify(logs);
   assert.equal(serializedLogs.includes(phone), false);
   assert.equal(serializedLogs.includes('secret'), false);
+}
+
+{
+  const logs = [];
+  const edits = [];
+  const deletes = [];
+  let sends = 0;
+  const ui = new WhatsAppConversationUiService({
+    enabled: true,
+    client: {
+      editTrackedMessage: async (payload) => {
+        edits.push(payload);
+        return { ok: true };
+      },
+      deleteTrackedMessage: async (payload) => {
+        deletes.push(payload);
+        return { ok: true };
+      },
+    },
+    logInfo: (event, payload) => logs.push({ event, payload }),
+  });
+  const sendNew = async () => {
+    sends += 1;
+    return { ok: true, sent: true, messageKey: { id: `safe-${sends}`, remoteJid: jid, fromMe: true } };
+  };
+
+  await ui.updateConversationPanel({ phone, state: 'MAIN_MENU', content: 'menu', sendNew });
+  await ui.updateConversationPanel({ phone, state: 'UPDATES', content: 'atualizações', sendNew });
+
+  assert.equal(sends, 2);
+  assert.equal(edits.length, 0);
+  assert.equal(deletes.length, 1);
+  assert.equal(ui.getPanel(phone).currentPanelMessageId, 'safe-2');
+  assert.equal(logs.some((item) => item.event === 'WHATSAPP_PANEL_REPLACEMENT_SENT_FIRST'), true);
+  assert.equal(logs.some((item) => item.event === 'WHATSAPP_PANEL_EDIT_SKIPPED_UNCONFIRMED_DELIVERY'), true);
 }
 
 {

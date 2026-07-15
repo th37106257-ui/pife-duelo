@@ -187,9 +187,9 @@ const flagsOff = {
   await runtime.bot.handleConnectivityWebhook(webhook(phone, 'oi'));
   await runtime.bot.handleConnectivityWebhook(webhook(phone, '5'));
   await runtime.bot.handleConnectivityWebhook(webhook(phone, '2'));
-  assert.equal(runtime.sent.length, 1);
-  assert.equal(runtime.edited.length, 2);
-  assert.match(runtime.edited.at(-1).text, /PR.XIMOS RECURSOS/i);
+  assert.equal(runtime.sent.length, 3);
+  assert.equal(runtime.edited.length, 0);
+  assert.match(runtime.sent.at(-1).text, /PR.XIMOS RECURSOS/i);
 }
 
 console.log('WhatsApp public updates: roadmap central, painel vivo, flags e estados preservados.');

@@ -142,6 +142,30 @@ const whatsappConnectivityTestEnabled = config.WHATSAPP_CONNECTIVITY_TEST_ENABLE
 const whatsappSafeEntryEnabled = config.WHATSAPP_SAFE_ENTRY_ENABLED
   && getWhatsAppEntryConfigurationErrors().length === 0;
 
+const WHATSAPP_STATUS_MONITOR_INTERVAL_MS = 60 * 1000;
+let whatsappStatusCheckInFlight = false;
+
+async function refreshWhatsAppProviderStatus() {
+  if (whatsappStatusCheckInFlight || !evolutionClient?.isConfigured?.()) return;
+  whatsappStatusCheckInFlight = true;
+  try {
+    await evolutionClient.checkInstanceStatus();
+  } catch (error) {
+    logWarn('WHATSAPP_STATUS_MONITOR_FAILED', {
+      message: error?.message || String(error || 'unknown_error'),
+    });
+  } finally {
+    whatsappStatusCheckInFlight = false;
+  }
+}
+
+void refreshWhatsAppProviderStatus();
+const whatsappStatusMonitor = setInterval(
+  () => void refreshWhatsAppProviderStatus(),
+  WHATSAPP_STATUS_MONITOR_INTERVAL_MS,
+);
+whatsappStatusMonitor.unref?.();
+
 logInfo('WHATSAPP_PROVIDER_SELECTED', {
   requestedProvider: config.WHATSAPP_PROVIDER,
   activeProvider: whatsappProviderContext.client.getActiveProviderName?.() ?? whatsappProviderContext.activeProviderName,
@@ -525,6 +549,11 @@ function releaseWhatsAppEntriesAfterMatch(gameState, reason = 'match_finished') 
 app.get('/health', (request, response) => {
   const metrics = getProductionMetrics();
   const memory = process.memoryUsage();
+  const whatsappDiagnostics = evolutionClient.getDiagnostics?.() ?? {};
+  const normalizedInstanceState = String(whatsappDiagnostics.lastStatus || '').trim().toLowerCase();
+  const instanceOpen = ['open', 'connected'].includes(normalizedInstanceState)
+    ? true
+    : (normalizedInstanceState && normalizedInstanceState !== 'unknown' ? false : null);
   response.json({
     ok: true,
     status: 'ok',
@@ -565,6 +594,16 @@ app.get('/health', (request, response) => {
       botNumberMasked: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
       adminNumbersConfigured: config.ADMIN_WHATSAPP_NUMBERS.length,
       adminNumbersMasked: config.ADMIN_WHATSAPP_NUMBERS.map(maskPhone),
+      instanceState: whatsappDiagnostics.lastStatus ?? null,
+      instanceOpen,
+      reconnectNeeded: Boolean(whatsappDiagnostics.reconnectNeeded),
+      lastStatusCheckAt: whatsappDiagnostics.lastStatusCheckAt ?? null,
+      lastWebhookReceivedAt: whatsappDiagnostics.lastWebhookReceivedAt ?? null,
+      lastMessageProcessedAt: whatsappDiagnostics.lastMessageProcessedAt ?? null,
+      lastSendAttemptAt: whatsappDiagnostics.lastSendAttemptAt ?? null,
+      lastSendSuccessAt: whatsappDiagnostics.lastSendSuccessAt ?? null,
+      lastSendErrorAt: whatsappDiagnostics.lastSendErrorAt ?? null,
+      panelDeliveryMode: 'send_then_delete',
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,

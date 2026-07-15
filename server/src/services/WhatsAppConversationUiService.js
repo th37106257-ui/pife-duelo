@@ -23,6 +23,7 @@ export class WhatsAppConversationUiService {
   constructor({
     client,
     enabled = false,
+    preferEdit = false,
     clock = Date.now,
     ttlMs = DEFAULT_TTL_MS,
     logInfo = noop,
@@ -30,6 +31,9 @@ export class WhatsAppConversationUiService {
   } = {}) {
     this.client = client;
     this.enabled = Boolean(enabled);
+    // A Evolution pode responder HTTP 200 para edição sem confirmar que a
+    // alteração apareceu no WhatsApp real. Entrega nova vem primeiro por padrão.
+    this.preferEdit = Boolean(preferEdit);
     this.clock = clock;
     this.ttlMs = ttlMs;
     this.logInfo = logInfo;
@@ -105,7 +109,7 @@ export class WhatsAppConversationUiService {
       }
 
       const previous = this.getPanel(normalizedPhone);
-      if (previous?.messageKey && isSafeBotMessageKey(previous.messageKey)) {
+      if (this.preferEdit && previous?.messageKey && isSafeBotMessageKey(previous.messageKey)) {
         this.logInfo('WHATSAPP_PANEL_EDIT_ATTEMPT', {
           phone: maskPhone(normalizedPhone),
           fromState: previous.currentPanelState,
@@ -142,6 +146,12 @@ export class WhatsAppConversationUiService {
             reason: safeError(error),
           });
         }
+      } else if (previous?.messageKey && isSafeBotMessageKey(previous.messageKey)) {
+        this.logInfo('WHATSAPP_PANEL_EDIT_SKIPPED_UNCONFIRMED_DELIVERY', {
+          phone: maskPhone(normalizedPhone),
+          fromState: previous.currentPanelState,
+          toState: state,
+        });
       }
 
       let tracked;
@@ -154,6 +164,10 @@ export class WhatsAppConversationUiService {
       if (result?.ok === false) return result;
 
       if (previous) {
+        this.logInfo('WHATSAPP_PANEL_REPLACEMENT_SENT_FIRST', {
+          phone: maskPhone(normalizedPhone),
+          state,
+        });
         this.logInfo('WHATSAPP_PANEL_FALLBACK_NEW_MESSAGE', {
           phone: maskPhone(normalizedPhone),
           state,
