@@ -38,6 +38,7 @@ function webhook(text) {
   assert.match(menu, /2 .*Como funciona/);
   assert.match(menu, /3 .*Regras do Pife/);
   assert.match(menu, /4 .*Suporte/);
+  assert.match(menu, /🎮[^\n]*Jogar[^\n]*\n\n🧭[^\n]*Como funciona/u);
   assert.match(menu, /sem cobran.a/i);
   assert.match(menu, /sem pr.mio real/i);
   assert.doesNotMatch(menu, /vencedor recebe/i);
@@ -47,11 +48,13 @@ function webhook(text) {
   assert.match(tables, /R\$5,00/);
   assert.match(tables, /R\$10,00/);
   assert.match(tables, /R\$20,00/);
+  assert.match(tables, /1️⃣[^\n]*R\$2,00[^\n]*\n\n2️⃣[^\n]*R\$5,00/u);
   assert.match(tables, /Nenhum valor ser. cobrado/i);
   assert.doesNotMatch(tables, /Pix/i);
 
   assert.match(howItWorksMenu({ paymentsEnabled: false }), /testes s.o gratuitos/i);
   assert.match(rulesMenu(), /Combina..es v.lidas/i);
+  assert.match(rulesMenu(), /🎯[^\n]*Objetivo[^\n]*\n\n🔄[^\n]*turno/iu);
   assert.match(ruleTopic('1'), /tr.s combina..es v.lidas/i);
   assert.match(ruleTopic('2'), /compre uma carta/i);
   assert.match(ruleTopic('3'), /Sequ.ncia/i);
@@ -59,6 +62,7 @@ function webhook(text) {
   assert.match(ruleTopic('5'), /Partida come.ou/i);
   assert.match(allRules(), /Uma carta n.o pode ser reutilizada/i);
   assert.match(supportMenu({ publicReference: 'PD-ABCD1234' }), /PD-ABCD1234/);
+  assert.match(supportMenu(), /🔗[^\n]*Link n.o abre[^\n]*\n\n👥[^\n]*Advers.rio/iu);
   assert.match(supportTopic('3'), /Atualize a p.gina/i);
 }
 

@@ -64,20 +64,19 @@ function itemLine(item, { includeDescription = false } = {}) {
   return `${status} — *${item.title}*\n${item.description}`;
 }
 
-export function publicUpdatesMenu(options = {}) {
-  const available = itemsForStatus([PUBLIC_ROADMAP_STATUS.AVAILABLE], options);
-  const testing = itemsForStatus([PUBLIC_ROADMAP_STATUS.TESTING], options);
-  const study = itemsForStatus([PUBLIC_ROADMAP_STATUS.STUDY], options);
+export function publicUpdatesMenu(_options = {}) {
+  // O painel inicial deve ser curto. Os detalhes ficam nas três seções abaixo.
   return [
-    '*📢 ATUALIZAÇÕES DO PIFE DUELO*', '',
-    '*✅ Já disponível*', ...available.map((item) => itemLine(item)), '',
-    '*🧪 Em testes*', ...testing.map((item) => itemLine(item)), '',
-    '*🔎 Em estudo*', ...study.map((item) => itemLine(item)), '',
-    'As novidades serão liberadas somente depois de testes de segurança, estabilidade e experiência dos jogadores.', '',
-    '1 — Novidades disponíveis',
-    '2 — Próximos recursos',
-    '3 — Status do projeto',
-    '*menu* — Voltar ao início',
+    '*📢 ATUALIZAÇÕES DO PIFE DUELO*',
+    '_Escolha o que deseja consultar:_',
+    '',
+    '✅ *1 — Novidades disponíveis*',
+    '',
+    '🔎 *2 — Próximos recursos*',
+    '',
+    '📊 *3 — Status do projeto*',
+    '',
+    '↩️ Digite *menu* para voltar ao início.',
   ].join('\n');
 }
 

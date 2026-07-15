@@ -86,6 +86,8 @@ const flagsOff = {
 
   assert.match(menu, /5 .*Atualiza..es/i);
   assert.match(updates, /ATUALIZA..ES DO PIFE DUELO/i);
+  assert.match(updates, /✅[^\n]*Novidades dispon.ve[íi]s[^\n]*\n\n🔎[^\n]*Pr.ximos recursos/iu);
+  assert.doesNotMatch(updates, /Partidas online 1 contra 1/i);
   assert.match(available, /Partidas online 1 contra 1/i);
   assert.equal(fourPlayer?.status, PUBLIC_ROADMAP_STATUS.STUDY);
   assert.match(upcoming, /Em estudo.*Modalidade para 4 jogadores/is);

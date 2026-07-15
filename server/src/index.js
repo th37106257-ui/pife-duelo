@@ -604,6 +604,8 @@ app.get('/health', (request, response) => {
       lastSendSuccessAt: whatsappDiagnostics.lastSendSuccessAt ?? null,
       lastSendErrorAt: whatsappDiagnostics.lastSendErrorAt ?? null,
       panelDeliveryMode: 'send_only',
+      livePanelStateEnabled: config.WHATSAPP_CLEAN_CONVERSATION_ENABLED,
+      visualMessageReplacementEnabled: false,
     },
     queuedPlayers: queueManager.getQueueSize(),
     finishedMatchesToday: metrics.finishedMatchesToday,

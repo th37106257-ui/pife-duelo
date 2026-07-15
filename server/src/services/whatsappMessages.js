@@ -20,16 +20,21 @@ export const WHATSAPP_PLAYER_STATES = Object.freeze({
 export function mainMenu({ paymentsEnabled = false } = {}) {
   return [
     '*🎴 PIFE DUELO*',
+    '_Seu lobby pelo WhatsApp_',
     '',
-    '1 — Jogar',
-    '2 — Como funciona',
-    '3 — Regras do Pife',
-    '4 — Suporte',
-    '5 — Atualizações',
+    '🎮 *1 — Jogar*',
+    '',
+    '🧭 *2 — Como funciona*',
+    '',
+    '📜 *3 — Regras do Pife*',
+    '',
+    '🛟 *4 — Suporte*',
+    '',
+    '📢 *5 — Atualizações*',
     '',
     paymentsEnabled
-      ? '_Escolha uma opção para continuar._'
-      : '_Fase de testes gratuitos: sem cobrança e sem prêmio real._',
+      ? '👇 _Digite o número da opção._'
+      : '🆓 _Fase de testes gratuitos: sem cobrança e sem prêmio real._',
   ].join('\n');
 }
 
@@ -54,21 +59,23 @@ export function howItWorksMenu({ paymentsEnabled = false } = {}) {
 }
 
 export function tablesMenu({ paymentsEnabled = false } = {}) {
-  const suffix = paymentsEnabled ? '' : ' — categoria de teste grátis';
   return [
     '*🃏 ESCOLHA UMA MESA*',
+    '_Digite o número da categoria:_',
     '',
-    `1 — Mesa ${money(2)}${suffix}`,
-    `2 — Mesa ${money(5)}${suffix}`,
-    `3 — Mesa ${money(10)}${suffix}`,
-    `4 — Mesa ${money(20)}${suffix}`,
+    `1️⃣ *Mesa ${money(2)}*`,
+    '',
+    `2️⃣ *Mesa ${money(5)}*`,
+    '',
+    `3️⃣ *Mesa ${money(10)}*`,
+    '',
+    `4️⃣ *Mesa ${money(20)}*`,
     '',
     paymentsEnabled
-      ? '_A situação da Entrada será confirmada antes de seguir._'
-      : '_Nenhum valor será cobrado e não há prêmio real nesta fase._',
+      ? '🔐 _A situação da Entrada será confirmada antes de seguir._'
+      : '🆓 _Nenhum valor será cobrado e não há prêmio real nesta fase._',
     '',
-    'Digite o número da Mesa.',
-    'Digite *menu* para voltar.',
+    '↩️ Digite *menu* para voltar.',
   ].join('\n');
 }
 
@@ -92,16 +99,21 @@ export function testModeMessage(testModeLink) {
 
 export function rulesMenu() {
   return [
-    '*REGRAS DO PIFE*',
+    '*📜 REGRAS DO PIFE*',
     '',
-    '1 — Objetivo',
-    '2 — Como funciona o turno',
-    '3 — Combinações válidas',
-    '4 — Como bater',
-    '5 — Cancelamento e desistência',
-    '6 — Ver todas as regras',
+    '🎯 *1 — Objetivo*',
     '',
-    'Digite *menu* para voltar.',
+    '🔄 *2 — Como funciona o turno*',
+    '',
+    '🃏 *3 — Combinações válidas*',
+    '',
+    '🏁 *4 — Como bater*',
+    '',
+    '🚪 *5 — Cancelamento e desistência*',
+    '',
+    '📚 *6 — Ver todas as regras*',
+    '',
+    '↩️ Digite *menu* para voltar.',
   ].join('\n');
 }
 
@@ -169,18 +181,23 @@ export function ruleTopic(topic) {
 
 export function supportMenu({ publicReference = null } = {}) {
   return [
-    '*SUPORTE PIFE DUELO*',
-    optionalReference(publicReference).trim(),
+    '*🛟 SUPORTE PIFE DUELO*',
+    ...(publicReference ? ['', `Referência: *${publicReference}*`] : []),
     '',
-    '1 — Link não abre',
-    '2 — Adversário não entrou',
-    '3 — Partida travou',
-    '4 — Fui desconectado',
-    '5 — Problema com Entrada',
-    '6 — Falar com suporte',
+    '🔗 *1 — Link não abre*',
     '',
-    'Digite *menu* para voltar.',
-  ].filter(Boolean).join('\n');
+    '👥 *2 — Adversário não entrou*',
+    '',
+    '⚠️ *3 — Partida travou*',
+    '',
+    '📶 *4 — Fui desconectado*',
+    '',
+    '🎟️ *5 — Problema com Entrada*',
+    '',
+    '👤 *6 — Falar com o suporte*',
+    '',
+    '↩️ Digite *menu* para voltar.',
+  ].join('\n');
 }
 
 const SUPPORT_TOPICS = Object.freeze({
@@ -229,10 +246,13 @@ export function waitingForOpponent({ table }) {
     `Você está aguardando na Mesa ${money(table)}.`,
     'Assim que outro jogador escolher a mesma Mesa, a Sala de espera será preparada.',
     '',
-    '*status* — consultar a espera',
-    '*cancelar* — pedir cancelamento antes do início',
-    '*menu* — ver opções seguras',
-    '*suporte* — pedir ajuda',
+    '🔎 *status* — consultar a espera',
+    '',
+    '❌ *cancelar* — pedir cancelamento antes do início',
+    '',
+    '🏠 *menu* — ver opções seguras',
+    '',
+    '🛟 *suporte* — pedir ajuda',
   ].join('\n');
 }
 
@@ -335,15 +355,16 @@ export function refundPending({ table, publicReference = null }) {
 
 export function cancelConfirmation({ table }) {
   return [
-    '*CONFIRMAR CANCELAMENTO*',
+    '*⚠️ CONFIRMAR CANCELAMENTO*',
     '',
     `Você está aguardando na Mesa ${money(table)}.`,
     'Deseja realmente cancelar a espera?',
     '',
-    '1 — Continuar aguardando',
-    '2 — Cancelar e voltar ao menu',
+    '⏳ *1 — Continuar aguardando*',
     '',
-    'Digite *menu* para voltar sem cancelar.',
+    '❌ *2 — Cancelar e voltar ao menu*',
+    '',
+    '↩️ Digite *menu* para voltar sem cancelar.',
   ].join('\n');
 }
 
