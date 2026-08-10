@@ -307,7 +307,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(runtime.entryService.getActiveEntryForPhone(firstPhone), null);
   assert.equal(runtime.entryService.getActiveEntryForPhone(secondPhone), null);
 
-  const repeatedAbort = runtime.matchQueue.abortMatchAndReleaseParticipants({
+  const repeatedAbort = await runtime.matchQueue.abortMatchAndReleaseParticipants({
     matchId: paired.matchId,
     reason: 'repeated_abort_test',
     cancelledBy: secondPhone,
@@ -340,7 +340,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(oldTokens.length, 2);
   now = Math.max(...oldEntries.map((entry) => Date.parse(entry.accessExpiresAt))) + 1;
 
-  const newSelection = runtime.matchQueue.joinQueue(firstPhone, 20);
+  const newSelection = await runtime.matchQueue.joinQueue(firstPhone, 20);
   assert.equal(newSelection.blocked, false);
   assert.equal(newSelection.entry.tableValue, 20);
   assert.equal(runtime.entryService.getActiveEntryForPhone(secondPhone), null);
@@ -374,7 +374,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
     });
   });
 
-  const protectedResult = runtime.matchQueue.abortMatchAndReleaseParticipants({
+  const protectedResult = await runtime.matchQueue.abortMatchAndReleaseParticipants({
     matchId: paired.matchId,
     reason: 'must_not_abort_started_match',
     cancelledBy: firstPhone,
@@ -801,7 +801,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
       paidConfirmed: true,
     })));
 
-  const abort = runtime.matchQueue.abortMatchAndReleaseParticipants({
+  const abort = await runtime.matchQueue.abortMatchAndReleaseParticipants({
     matchId: paired.matchId,
     reason: 'paid_record_must_survive_even_with_flags_off',
     cancelledBy: firstPhone,
@@ -860,11 +860,11 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 {
   const { matchQueue } = createBot();
   for (const [tableValue, queueId] of [[2, 'mesa_2'], [5, 'mesa_5'], [10, 'mesa_10'], [20, 'mesa_20']]) {
-    const first = matchQueue.joinQueue(`55117777${String(tableValue).padStart(4, '0')}`, tableValue);
+    const first = await matchQueue.joinQueue(`55117777${String(tableValue).padStart(4, '0')}`, tableValue);
     assert.equal(first.blocked, false);
     assert.equal(first.entry.tableId, queueId);
     assert.equal(matchQueue.getQueueStatus(tableValue).waitingPlayers, 1);
-    const removed = matchQueue.removeFromQueue(first.entry.playerPhone);
+    const removed = await matchQueue.removeFromQueue(first.entry.playerPhone);
     assert.equal(removed.removed, true);
     assert.equal(matchQueue.getQueueStatus(tableValue).waitingPlayers, 0);
   }

@@ -10,17 +10,35 @@ export class MockPaymentProvider extends PaymentProvider {
     super();
     this.webhookToken = webhookToken;
     this.payments = new Map();
+    this.customers = new Map();
   }
 
   async createOrFindCustomer({ publicId }) {
-    return { id: stableId('cus_mock', publicId), existing: true };
+    const existing = await this.findCustomerByExternalReference(publicId);
+    if (existing) return { ...existing, existing: true };
+    const customer = { id: stableId('cus_mock', publicId), externalReference: publicId };
+    this.customers.set(publicId, customer);
+    return { ...customer, existing: false };
+  }
+
+  async findCustomerByExternalReference(publicId) {
+    return this.customers.get(String(publicId)) ?? null;
+  }
+
+  async findPixChargeByExternalReference(externalReference) {
+    return [...this.payments.values()].find((payment) => payment.externalReference === externalReference) ?? null;
   }
 
   async createPixCharge({ customerId, amountCents, dueDate, description, externalReference }) {
+    const existing = await this.findPixChargeByExternalReference(externalReference);
+    if (existing) return { ...existing, existing: true };
     const id = stableId('pay_mock', externalReference);
-    const payment = { id, customer: customerId, amountCents, dueDate, description, externalReference, status: 'PENDING' };
+    const payment = {
+      id, customer: customerId, amountCents, netAmountCents: amountCents, feeAmountCents: 0,
+      dueDate, description, externalReference, status: 'PENDING',
+    };
     this.payments.set(id, payment);
-    return payment;
+    return { ...payment, existing: false };
   }
 
   async getPixQrCode(paymentId) {
@@ -55,7 +73,7 @@ export class MockPaymentProvider extends PaymentProvider {
   async getProviderBalance() {
     return { amountCents: [...this.payments.values()]
       .filter((payment) => payment.status === 'RECEIVED')
-      .reduce((sum, payment) => sum + payment.amountCents, 0) };
+      .reduce((sum, payment) => sum + (payment.netAmountCents ?? payment.amountCents), 0) };
   }
 }
 

@@ -136,9 +136,9 @@ export class MatchQueue {
     }
   }
 
-  releaseFinancialReservation(entry, reason) {
+  async releaseFinancialReservation(entry, reason) {
     if (!this.financialWalletService?.isEnabled?.() || !entry?.entryId) return null;
-    return this.financialWalletService.releaseStake(entry.entryId, reason).catch((error) => {
+    return this.financialWalletService.releaseStakeWithRecovery(entry.entryId, reason).catch((error) => {
       this.logError('FINANCIAL_STAKE_RELEASE_FAILED', { entryId: entry.entryId, reason: error.message });
       return { released: false, reason: error.message };
     });
@@ -258,7 +258,7 @@ export class MatchQueue {
     return null;
   }
 
-  abortMatchAndReleaseParticipants({ matchId, reason = 'pre_start_match_aborted', cancelledBy = null } = {}) {
+  async abortMatchAndReleaseParticipants({ matchId, reason = 'pre_start_match_aborted', cancelledBy = null } = {}) {
     const safeMatchId = String(matchId || '').trim();
     const normalizedCancelledBy = normalizePhone(cancelledBy);
     if (!safeMatchId) return { aborted: false, reason: 'missing_match_id', participants: [] };
@@ -292,10 +292,10 @@ export class MatchQueue {
     if (!result.aborted) return result;
 
     if (!result.alreadyProcessed) {
-      (result.participants ?? []).forEach((entry) => {
+      await Promise.all((result.participants ?? []).map(async (entry) => {
         this.releaseDemoReservation(entry, reason);
-        this.releaseFinancialReservation(entry, reason);
-      });
+        await this.releaseFinancialReservation(entry, reason);
+      }));
     }
 
     const pendingTimeout = this.pendingMatchTimeouts.get(safeMatchId);
@@ -428,9 +428,9 @@ export class MatchQueue {
     if (!safeMatchId || !Number.isFinite(deadlineMs)) return false;
     const previous = this.pendingMatchTimeouts.get(safeMatchId);
     if (previous) clearTimeout(previous);
-    const timeout = setTimeout(() => {
+    const timeout = setTimeout(async () => {
       this.pendingMatchTimeouts.delete(safeMatchId);
-      this.abortMatchAndReleaseParticipants({
+      await this.abortMatchAndReleaseParticipants({
         matchId: safeMatchId,
         reason: 'queue_timeout_before_start',
         cancelledBy: null,
@@ -473,7 +473,7 @@ export class MatchQueue {
     return true;
   }
 
-  clearPlayerState(playerPhone, { actor = null, reason = 'player_requested_cancel' } = {}) {
+  async clearPlayerState(playerPhone, { actor = null, reason = 'player_requested_cancel' } = {}) {
     const phone = normalizePhone(playerPhone);
     if (!phone) return { cleared: false, reason: 'invalid_phone' };
     this.syncQueueFromStore();
@@ -491,7 +491,7 @@ export class MatchQueue {
 
     const preStartMatch = this.entryService?.getPreStartMatchForPhone?.(phone);
     const preStartCancellation = preStartMatch
-      ? this.abortMatchAndReleaseParticipants({
+      ? await this.abortMatchAndReleaseParticipants({
           matchId: preStartMatch.matchId,
           reason,
           cancelledBy: phone,
@@ -585,7 +585,7 @@ export class MatchQueue {
           entryId: entry.entryId,
         });
         this.releaseDemoReservation(entry, reason);
-        this.releaseFinancialReservation(entry, reason);
+        await this.releaseFinancialReservation(entry, reason);
       }
     }
 
@@ -701,7 +701,7 @@ export class MatchQueue {
     };
   }
 
-  removeFromQueue(playerPhone, { cancelEntry = true, reason = 'queue_cancelled' } = {}) {
+  async removeFromQueue(playerPhone, { cancelEntry = true, reason = 'queue_cancelled' } = {}) {
     const phone = normalizePhone(playerPhone);
     if (!phone) return { removed: false };
     this.syncQueueFromStore();
@@ -727,7 +727,7 @@ export class MatchQueue {
           }
         }
         this.releaseDemoReservation(entry, reason);
-        this.releaseFinancialReservation(entry, reason);
+        await this.releaseFinancialReservation(entry, reason);
         this.logInfo('WHATSAPP_QUEUE_LEFT', {
           tableId: queueId,
           tableValue: entry.tableValue,
@@ -766,7 +766,7 @@ export class MatchQueue {
     });
   }
 
-  ensureEntryAccess({ phone, tableValue }) {
+  async ensureEntryAccess({ phone, tableValue }) {
     let existing = this.entryService.getActiveEntryForPhone(phone);
     const expiredPreStartMatch = Boolean(
       existing?.whatsappMatchId
@@ -777,7 +777,7 @@ export class MatchQueue {
     );
     if (expiredPreStartMatch) {
       const expiredMatchId = existing.whatsappMatchId;
-      const expirationResult = this.abortMatchAndReleaseParticipants({
+      const expirationResult = await this.abortMatchAndReleaseParticipants({
         matchId: expiredMatchId,
         reason: 'pre_start_match_link_expired',
         cancelledBy: null,
@@ -889,7 +889,7 @@ export class MatchQueue {
     throw new Error('ENTRY_NOT_AVAILABLE');
   }
 
-  joinQueue(playerPhone, tableId, { replyTo = null } = {}) {
+  async joinQueue(playerPhone, tableId, { replyTo = null } = {}) {
     if (!this.isConfigured()) {
       return { blocked: true, reason: 'queue_not_configured' };
     }
@@ -1023,7 +1023,7 @@ export class MatchQueue {
 
     let approval;
     try {
-      approval = this.ensureEntryAccess({ phone, tableValue });
+      approval = await this.ensureEntryAccess({ phone, tableValue });
     } catch (error) {
       this.logWarn('WHATSAPP_QUEUE_ENTRY_REJECTED', {
         phone: maskPhone(phone),
@@ -1148,14 +1148,14 @@ export class MatchQueue {
     if (!tableValue) return { blocked: true, reason: 'invalid_table' };
     let approval;
     try {
-      approval = this.ensureEntryAccess({ phone, tableValue });
+      approval = await this.ensureEntryAccess({ phone, tableValue });
       await this.financialWalletService.reserveStake(phone, {
         amountCents: Math.round(Number(tableValue) * 100),
         entryId: approval.entry.entryId,
         tableId: tableValue,
         gameCode: 'PIFE_DUELO',
       });
-      const result = this.joinQueue(phone, tableValue, { replyTo });
+      const result = await this.joinQueue(phone, tableValue, { replyTo });
       if (result.blocked) await this.financialWalletService.releaseStake(approval.entry.entryId, `queue_rejected:${result.reason}`);
       return result;
     } catch (error) {

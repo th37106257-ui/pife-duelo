@@ -23,8 +23,8 @@ const queue = new MatchQueue({
 
 const firstPhone = '5511999991111';
 const secondPhone = '5511999992222';
-const first = queue.joinQueue(firstPhone, 5, { replyTo: firstPhone });
-const second = queue.joinQueue(secondPhone, 5, { replyTo: secondPhone });
+const first = await queue.joinQueue(firstPhone, 5, { replyTo: firstPhone });
+const second = await queue.joinQueue(secondPhone, 5, { replyTo: secondPhone });
 assert.equal(first.blocked, false);
 assert.equal(second.blocked, false);
 assert.ok(second.match);
@@ -51,7 +51,7 @@ const recovered = entries.claimAccessSession({
 });
 assert.equal(recovered.recovered, true);
 
-const abort = queue.abortMatchAndReleaseParticipants({
+const abort = await queue.abortMatchAndReleaseParticipants({
   matchId: second.match.matchId,
   reason: 'player_left_before_start',
   cancelledBy: firstPhone,
@@ -61,7 +61,7 @@ assert.equal(abort.participants.length, 2);
 assert.equal(entries.validateAccessToken(firstToken), null);
 assert.equal(entries.getActiveEntryForPhone(firstPhone), null);
 assert.equal(entries.getActiveEntryForPhone(secondPhone), null);
-assert.equal(queue.abortMatchAndReleaseParticipants({ matchId: second.match.matchId }).alreadyProcessed, true);
+assert.equal((await queue.abortMatchAndReleaseParticipants({ matchId: second.match.matchId })).alreadyProcessed, true);
 
 const paidStore = new WhatsAppEntryStore();
 const paidEntries = new WhatsAppEntryService({

@@ -68,8 +68,22 @@ function maskedAdmin(phone) {
   return digits.length > 4 ? `***${digits.slice(-4)}` : '***';
 }
 
+function assertAccountActive(account) {
+  if (!account || account.status !== 'ACTIVE') throw new Error('FINANCIAL_ACCOUNT_BLOCKED');
+  return account;
+}
+
+async function insertSystemAudit(client, { action, targetReference = null, reason = null, previousState = null, nextState = null, amountCents = null } = {}) {
+  await client.query(
+    `INSERT INTO financial_admin_audit
+      (audit_id, admin_phone_masked, action, target_reference, reason, previous_state, next_state, amount_cents)
+     VALUES ($1,'SYSTEM',$2,$3,$4,$5::jsonb,$6::jsonb,$7)`,
+    [randomUUID(), action, targetReference, safeText(reason, 240) || null, json(previousState), json(nextState), amountCents],
+  );
+}
+
 export class FinancialWalletService {
-  constructor({ repository, provider, config, logInfo = () => {}, logWarn = () => {}, logError = () => {} } = {}) {
+  constructor({ repository, provider, config, logInfo = () => {}, logWarn = () => {}, logError = () => {}, faultInjector = null } = {}) {
     if (!repository) throw new Error('FINANCIAL_REPOSITORY_REQUIRED');
     if (!provider) throw new Error('PAYMENT_PROVIDER_REQUIRED');
     this.repository = repository;
@@ -78,6 +92,8 @@ export class FinancialWalletService {
     this.logInfo = logInfo;
     this.logWarn = logWarn;
     this.logError = logError;
+    this.faultInjector = typeof faultInjector === 'function' ? faultInjector : () => {};
+    this.matchOperationLocks = new Map();
   }
 
   isEnabled() { return Boolean(this.config?.ready); }
@@ -87,7 +103,47 @@ export class FinancialWalletService {
 
   async initialize() {
     this.assertEnabled();
-    return this.repository.initialize();
+    await this.repository.initialize();
+    try {
+      await this.retryPendingFinancialOperations();
+    } catch (error) {
+      this.logError('FINANCIAL_RECOVERY_STARTUP_FAILED', { reason: error.message });
+    }
+    return true;
+  }
+
+  async retryPendingFinancialOperations({ limit = 100 } = {}) {
+    this.assertEnabled();
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 100));
+    const settlements = (await this.repository.query(
+      `SELECT match_id FROM financial_match_settlements
+       WHERE status IN ('PENDING','PROCESSING','RETRY_REQUIRED') ORDER BY updated_at ASC LIMIT $1`, [safeLimit],
+    )).rows;
+    const recoveryTasks = (await this.repository.query(
+      `SELECT * FROM financial_recovery_tasks
+       WHERE status IN ('PENDING','RETRY_REQUIRED') AND (next_attempt_at IS NULL OR next_attempt_at<=now())
+       ORDER BY created_at ASC LIMIT $1`, [safeLimit],
+    )).rows;
+    const results = [];
+    for (const settlement of settlements) {
+      try {
+        results.push({ type: 'MATCH_OPERATION', matchId: settlement.match_id, result: await this.executeMatchOperation(settlement.match_id) });
+      } catch (error) {
+        results.push({ type: 'MATCH_OPERATION', matchId: settlement.match_id, error: error.message });
+      }
+    }
+    for (const task of recoveryTasks) {
+      try {
+        const payload = typeof task.payload === 'string' ? JSON.parse(task.payload) : (task.payload ?? {});
+        const result = task.task_type === 'STAKE_RELEASE'
+          ? await this.releaseStakeWithRecovery(task.entry_id, payload.reason)
+          : await this.recoverFailedMatchStart(payload.entryIds, task.match_id, payload.reason);
+        results.push({ type: task.task_type, taskKey: task.task_key, result });
+      } catch (error) {
+        results.push({ type: task.task_type, taskKey: task.task_key, error: error.message });
+      }
+    }
+    return results;
   }
 
   async getOrCreateAccount(phone, { displayName = 'Jogador' } = {}) {
@@ -125,31 +181,37 @@ export class FinancialWalletService {
     const amount = cents(amountCents);
     const idem = safeText(idempotencyKey, 180);
     if (!idem) throw new Error('FINANCIAL_IDEMPOTENCY_KEY_REQUIRED');
-    const account = await this.getOrCreateAccount(phone, { displayName });
+    const account = assertAccountActive(await this.getOrCreateAccount(phone, { displayName }));
     const existing = await this.repository.query(
       `SELECT d.* FROM financial_deposits d
        JOIN financial_transactions t ON t.public_reference=d.public_reference
-       WHERE t.idempotency_key=$1`, [idem],
+       WHERE t.idempotency_key=$1 AND d.account_id=$2`, [idem, account.account_id],
     );
-    if (existing.rows[0]) return { ...existing.rows[0], duplicate: true };
-    const depositId = randomUUID();
-    const publicRef = publicReference('DEP');
-    await this.repository.transaction(async (client) => {
-      await insertLedger(client, {
-        type: 'DEPOSIT_ORDER_CREATED', status: 'PENDING', idempotencyKey: idem, publicRef,
-        metadata: { depositId, amountCents: amount },
-        entries: [
-          { accountId: account.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: amount },
-          { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: -amount },
-        ],
+    let deposit = existing.rows[0] ?? null;
+    const duplicate = Boolean(deposit);
+    if (deposit && Number(deposit.amount_cents) !== amount) throw new Error('FINANCIAL_IDEMPOTENCY_CONFLICT');
+    if (!deposit) {
+      const depositId = randomUUID();
+      const publicRef = publicReference('DEP');
+      await this.repository.transaction(async (client) => {
+        await insertLedger(client, {
+          type: 'DEPOSIT_ORDER_CREATED', status: 'PENDING', idempotencyKey: idem, publicRef,
+          metadata: { depositId, amountCents: amount },
+          entries: [
+            { accountId: account.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: amount },
+            { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: -amount },
+          ],
+        });
+        await client.query(
+          `INSERT INTO financial_deposits
+            (deposit_id, public_reference, account_id, amount_cents, status, provider)
+           VALUES ($1,$2,$3,$4,'CREATED',$5)`,
+          [depositId, publicRef, account.account_id, amount, this.config.provider],
+        );
       });
-      await client.query(
-        `INSERT INTO financial_deposits
-          (deposit_id, public_reference, account_id, amount_cents, status, provider)
-         VALUES ($1,$2,$3,$4,'CREATED',$5)`,
-        [depositId, publicRef, account.account_id, amount, this.config.provider],
-      );
-    });
+      deposit = { deposit_id: depositId, public_reference: publicRef, amount_cents: amount, status: 'CREATED' };
+    }
+    if (deposit.provider_payment_id && deposit.status === 'PENDING') return { ...deposit, duplicate: true };
     try {
       const customer = await this.provider.createOrFindCustomer({
         publicId: account.public_id,
@@ -162,25 +224,25 @@ export class FinancialWalletService {
         customerId: customer.id,
         amountCents: amount,
         dueDate,
-        description: `Saldo Pife Duelo ${publicRef}`,
-        externalReference: publicRef,
+        description: `Saldo Pife Duelo ${deposit.public_reference}`,
+        externalReference: deposit.public_reference,
       });
       const qr = await this.provider.getPixQrCode(charge.id);
       const updated = await this.repository.query(
         `UPDATE financial_deposits SET status='PENDING', provider_payment_id=$1,
           provider_customer_id=$2, pix_copy_paste=$3, pix_qr_code=$4, expires_at=$5, updated_at=now()
          WHERE deposit_id=$6 RETURNING *`,
-        [charge.id, customer.id, qr.payload ?? null, qr.encodedImage ?? null, qr.expirationDate ?? null, depositId],
+        [charge.id, customer.id, qr.payload ?? null, qr.encodedImage ?? null, qr.expirationDate ?? null, deposit.deposit_id],
       );
       await this.repository.query(
         'UPDATE financial_accounts SET provider_customer_id=$1, updated_at=now() WHERE account_id=$2 AND provider_customer_id IS NULL',
         [customer.id, account.account_id],
       );
-      this.logInfo('DEPOSIT_CREATED', { publicReference: publicRef, amountCents: amount, provider: this.config.provider });
-      return updated.rows[0];
+      this.logInfo('DEPOSIT_CREATED', { publicReference: deposit.public_reference, amountCents: amount, provider: this.config.provider, recovered: duplicate });
+      return { ...updated.rows[0], duplicate };
     } catch (error) {
-      await this.repository.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [depositId]);
-      this.logError('DEPOSIT_CREATE_FAILED', { publicReference: publicRef, reason: error.message });
+      await this.repository.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
+      this.logError('DEPOSIT_CREATE_FAILED', { publicReference: deposit.public_reference, reason: error.message });
       throw error;
     }
   }
@@ -216,6 +278,14 @@ export class FinancialWalletService {
           return { duplicate: true, deposit };
         }
         if (deposit.status !== 'CREDITED') {
+          const pendingAmount = cents(deposit.amount_cents);
+          await insertLedger(client, {
+            type: 'DEPOSIT_PENDING_CLOSED', idempotencyKey: `deposit:close:${deposit.deposit_id}`,
+            publicRef: publicReference('TX'), metadata: { depositId: deposit.deposit_id, eventType }, entries: [
+              { accountId: deposit.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: -pendingAmount },
+              { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: pendingAmount },
+            ],
+          });
           await client.query(
             "UPDATE financial_deposits SET status=$1, updated_at=now() WHERE deposit_id=$2",
             [eventType === 'PAYMENT_REFUNDED' ? 'REFUNDED' : 'REVERSED', deposit.deposit_id],
@@ -224,6 +294,16 @@ export class FinancialWalletService {
           return { reversed: true, creditedBalanceAffected: false };
         }
         const account = (await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [deposit.account_id])).rows[0];
+        if (account?.status !== 'ACTIVE') {
+          await client.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
+          await client.query("UPDATE financial_processed_webhooks SET status='REVIEW_REQUIRED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
+          await insertSystemAudit(client, {
+            action: 'DEPOSIT_REVERSAL_BLOCKED_ACCOUNT_REVIEW', targetReference: deposit.public_reference,
+            reason: 'FINANCIAL_ACCOUNT_BLOCKED', previousState: { accountStatus: account?.status }, nextState: { status: 'REVIEW_REQUIRED' },
+            amountCents: deposit.credited_amount_cents || deposit.amount_cents,
+          });
+          return { reviewRequired: true, reason: 'FINANCIAL_ACCOUNT_BLOCKED' };
+        }
         const amount = Number(deposit.credited_amount_cents || deposit.amount_cents);
         if (Number(account.available_balance_cents) < amount) {
           await client.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
@@ -261,15 +341,39 @@ export class FinancialWalletService {
         this.logInfo('DEPOSIT_DUPLICATE_IGNORED', { webhookEventId: eventId, publicReference: deposit.public_reference });
         return { duplicate: true, deposit };
       }
-      const remoteAmount = remotePayment.amountCents ?? Math.round(Number(remotePayment.value || 0) * 100);
+      const remoteAmount = cents(remotePayment.amountCents ?? Math.round(Number(remotePayment.value || 0) * 100));
       if (remoteAmount !== Number(deposit.amount_cents)) throw new Error('FINANCIAL_DEPOSIT_AMOUNT_MISMATCH');
       const accountResult = await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [deposit.account_id]);
       const account = accountResult.rows[0];
+      if (account?.status !== 'ACTIVE') {
+        await client.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
+        await client.query("UPDATE financial_processed_webhooks SET status='REVIEW_REQUIRED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
+        await insertSystemAudit(client, {
+          action: 'DEPOSIT_CREDIT_BLOCKED_ACCOUNT_REVIEW', targetReference: deposit.public_reference,
+          reason: 'FINANCIAL_ACCOUNT_BLOCKED', previousState: { accountStatus: account?.status }, nextState: { status: 'REVIEW_REQUIRED' },
+          amountCents: deposit.amount_cents,
+        });
+        return { reviewRequired: true, reason: 'FINANCIAL_ACCOUNT_BLOCKED' };
+      }
+      const providerFeeSupplied = remotePayment.feeAmountCents !== undefined && remotePayment.feeAmountCents !== null;
+      const providerNetSupplied = remotePayment.netAmountCents !== undefined && remotePayment.netAmountCents !== null;
+      const feeKnown = providerFeeSupplied || providerNetSupplied;
+      const suppliedFee = providerFeeSupplied ? cents(remotePayment.feeAmountCents, { allowZero: true }) : null;
+      const suppliedNet = providerNetSupplied ? cents(remotePayment.netAmountCents, { allowZero: true }) : null;
+      const feeAmount = feeKnown ? (suppliedFee ?? remoteAmount - suppliedNet) : null;
+      const netAmount = feeKnown ? (suppliedNet ?? remoteAmount - suppliedFee) : null;
+      if (feeKnown && (feeAmount < 0 || netAmount < 0 || feeAmount + netAmount !== remoteAmount)) throw new Error('FINANCIAL_PROVIDER_FEE_MISMATCH');
+      const providerClearing = feeKnown ? netAmount : remoteAmount;
       const transactionId = await insertLedger(client, {
         type: 'DEPOSIT_CREDITED', idempotencyKey: `deposit:credit:${deposit.deposit_id}`,
-        publicRef: publicReference('TX'), metadata: { depositId: deposit.deposit_id, providerPaymentId: paymentId },
+        publicRef: publicReference('TX'), metadata: {
+          depositId: deposit.deposit_id, providerPaymentId: paymentId, feeKnown, feeAmountCents: feeAmount, netAmountCents: netAmount,
+        },
         entries: [
-          { ledgerAccount: 'PROVIDER_CLEARING', amountCents: -remoteAmount },
+          { accountId: account.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: -remoteAmount },
+          { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: remoteAmount },
+          { ledgerAccount: 'PROVIDER_CLEARING', amountCents: -providerClearing },
+          ...(feeKnown && feeAmount > 0 ? [{ ledgerAccount: 'PROVIDER_FEE', amountCents: -feeAmount }] : []),
           { accountId: account.account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: remoteAmount },
         ],
       });
@@ -278,9 +382,9 @@ export class FinancialWalletService {
          WHERE account_id=$2`, [remoteAmount, account.account_id],
       );
       await client.query(
-        `UPDATE financial_deposits SET status='CREDITED', gross_amount_cents=$1, fee_amount_cents=0,
-          net_amount_cents=$1, credited_amount_cents=$1, credited_transaction_id=$2, updated_at=now()
-         WHERE deposit_id=$3`, [remoteAmount, transactionId, deposit.deposit_id],
+        `UPDATE financial_deposits SET status='CREDITED', gross_amount_cents=$1, fee_amount_cents=$2,
+          net_amount_cents=$3, credited_amount_cents=$1, credited_transaction_id=$4, updated_at=now()
+         WHERE deposit_id=$5`, [remoteAmount, feeAmount, netAmount, transactionId, deposit.deposit_id],
       );
       await client.query("UPDATE financial_processed_webhooks SET status='PROCESSED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
       this.logInfo('DEPOSIT_CREDITED', { publicReference: deposit.public_reference, amountCents: remoteAmount });
@@ -295,10 +399,11 @@ export class FinancialWalletService {
     const amount = cents(amountCents);
     const account = await this.getAccount(phone);
     if (!account) throw new Error('FINANCIAL_ACCOUNT_NOT_FOUND');
+    assertAccountActive(account);
     return this.repository.transaction(async (client) => {
       const duplicate = await client.query('SELECT * FROM financial_match_reservations WHERE entry_id=$1', [safeText(entryId, 100)]);
       if (duplicate.rows[0]) return { ...duplicate.rows[0], duplicate: true };
-      const locked = (await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0];
+      const locked = assertAccountActive((await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0]);
       if (Number(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
       const reservationId = randomUUID();
       const publicRef = publicReference('RES');
@@ -351,6 +456,106 @@ export class FinancialWalletService {
     });
   }
 
+  async upsertRecoveryTask({ taskKey, taskType, matchId = null, entryId = null, payload = {}, status = 'PENDING', error = null }) {
+    const result = await this.repository.query(
+      `INSERT INTO financial_recovery_tasks
+        (task_id, task_key, task_type, status, match_id, entry_id, payload, attempt_count, last_error, next_attempt_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,1,$8,now())
+       ON CONFLICT (task_key) DO UPDATE SET status=EXCLUDED.status, payload=EXCLUDED.payload,
+         attempt_count=financial_recovery_tasks.attempt_count+1, last_error=EXCLUDED.last_error,
+         next_attempt_at=CASE WHEN EXCLUDED.status='COMPLETED' THEN NULL ELSE now() END,
+         completed_at=CASE WHEN EXCLUDED.status='COMPLETED' THEN now() ELSE financial_recovery_tasks.completed_at END,
+         updated_at=now()
+       RETURNING *`,
+      [randomUUID(), safeText(taskKey, 220), taskType, status, matchId, entryId, json(payload), error ? safeText(error, 240) : null],
+    );
+    return result.rows[0];
+  }
+
+  async releaseStakeWithRecovery(entryId, reason = 'pre_start_cancelled') {
+    const safeEntryId = safeText(entryId, 100);
+    const taskKey = `stake-release:${safeEntryId}`;
+    try {
+      const result = await this.releaseStake(safeEntryId, reason);
+      await this.upsertRecoveryTask({ taskKey, taskType: 'STAKE_RELEASE', entryId: safeEntryId, payload: { reason }, status: 'COMPLETED' });
+      return result;
+    } catch (error) {
+      await this.upsertRecoveryTask({
+        taskKey, taskType: 'STAKE_RELEASE', entryId: safeEntryId, payload: { reason }, status: 'RETRY_REQUIRED', error: error.message,
+      });
+      this.logError('FINANCIAL_STAKE_RELEASE_RETRY_REQUIRED', { entryId: safeEntryId, reason: error.message });
+      throw error;
+    }
+  }
+
+  async recoverFailedMatchStart(entryIds, matchId, reason = 'financial_reservation_commit_failed') {
+    const safeMatchId = safeText(matchId, 120);
+    const safeEntryIds = [...new Set((entryIds ?? []).map((entryId) => safeText(entryId, 100)).filter(Boolean))];
+    if (!safeMatchId || safeEntryIds.length !== 2) throw new Error('FINANCIAL_MATCH_PARTICIPANTS_INVALID');
+    const taskKey = `match-start-recovery:${safeMatchId}`;
+    await this.upsertRecoveryTask({ taskKey, taskType: 'MATCH_START_RECOVERY', matchId: safeMatchId, payload: { entryIds: safeEntryIds, reason } });
+    try {
+      return await this.repository.transaction(async (client) => {
+        const reservations = (await client.query(
+          'SELECT * FROM financial_match_reservations WHERE entry_id IN ($1,$2) ORDER BY entry_id FOR UPDATE', safeEntryIds,
+        )).rows;
+        const unsafe = reservations.length !== 2 || reservations.some((item) => (
+          !['RESERVED', 'COMMITTED', 'RELEASED'].includes(item.status)
+          || (item.status === 'COMMITTED' && item.match_id && item.match_id !== safeMatchId)
+        ));
+        if (unsafe) {
+          await client.query(
+            `UPDATE financial_recovery_tasks SET status='REVIEW_REQUIRED', last_error=$1, next_attempt_at=NULL, updated_at=now()
+             WHERE task_key=$2`, ['FINANCIAL_MATCH_START_STATE_AMBIGUOUS', taskKey],
+          );
+          await insertSystemAudit(client, {
+            action: 'MATCH_START_REVIEW_REQUIRED', targetReference: safeMatchId, reason,
+            previousState: { reservations: reservations.map((item) => ({ entryId: item.entry_id, status: item.status, matchId: item.match_id })) },
+            nextState: { status: 'REVIEW_REQUIRED' },
+          });
+          return { recovered: false, reviewRequired: true };
+        }
+        const active = reservations.filter((item) => ['RESERVED', 'COMMITTED'].includes(item.status));
+        if (active.length) {
+          const entries = [];
+          for (const reservation of active) {
+            const amount = cents(reservation.amount_cents);
+            await client.query(
+              `UPDATE financial_accounts SET reserved_balance_cents=reserved_balance_cents-$1::bigint,
+                 available_balance_cents=available_balance_cents+$1::bigint, updated_at=now() WHERE account_id=$2`,
+              [amount, reservation.account_id],
+            );
+            entries.push(
+              { accountId: reservation.account_id, ledgerAccount: 'PLAYER_RESERVED', amountCents: -amount },
+              { accountId: reservation.account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: amount },
+            );
+          }
+          await insertLedger(client, {
+            type: 'MATCH_START_COMPENSATED', idempotencyKey: `match:start-recover:${safeMatchId}`,
+            publicRef: publicReference('TX'), gameCode: active[0].game_code,
+            metadata: { matchId: safeMatchId, reason, entries: safeEntryIds }, entries,
+          });
+          await client.query(
+            "UPDATE financial_match_reservations SET status='RELEASED', match_id=COALESCE(match_id,$1), updated_at=now() WHERE entry_id IN ($2,$3) AND status IN ('RESERVED','COMMITTED')",
+            [safeMatchId, safeEntryIds[0], safeEntryIds[1]],
+          );
+        }
+        await client.query(
+          `UPDATE financial_recovery_tasks SET status='COMPLETED', last_error=NULL, next_attempt_at=NULL,
+             completed_at=now(), updated_at=now() WHERE task_key=$1`, [taskKey],
+        );
+        this.logWarn('MATCH_START_FINANCIAL_RECOVERED', { matchId: safeMatchId, participants: active.length });
+        return { recovered: true, participants: active.length, duplicate: active.length === 0 };
+      });
+    } catch (error) {
+      await this.upsertRecoveryTask({
+        taskKey, taskType: 'MATCH_START_RECOVERY', matchId: safeMatchId,
+        payload: { entryIds: safeEntryIds, reason }, status: 'RETRY_REQUIRED', error: error.message,
+      });
+      throw error;
+    }
+  }
+
   async commitMatchReservations(entryIds, matchId) {
     this.assertEnabled();
     if (!Array.isArray(entryIds) || entryIds.length !== 2 || !safeText(matchId, 120)) throw new Error('FINANCIAL_MATCH_PARTICIPANTS_INVALID');
@@ -360,6 +565,11 @@ export class FinancialWalletService {
       );
       if (result.rows.length !== 2 || result.rows.some((item) => item.status !== 'RESERVED')) throw new Error('FINANCIAL_MATCH_RESERVATION_INVALID');
       if (new Set(result.rows.map((item) => item.account_id)).size !== 2) throw new Error('FINANCIAL_MATCH_PARTICIPANTS_INVALID');
+      const accounts = (await client.query(
+        'SELECT * FROM financial_accounts WHERE account_id IN ($1,$2) ORDER BY account_id FOR UPDATE',
+        [result.rows[0].account_id, result.rows[1].account_id],
+      )).rows;
+      accounts.forEach(assertAccountActive);
       await client.query(
         `UPDATE financial_match_reservations SET status='COMMITTED', match_id=$1, updated_at=now()
          WHERE entry_id IN ($2,$3)`, [matchId, entryIds[0], entryIds[1]],
@@ -372,79 +582,174 @@ export class FinancialWalletService {
   async settleMatch({ matchId, winnerPhone, platformFeeCents, gameCode = 'PIFE_DUELO' } = {}) {
     this.assertEnabled();
     const fee = cents(platformFeeCents, { allowZero: true });
+    const safeMatchId = safeText(matchId, 120);
+    const final = await this.repository.query("SELECT * FROM financial_match_settlements WHERE match_id=$1 AND status IN ('SETTLED','COMPENSATED')", [safeMatchId]);
+    if (final.rows[0]) return { ...final.rows[0], duplicate: true };
     const winner = await this.getAccount(winnerPhone);
     if (!winner) throw new Error('FINANCIAL_WINNER_NOT_FOUND');
-    return this.repository.transaction(async (client) => {
-      const duplicate = await client.query('SELECT * FROM financial_match_settlements WHERE match_id=$1', [matchId]);
-      if (duplicate.rows[0]) return { ...duplicate.rows[0], duplicate: true };
-      const reservations = (await client.query(
-        `SELECT * FROM financial_match_reservations WHERE match_id=$1 ORDER BY entry_id FOR UPDATE`, [matchId],
-      )).rows;
-      if (reservations.length !== 2 || reservations.some((item) => item.status !== 'COMMITTED')) throw new Error('FINANCIAL_MATCH_NOT_COMMITTED');
-      if (!reservations.some((item) => item.account_id === winner.account_id)) throw new Error('FINANCIAL_WINNER_NOT_PARTICIPANT');
-      const total = reservations.reduce((sum, item) => sum + Number(item.amount_cents), 0);
-      if (fee > total) throw new Error('FINANCIAL_INVALID_PLATFORM_FEE');
-      const prize = total - fee;
-      for (const reservation of reservations) {
-        await client.query(
-          'UPDATE financial_accounts SET reserved_balance_cents=reserved_balance_cents-$1::bigint, updated_at=now() WHERE account_id=$2',
-          [reservation.amount_cents, reservation.account_id],
-        );
-      }
-      await client.query(
-        'UPDATE financial_accounts SET available_balance_cents=available_balance_cents+$1::bigint, updated_at=now() WHERE account_id=$2',
-        [prize, winner.account_id],
-      );
-      const entries = reservations.map((item) => ({ accountId: item.account_id, ledgerAccount: 'PLAYER_RESERVED', amountCents: -Number(item.amount_cents) }));
-      if (prize > 0) entries.push({ accountId: winner.account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: prize });
-      if (fee > 0) entries.push({ ledgerAccount: 'PLATFORM_REVENUE', amountCents: fee });
-      const transactionId = await insertLedger(client, {
-        type: 'MATCH_SETTLED', idempotencyKey: `match:settle:${matchId}`, publicRef: publicReference('TX'),
-        gameCode, metadata: { matchId, totalStakesCents: total, platformFeeCents: fee, winnerPrizeCents: prize }, entries,
-      });
-      await client.query("UPDATE financial_match_reservations SET status='SETTLED', updated_at=now() WHERE match_id=$1", [matchId]);
-      const settlement = await client.query(
-        `INSERT INTO financial_match_settlements
-          (settlement_id, match_id, game_code, winner_account_id, total_stakes_cents, platform_fee_cents, winner_prize_cents, status, transaction_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'SETTLED',$8) RETURNING *`,
-        [randomUUID(), matchId, gameCode, winner.account_id, total, fee, prize, transactionId],
-      );
-      this.logInfo('MATCH_SETTLED', { matchId, totalStakesCents: total, platformFeeCents: fee, winnerPrizeCents: prize });
-      return settlement.rows[0];
-    });
+    assertAccountActive(winner);
+    await this.prepareMatchOperation({ matchId: safeMatchId, operationType: 'SETTLE', winnerAccountId: winner.account_id, fee, gameCode });
+    return this.executeMatchOperation(safeMatchId);
   }
 
   async compensateMatch(matchId, reason = 'technical_abort') {
     this.assertEnabled();
-    return this.repository.transaction(async (client) => {
-      const reservations = (await client.query(
-        `SELECT * FROM financial_match_reservations WHERE match_id=$1 ORDER BY entry_id FOR UPDATE`, [safeText(matchId, 120)],
-      )).rows;
-      const active = reservations.filter((item) => item.status === 'COMMITTED');
-      if (!active.length) return { compensated: false, duplicate: true };
-      const entries = [];
-      for (const reservation of active) {
-        const amount = Number(reservation.amount_cents);
-        await client.query(
-          `UPDATE financial_accounts SET reserved_balance_cents=reserved_balance_cents-$1::bigint,
-            available_balance_cents=available_balance_cents+$1::bigint, updated_at=now() WHERE account_id=$2`,
-          [amount, reservation.account_id],
+    const safeMatchId = safeText(matchId, 120);
+    const final = await this.repository.query("SELECT * FROM financial_match_settlements WHERE match_id=$1 AND status IN ('SETTLED','COMPENSATED')", [safeMatchId]);
+    if (final.rows[0]) return { ...final.rows[0], duplicate: true };
+    await this.prepareMatchOperation({ matchId: safeMatchId, operationType: 'COMPENSATE', reason: safeText(reason, 240), gameCode: 'PIFE_DUELO' });
+    return this.executeMatchOperation(safeMatchId);
+  }
+
+  async prepareMatchOperation({ matchId, operationType, winnerAccountId = null, fee = 0, reason = null, gameCode = 'PIFE_DUELO' }) {
+    try {
+      return await this.repository.transaction(async (client) => {
+        const existing = (await client.query('SELECT * FROM financial_match_settlements WHERE match_id=$1 FOR UPDATE', [matchId])).rows[0];
+        if (existing) {
+          if (existing.operation_type !== operationType && !['SETTLED', 'COMPENSATED'].includes(existing.status)) throw new Error('FINANCIAL_MATCH_OPERATION_AMBIGUOUS');
+          return existing;
+        }
+        const reservations = (await client.query(
+          'SELECT * FROM financial_match_reservations WHERE match_id=$1 ORDER BY entry_id FOR UPDATE', [matchId],
+        )).rows;
+        if (reservations.length !== 2 || reservations.some((item) => item.status !== 'COMMITTED')) throw new Error('FINANCIAL_MATCH_NOT_COMMITTED');
+        const accounts = (await client.query(
+          'SELECT * FROM financial_accounts WHERE account_id IN ($1,$2) ORDER BY account_id FOR UPDATE',
+          [reservations[0].account_id, reservations[1].account_id],
+        )).rows;
+        accounts.forEach(assertAccountActive);
+        if (operationType === 'SETTLE' && !reservations.some((item) => item.account_id === winnerAccountId)) throw new Error('FINANCIAL_WINNER_NOT_PARTICIPANT');
+        const total = reservations.reduce((sum, item) => sum + cents(item.amount_cents), 0);
+        if (fee > total) throw new Error('FINANCIAL_INVALID_PLATFORM_FEE');
+        const prize = operationType === 'SETTLE' ? total - fee : 0;
+        const inserted = await client.query(
+          `INSERT INTO financial_match_settlements
+            (settlement_id, match_id, game_code, winner_account_id, total_stakes_cents, platform_fee_cents,
+             winner_prize_cents, status, operation_type, failure_reason, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING',$8,$9,now()) RETURNING *`,
+          [randomUUID(), matchId, gameCode, winnerAccountId, total, operationType === 'SETTLE' ? fee : 0, prize, operationType, reason],
         );
-        entries.push(
-          { accountId: reservation.account_id, ledgerAccount: 'PLAYER_RESERVED', amountCents: -amount },
-          { accountId: reservation.account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: amount },
+        return inserted.rows[0];
+      });
+    } catch (error) {
+      if (error.code === '23505') {
+        const existing = (await this.repository.query('SELECT * FROM financial_match_settlements WHERE match_id=$1', [matchId])).rows[0];
+        if (existing?.operation_type === operationType) return existing;
+        await this.markMatchOperationReview(matchId, 'FINANCIAL_MATCH_OPERATION_AMBIGUOUS');
+        throw new Error('FINANCIAL_MATCH_OPERATION_AMBIGUOUS');
+      }
+      if (error.message === 'FINANCIAL_MATCH_OPERATION_AMBIGUOUS') await this.markMatchOperationReview(matchId, error.message);
+      throw error;
+    }
+  }
+
+  async executeMatchOperation(matchId) {
+    const previous = this.matchOperationLocks.get(matchId) ?? Promise.resolve();
+    let releaseLock;
+    const current = new Promise((resolve) => { releaseLock = resolve; });
+    this.matchOperationLocks.set(matchId, current);
+    await previous;
+    try {
+      return await this.executeMatchOperationUnlocked(matchId);
+    } finally {
+      releaseLock();
+      if (this.matchOperationLocks.get(matchId) === current) this.matchOperationLocks.delete(matchId);
+    }
+  }
+
+  async executeMatchOperationUnlocked(matchId) {
+    try {
+      return await this.repository.transaction(async (client) => {
+        const settlement = (await client.query('SELECT * FROM financial_match_settlements WHERE match_id=$1 FOR UPDATE', [matchId])).rows[0];
+        if (!settlement) throw new Error('FINANCIAL_MATCH_OPERATION_NOT_PREPARED');
+        if (['SETTLED', 'COMPENSATED'].includes(settlement.status)) return { ...settlement, duplicate: true };
+        if (settlement.status === 'REVIEW_REQUIRED') throw new Error('FINANCIAL_MATCH_REVIEW_REQUIRED');
+        await client.query(
+          "UPDATE financial_match_settlements SET status='PROCESSING', attempt_count=attempt_count+1, last_attempt_at=now(), failure_reason=NULL, updated_at=now() WHERE match_id=$1",
+          [matchId],
+        );
+        const reservations = (await client.query(
+          'SELECT * FROM financial_match_reservations WHERE match_id=$1 ORDER BY entry_id FOR UPDATE', [matchId],
+        )).rows;
+        if (reservations.length !== 2 || reservations.some((item) => item.status !== 'COMMITTED')) throw new Error('FINANCIAL_MATCH_NOT_COMMITTED');
+        const accounts = (await client.query(
+          'SELECT * FROM financial_accounts WHERE account_id IN ($1,$2) ORDER BY account_id FOR UPDATE',
+          [reservations[0].account_id, reservations[1].account_id],
+        )).rows;
+        accounts.forEach(assertAccountActive);
+        await this.faultInjector('before_match_financial_mutation', { matchId, settlement });
+        const entries = [];
+        for (const reservation of reservations) {
+          const amount = cents(reservation.amount_cents);
+          await client.query(
+            'UPDATE financial_accounts SET reserved_balance_cents=reserved_balance_cents-$1::bigint, updated_at=now() WHERE account_id=$2',
+            [amount, reservation.account_id],
+          );
+          entries.push({ accountId: reservation.account_id, ledgerAccount: 'PLAYER_RESERVED', amountCents: -amount });
+        }
+        const settle = settlement.operation_type === 'SETTLE';
+        const prize = cents(settlement.winner_prize_cents, { allowZero: true });
+        const fee = cents(settlement.platform_fee_cents, { allowZero: true });
+        if (settle && prize > 0) {
+          await client.query(
+            'UPDATE financial_accounts SET available_balance_cents=available_balance_cents+$1::bigint, updated_at=now() WHERE account_id=$2',
+            [prize, settlement.winner_account_id],
+          );
+          entries.push({ accountId: settlement.winner_account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: prize });
+        }
+        if (settle && fee > 0) entries.push({ ledgerAccount: 'PLATFORM_REVENUE', amountCents: fee });
+        if (!settle) {
+          for (const reservation of reservations) {
+            const amount = cents(reservation.amount_cents);
+            await client.query(
+              'UPDATE financial_accounts SET available_balance_cents=available_balance_cents+$1::bigint, updated_at=now() WHERE account_id=$2',
+              [amount, reservation.account_id],
+            );
+            entries.push({ accountId: reservation.account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: amount });
+          }
+        }
+        const finalStatus = settle ? 'SETTLED' : 'COMPENSATED';
+        const transactionId = await insertLedger(client, {
+          type: settle ? 'MATCH_SETTLED' : 'MATCH_COMPENSATED',
+          idempotencyKey: `match:${settle ? 'settle' : 'compensate'}:${matchId}`,
+          publicRef: publicReference('TX'), gameCode: settlement.game_code,
+          metadata: { matchId, totalStakesCents: settlement.total_stakes_cents, platformFeeCents: fee, winnerPrizeCents: prize }, entries,
+        });
+        await client.query("UPDATE financial_match_reservations SET status=$1, updated_at=now() WHERE match_id=$2", [settle ? 'SETTLED' : 'RELEASED', matchId]);
+        const updated = (await client.query(
+          `UPDATE financial_match_settlements SET status=$1, transaction_id=$2, failure_reason=NULL, updated_at=now()
+           WHERE match_id=$3 RETURNING *`, [finalStatus, transactionId, matchId],
+        )).rows[0];
+        this.logInfo(settle ? 'MATCH_SETTLED' : 'MATCH_FINANCIAL_COMPENSATED', { matchId, status: finalStatus });
+        return updated;
+      });
+    } catch (error) {
+      if (!['FINANCIAL_MATCH_REVIEW_REQUIRED'].includes(error.message)) {
+        await this.repository.query(
+          `UPDATE financial_match_settlements SET status='RETRY_REQUIRED', attempt_count=attempt_count+1,
+             failure_reason=$1, last_attempt_at=now(), updated_at=now()
+           WHERE match_id=$2 AND status NOT IN ('SETTLED','COMPENSATED','REVIEW_REQUIRED')`,
+          [safeText(error.message, 240), matchId],
         );
       }
-      await insertLedger(client, {
-        type: 'MATCH_COMPENSATED', idempotencyKey: `match:compensate:${matchId}`, publicRef: publicReference('TX'),
-        gameCode: active[0].game_code, metadata: { matchId, reason: safeText(reason, 240) }, entries,
+      throw error;
+    }
+  }
+
+  async markMatchOperationReview(matchId, reason) {
+    return this.repository.transaction(async (client) => {
+      const previous = (await client.query('SELECT * FROM financial_match_settlements WHERE match_id=$1 FOR UPDATE', [matchId])).rows[0];
+      if (!previous) return null;
+      const updated = (await client.query(
+        "UPDATE financial_match_settlements SET status='REVIEW_REQUIRED', failure_reason=$1, updated_at=now() WHERE match_id=$2 RETURNING *",
+        [safeText(reason, 240), matchId],
+      )).rows[0];
+      await insertSystemAudit(client, {
+        action: 'MATCH_FINANCIAL_REVIEW_REQUIRED', targetReference: matchId, reason,
+        previousState: { status: previous.status, operationType: previous.operation_type },
+        nextState: { status: 'REVIEW_REQUIRED' }, amountCents: previous.total_stakes_cents,
       });
-      await client.query(
-        `UPDATE financial_match_reservations SET status='RELEASED', updated_at=now()
-         WHERE match_id=$1 AND status='COMMITTED'`, [matchId],
-      );
-      this.logWarn('MATCH_FINANCIAL_COMPENSATED', { matchId, reason: safeText(reason, 240), participants: active.length });
-      return { compensated: true, participants: active.length };
+      return updated;
     });
   }
 
@@ -455,6 +760,7 @@ export class FinancialWalletService {
     if (amount < this.config.minWithdrawalAmountCents) throw new Error('WITHDRAWAL_BELOW_MINIMUM');
     const account = await this.getAccount(phone);
     if (!account) throw new Error('FINANCIAL_ACCOUNT_NOT_FOUND');
+    assertAccountActive(account);
     const type = safeText(pixKeyType, 24).toUpperCase();
     const key = safeText(pixKey, 180);
     const holder = safeText(holderName, 120);
@@ -466,8 +772,13 @@ export class FinancialWalletService {
         `SELECT withdrawal_id, public_reference, account_id, amount_cents, pix_key_type, holder_name, status, created_at
          FROM financial_withdrawals WHERE idempotency_key=$1`, [idem],
       );
-      if (existing.rows[0]) return { ...existing.rows[0], duplicate: true };
-      const locked = (await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0];
+      if (existing.rows[0]) {
+        if (existing.rows[0].account_id !== account.account_id || Number(existing.rows[0].amount_cents) !== amount) {
+          throw new Error('FINANCIAL_IDEMPOTENCY_CONFLICT');
+        }
+        return { ...existing.rows[0], duplicate: true };
+      }
+      const locked = assertAccountActive((await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0]);
       if (Number(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
       const withdrawalId = randomUUID();
       const publicRef = publicReference('WD');
@@ -514,16 +825,26 @@ export class FinancialWalletService {
 
   async getWithdrawalDetails(adminPhone, reference) {
     this.assertEnabled();
-    this.assertFinancialAdmin(adminPhone);
-    const result = await this.repository.query(
-      `SELECT w.*, a.public_id, a.display_name, a.phone_normalized, a.available_balance_cents,
-              a.withdrawal_pending_balance_cents
-       FROM financial_withdrawals w JOIN financial_accounts a ON a.account_id=w.account_id
-       WHERE w.public_reference=$1`, [safeText(reference, 40).toUpperCase()],
-    );
-    const withdrawal = result.rows[0];
-    if (!withdrawal) throw new Error('WITHDRAWAL_NOT_FOUND');
-    return { ...withdrawal, pix_key: decryptSensitive(withdrawal.pix_key_ciphertext, this.config.encryptionKey), pix_key_ciphertext: undefined };
+    const admin = this.assertFinancialAdmin(adminPhone);
+    return this.repository.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT w.*, a.public_id, a.display_name, a.phone_normalized, a.available_balance_cents,
+                a.withdrawal_pending_balance_cents
+         FROM financial_withdrawals w JOIN financial_accounts a ON a.account_id=w.account_id
+         WHERE w.public_reference=$1`, [safeText(reference, 40).toUpperCase()],
+      );
+      const withdrawal = result.rows[0];
+      if (!withdrawal) throw new Error('WITHDRAWAL_NOT_FOUND');
+      await client.query(
+        `INSERT INTO financial_admin_audit
+          (audit_id, admin_phone_masked, action, target_reference, reason, previous_state, next_state, amount_cents)
+         VALUES ($1,$2,'WITHDRAWAL_PIX_DETAILS_ACCESSED',$3,'manual_payment_review',$4::jsonb,$5::jsonb,$6)`,
+        [randomUUID(), maskedAdmin(admin), withdrawal.public_reference,
+          json({ status: withdrawal.status, playerPublicId: withdrawal.public_id }),
+          json({ access: 'PIX_KEY_REVEALED_TO_FINANCIAL_ADMIN' }), withdrawal.amount_cents],
+      );
+      return { ...withdrawal, pix_key: decryptSensitive(withdrawal.pix_key_ciphertext, this.config.encryptionKey), pix_key_ciphertext: undefined };
+    });
   }
 
   async markWithdrawalPaid(adminPhone, reference, providerTransferId) {
@@ -617,19 +938,25 @@ export class FinancialWalletService {
     const admin = this.assertFinancialAdmin(adminPhone);
     const reviewReason = safeText(reason, 240);
     if (!reviewReason) throw new Error('WITHDRAWAL_REVIEW_REASON_REQUIRED');
-    const updated = await this.repository.query(
-      `UPDATE financial_withdrawals SET status='REVIEW_REQUIRED', failure_reason=$1, updated_at=now()
-       WHERE public_reference=$2 AND status IN ('AWAITING_ADMIN_PAYMENT','PROCESSING') RETURNING *`,
-      [reviewReason, safeText(reference, 40).toUpperCase()],
-    );
-    if (!updated.rows[0]) throw new Error('WITHDRAWAL_NOT_REVIEWABLE');
-    await this.repository.query(
-      `INSERT INTO financial_admin_audit (audit_id, admin_phone_masked, action, target_reference, reason, next_state, amount_cents)
-       VALUES ($1,$2,'WITHDRAWAL_REVIEW_REQUIRED',$3,$4,$5::jsonb,$6)`,
-      [randomUUID(), maskedAdmin(admin), updated.rows[0].public_reference, reviewReason, json({ status: 'REVIEW_REQUIRED' }), updated.rows[0].amount_cents],
-    );
-    this.logWarn('WITHDRAWAL_REVIEW_REQUIRED', { publicReference: updated.rows[0].public_reference, admin: maskedAdmin(admin) });
-    return updated.rows[0];
+    return this.repository.transaction(async (client) => {
+      const previous = (await client.query(
+        "SELECT * FROM financial_withdrawals WHERE public_reference=$1 AND status IN ('AWAITING_ADMIN_PAYMENT','PROCESSING') FOR UPDATE",
+        [safeText(reference, 40).toUpperCase()],
+      )).rows[0];
+      if (!previous) throw new Error('WITHDRAWAL_NOT_REVIEWABLE');
+      const updated = (await client.query(
+        "UPDATE financial_withdrawals SET status='REVIEW_REQUIRED', failure_reason=$1, updated_at=now() WHERE withdrawal_id=$2 RETURNING *",
+        [reviewReason, previous.withdrawal_id],
+      )).rows[0];
+      await client.query(
+        `INSERT INTO financial_admin_audit (audit_id, admin_phone_masked, action, target_reference, reason, previous_state, next_state, amount_cents)
+         VALUES ($1,$2,'WITHDRAWAL_REVIEW_REQUIRED',$3,$4,$5::jsonb,$6::jsonb,$7)`,
+        [randomUUID(), maskedAdmin(admin), updated.public_reference, reviewReason,
+          json({ status: previous.status }), json({ status: 'REVIEW_REQUIRED' }), updated.amount_cents],
+      );
+      this.logWarn('WITHDRAWAL_REVIEW_REQUIRED', { publicReference: updated.public_reference, admin: maskedAdmin(admin) });
+      return updated;
+    });
   }
 
   async reconcile(adminPhone) {
@@ -642,15 +969,42 @@ export class FinancialWalletService {
     const provider = await this.provider.getProviderBalance();
     const providerBalance = Number(provider.amountCents);
     const liability = Number(internal.liability);
-    const mismatch = providerBalance - liability;
-    const status = mismatch === 0 ? 'MATCHED' : 'MISMATCH';
+    const ledgerRows = (await this.repository.query(
+      `SELECT ledger_account, COALESCE(sum(amount_cents),0)::bigint AS balance_cents
+       FROM financial_ledger_entries GROUP BY ledger_account ORDER BY ledger_account`,
+    )).rows;
+    const ledgerBalances = Object.fromEntries(ledgerRows.map((row) => [row.ledger_account, Number(row.balance_cents)]));
+    const pending = (await this.repository.query(
+      `SELECT
+        count(*) FILTER (WHERE status IN ('CREATED','PENDING','REVIEW_REQUIRED'))::int AS pending_deposits,
+        count(*) FILTER (WHERE status='CREDITED' AND fee_amount_cents IS NULL)::int AS unknown_fee_deposits
+       FROM financial_deposits`,
+    )).rows[0];
+    const platformRevenue = Number(ledgerBalances.PLATFORM_REVENUE || 0);
+    const providerFees = Math.abs(Number(ledgerBalances.PROVIDER_FEE || 0));
+    const expectedProviderBalance = liability + platformRevenue - providerFees;
+    const mismatch = providerBalance - expectedProviderBalance;
+    const hasUnknownFee = Number(pending.unknown_fee_deposits || 0) > 0;
+    const status = hasUnknownFee ? 'REVIEW_REQUIRED' : (mismatch === 0 ? 'MATCHED' : 'MISMATCH');
     const result = await this.repository.query(
       `INSERT INTO financial_reconciliations
         (reconciliation_id, status, provider_balance_cents, internal_liability_cents, mismatch_cents, details)
        VALUES ($1,$2,$3,$4,$5,$6::jsonb) RETURNING *`,
-      [randomUUID(), status, providerBalance, liability, mismatch, json({ provider: this.config.provider, admin: maskedAdmin(admin) })],
+      [randomUUID(), status, providerBalance, liability, mismatch, json({
+        provider: this.config.provider,
+        admin: maskedAdmin(admin),
+        expectedProviderBalanceCents: expectedProviderBalance,
+        platformRevenueCents: platformRevenue,
+        providerFeesCents: providerFees,
+        pendingDeposits: Number(pending.pending_deposits || 0),
+        unknownFeeDeposits: Number(pending.unknown_fee_deposits || 0),
+        ledgerAccountBalances: ledgerBalances,
+      })],
     );
-    if (mismatch !== 0) this.logWarn('RECONCILIATION_MISMATCH', { providerBalanceCents: providerBalance, internalLiabilityCents: liability, mismatchCents: mismatch });
+    if (status !== 'MATCHED') this.logWarn('RECONCILIATION_MISMATCH', {
+      providerBalanceCents: providerBalance, expectedProviderBalanceCents: expectedProviderBalance,
+      internalLiabilityCents: liability, mismatchCents: mismatch, status,
+    });
     return result.rows[0];
   }
 

@@ -158,4 +158,40 @@ assert.equal(retriedSummary.alreadyProcessed, true);
 assert.equal(retriedSummary.adminSent, true);
 assert.equal(retryAttempts, 2);
 
+const financialEntries = [
+  { entryId: 'FIN-E1', playerId: 'financial-player-a', phoneMasked: '***1111', notifyTo: '5511999991111', selectedTable: 5, status: 'finished' },
+  { entryId: 'FIN-E2', playerId: 'financial-player-b', phoneMasked: '***2222', notifyTo: '5511999992222', selectedTable: 5, status: 'finished' },
+];
+let financialAttempts = 0;
+let cleanupAttempts = 0;
+const financialFlow = createPostMatchFlow({
+  entryService: {
+    getEntriesForMatch: () => financialEntries,
+    finishEntriesForMatch: () => (++cleanupAttempts === 1 ? financialEntries : []),
+  },
+  financialWalletService: {
+    isEnabled: () => true,
+    settleMatch: async () => {
+      financialAttempts += 1;
+      if (financialAttempts === 1) throw new Error('injected-financial-settlement-failure');
+      return { match_id: 'match-financial-retry', status: 'SETTLED' };
+    },
+  },
+  whatsappEnabled: false,
+  adminSummaryEnabled: false,
+});
+const financialRetryState = {
+  ...gameState,
+  matchId: 'match-financial-retry',
+  result: { ...gameState.result, winnerId: 'financial-player-a', loserId: 'financial-player-b' },
+  players: [{ id: 'financial-player-a' }, { id: 'financial-player-b' }],
+};
+const financialFailed = await financialFlow.finishMatchAndNotify(financialRetryState, 'knock');
+const financialRetried = await financialFlow.finishMatchAndNotify(financialRetryState, 'knock');
+const financialDuplicate = await financialFlow.finishMatchAndNotify(financialRetryState, 'knock');
+assert.equal(financialFailed.ok, false);
+assert.equal(financialRetried.ok, true);
+assert.equal(financialDuplicate.alreadyProcessed, true);
+assert.equal(financialAttempts, 2);
+
 console.log('post-match-flow ok');

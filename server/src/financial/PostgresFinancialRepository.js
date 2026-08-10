@@ -11,7 +11,7 @@ export class PostgresFinancialRepository {
     if (!pool && !connectionString) throw new Error('FINANCIAL_DATABASE_REQUIRED');
     this.pool = pool ?? new Pool({
       connectionString,
-      ssl: ssl ?? (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined),
+      ssl: ssl ?? (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : undefined),
       max: 10,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,

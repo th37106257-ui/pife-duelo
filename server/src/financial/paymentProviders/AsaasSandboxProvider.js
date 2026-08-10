@@ -40,6 +40,8 @@ export class AsaasSandboxProvider extends PaymentProvider {
 
   async createOrFindCustomer({ publicId, name, phone, existingCustomerId = null }) {
     if (existingCustomerId) return { id: existingCustomerId, existing: true };
+    const existing = await this.findCustomerByExternalReference(publicId);
+    if (existing) return { ...existing, existing: true };
     const created = await this.request('/customers', {
       method: 'POST',
       body: { name, mobilePhone: phone, externalReference: publicId, notificationDisabled: true },
@@ -47,7 +49,19 @@ export class AsaasSandboxProvider extends PaymentProvider {
     return { ...created, existing: false };
   }
 
+  async findCustomerByExternalReference(publicId) {
+    const result = await this.request(`/customers?externalReference=${encodeURIComponent(publicId)}&limit=1`);
+    return Array.isArray(result?.data) ? (result.data[0] ?? null) : null;
+  }
+
+  async findPixChargeByExternalReference(externalReference) {
+    const result = await this.request(`/payments?externalReference=${encodeURIComponent(externalReference)}&limit=1`);
+    return Array.isArray(result?.data) ? (result.data[0] ?? null) : null;
+  }
+
   async createPixCharge({ customerId, amountCents, dueDate, description, externalReference }) {
+    const existing = await this.findPixChargeByExternalReference(externalReference);
+    if (existing) return { ...existing, existing: true };
     return this.request('/payments', {
       method: 'POST',
       body: {
@@ -66,7 +80,17 @@ export class AsaasSandboxProvider extends PaymentProvider {
   }
 
   getPayment(paymentId) {
-    return this.request(`/payments/${encodeURIComponent(paymentId)}`);
+    return this.request(`/payments/${encodeURIComponent(paymentId)}`).then((payment) => {
+      const amountCents = Math.round(Number(payment.value || 0) * 100);
+      const hasNet = payment.netValue !== undefined && payment.netValue !== null;
+      const netAmountCents = hasNet ? Math.round(Number(payment.netValue) * 100) : null;
+      return {
+        ...payment,
+        amountCents,
+        netAmountCents,
+        feeAmountCents: hasNet ? Math.max(0, amountCents - netAmountCents) : null,
+      };
+    });
   }
 
   validateWebhook({ headers }) {

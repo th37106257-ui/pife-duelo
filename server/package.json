@@ -18,5 +18,8 @@
   "devDependencies": {
     "nodemon": "^3.1.9",
     "pg-mem": "^3.0.14"
+  },
+  "overrides": {
+    "socket.io-parser": "4.2.7"
   }
 }

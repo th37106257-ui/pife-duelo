@@ -103,8 +103,37 @@ CREATE TABLE IF NOT EXISTS financial_match_settlements (
   winner_prize_cents bigint NOT NULL CHECK (winner_prize_cents >= 0),
   status varchar(32) NOT NULL,
   transaction_id uuid REFERENCES financial_transactions(transaction_id),
+  operation_type varchar(24) NOT NULL DEFAULT 'SETTLE',
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  failure_reason varchar(240),
+  last_attempt_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE financial_match_settlements ADD COLUMN IF NOT EXISTS operation_type varchar(24) NOT NULL DEFAULT 'SETTLE';
+ALTER TABLE financial_match_settlements ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
+ALTER TABLE financial_match_settlements ADD COLUMN IF NOT EXISTS failure_reason varchar(240);
+ALTER TABLE financial_match_settlements ADD COLUMN IF NOT EXISTS last_attempt_at timestamptz;
+ALTER TABLE financial_match_settlements ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+CREATE TABLE IF NOT EXISTS financial_recovery_tasks (
+  task_id uuid PRIMARY KEY,
+  task_key varchar(220) NOT NULL UNIQUE,
+  task_type varchar(48) NOT NULL,
+  status varchar(32) NOT NULL,
+  match_id varchar(120),
+  entry_id varchar(100),
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  last_error varchar(240),
+  next_attempt_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS financial_recovery_status_idx
+  ON financial_recovery_tasks(status, next_attempt_at, created_at);
 
 CREATE TABLE IF NOT EXISTS financial_withdrawals (
   withdrawal_id uuid PRIMARY KEY,

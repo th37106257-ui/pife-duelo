@@ -240,7 +240,7 @@ export function createPostMatchFlow({
       return { ok: true, alreadyProcessed: true, report: repeatedReport, adminSent };
     }
 
-    processedMatches.add(matchId);
+    const knownEntries = entryService?.getEntriesForMatch?.(matchId, { includeNotificationTarget: true }) ?? [];
     let releasedEntries = [];
     let queueCleanup = [];
     let winnerSent = false;
@@ -255,6 +255,7 @@ export function createPostMatchFlow({
         reason,
         includeNotificationTarget: true,
       }) ?? [];
+      if (!releasedEntries.length) releasedEntries = knownEntries;
 
       releasedEntries.forEach((entry) => {
         const payload = {
@@ -284,6 +285,7 @@ export function createPostMatchFlow({
     report.participantLabels = releasedEntries.map((entry) => entry.phoneMasked).filter(Boolean);
     report.winnerLabel = entryForPlayer(releasedEntries, report.winnerId)?.phoneMasked ?? null;
     report.loserLabel = entryForPlayer(releasedEntries, report.loserId)?.phoneMasked ?? null;
+    let financialCompleted = true;
     if (financialWalletService?.isEnabled?.()) {
       try {
         const winnerEntry = entryForPlayer(releasedEntries, report.winnerId);
@@ -299,9 +301,11 @@ export function createPostMatchFlow({
           report.financialSettlement = await financialWalletService.compensateMatch(matchId, reason || 'match_without_authoritative_winner');
         }
       } catch (error) {
+        financialCompleted = false;
         logError('POST_MATCH_FINANCIAL_SETTLEMENT_FAILED', { matchId, reason: error.message });
       }
     }
+    if (financialCompleted) processedMatches.add(matchId);
     if (demoCreditsService?.isEnabled?.()) {
       report.demoCreditsEnabled = true;
       report.tableLabel = `${Number(report.table || 0)} Créditos de Teste`;
@@ -410,7 +414,7 @@ export function createPostMatchFlow({
     });
 
     return {
-      ok: true,
+      ok: financialCompleted,
       alreadyProcessed: false,
       report,
       releasedEntries,

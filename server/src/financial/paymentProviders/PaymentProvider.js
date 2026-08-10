@@ -1,5 +1,7 @@
 export class PaymentProvider {
+  async findCustomerByExternalReference() { return null; }
   async createOrFindCustomer() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
+  async findPixChargeByExternalReference() { return null; }
   async createPixCharge() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
   async getPixQrCode() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
   async getPayment() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }

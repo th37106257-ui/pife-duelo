@@ -1020,6 +1020,17 @@ export class WhatsAppEntryService {
       });
   }
 
+  getEntriesForMatch(matchId, { includeNotificationTarget = false } = {}) {
+    const safeMatchId = String(matchId || '').trim();
+    if (!safeMatchId) return [];
+    return this.store.listEntries()
+      .filter((entry) => entry.linkedMatchId === safeMatchId)
+      .map((entry) => {
+        const safe = sanitizeWhatsAppEntry(entry);
+        return includeNotificationTarget ? { ...safe, notifyTo: entry.whatsappReplyTo || entry.phone || null } : safe;
+      });
+  }
+
   assertValidStatus(status) {
     return WHATSAPP_ENTRY_STATUSES.has(status);
   }

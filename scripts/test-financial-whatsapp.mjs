@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { WhatsAppPaymentBot } from '../server/src/payments/WhatsAppPaymentBot.js';
 
 const sent = [];
+const logs = [];
+const processedMessages = new Set();
 const player = '5511999991001';
 const financialAdmin = '5511999990001';
 const unauthorized = '5511999990002';
@@ -21,9 +23,16 @@ const wallet = {
   getStatus: async () => ({ mode: 'sandbox', provider: 'mock', accounts: 1, pending_deposits: 0, pending_withdrawals: 1 }),
 };
 const bot = new WhatsAppPaymentBot({
-  paymentService: { isAdmin: () => false },
+  paymentService: {
+    isAdmin: () => false,
+    store: {
+      hasProcessedMessage: (id) => processedMessages.has(id),
+      markMessageProcessed: (id) => processedMessages.add(id),
+    },
+  },
   entryService: { isAdmin: () => false },
   financialWalletService: wallet,
+  logInfo: (event, payload) => logs.push({ event, payload }),
   evolutionClient: {
     isConfigured: () => true,
     sendWhatsAppMessage: async (phone, text) => { sent.push({ phone, text }); return { ok: true }; },
@@ -47,6 +56,23 @@ await bot.handleFinancialCommand(
 assert.ok(sent.some((message) => message.phone === financialAdmin && message.text.includes('chave-secreta@example.test')));
 assert.ok(!sent.some((message) => message.phone === unauthorized && message.text.includes('chave-secreta@example.test')));
 assert.ok(!sent.filter((message) => message.phone === player).some((message) => message.text.includes('chave-secreta@example.test')));
+
+function webhook(text, id) {
+  return {
+    event: 'messages.upsert', instance: 'pife-duelo-bot',
+    data: { key: { remoteJid: `${player}@s.whatsapp.net`, fromMe: false, id }, message: { conversation: text } },
+  };
+}
+const emailSecret = 'email-pix-privado@example.test';
+const evpSecret = '123e4567-e89b-12d3-a456-426614174000';
+await bot.handleConnectivityWebhook(webhook(`sacar 20 EMAIL ${emailSecret} | Jogador Teste`, 'financial-log-email'), { originIp: 'test' });
+await bot.handleConnectivityWebhook(webhook(`sacar 20 EVP ${evpSecret} | Jogador Teste`, 'financial-log-evp'), { originIp: 'test' });
+const serializedLogs = JSON.stringify(logs);
+assert.ok(!serializedLogs.includes(emailSecret));
+assert.ok(!serializedLogs.includes(evpSecret));
+assert.ok(logs.some((item) => item.event === 'WHATSAPP_MESSAGE_TEXT'
+  && item.payload.command === '[financial-command-redacted]'
+  && item.payload.financialAction === 'withdrawal_request'));
 
 const denied = await bot.handleSafeEntryAdminCommand(unauthorized, 'admin financeiro status', { replyTo: unauthorized });
 assert.equal(denied.type, 'entry_admin_unauthorized');

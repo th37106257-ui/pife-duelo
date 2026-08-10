@@ -199,6 +199,17 @@ function maskDigitsInText(value) {
   return String(value || '').replace(/\d{8,15}/g, (digits) => maskPhone(digits));
 }
 
+function protectedFinancialCommandLog(command) {
+  const value = String(command || '').trim();
+  const withdrawal = value.match(/^sacar\s+\S+\s+(CPF|CNPJ|EMAIL|PHONE|EVP)\s+/i);
+  if (withdrawal) return { command: '[financial-command-redacted]', financialAction: 'withdrawal_request', pixKeyType: withdrawal[1].toUpperCase() };
+  if (/^depositar\s+/i.test(value)) return { command: '[financial-command-redacted]', financialAction: 'deposit_request' };
+  if (/^admin\s+(saque|saques|saldo|extrato|financeiro)\b/i.test(value)) {
+    return { command: '[financial-command-redacted]', financialAction: 'financial_admin_command' };
+  }
+  return null;
+}
+
 function defaultLogInfo(event, payload) {
   console.log(`[PIFE_SERVER][${event}]`, {
     timestamp: new Date().toISOString(),
@@ -1217,7 +1228,7 @@ export class WhatsAppPaymentBot {
     const resetMatch = text.match(/^(?:(?:\/admin|admin)\s+)?resetar\s+(\d{8,15})$/i);
     if (resetMatch) {
       const targetPhone = normalizePhone(resetMatch[1]);
-      const result = this.matchQueue?.clearPlayerState?.(targetPhone, {
+      const result = await this.matchQueue?.clearPlayerState?.(targetPhone, {
         actor: phone,
         reason: 'whatsapp_admin_reset',
       });
@@ -1771,7 +1782,7 @@ export class WhatsAppPaymentBot {
     }
 
     const before = this.getPlayerContext(incoming.phone);
-    const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {
+    const clearResult = await this.matchQueue?.clearPlayerState?.(incoming.phone, {
       actor: incoming.phone,
       reason: 'whatsapp_cancel_confirmed',
     });
@@ -1921,10 +1932,11 @@ export class WhatsAppPaymentBot {
       rawFromMe: incoming.rawFromMe ?? null,
       messageType: incoming.messageType || null,
     });
+    const protectedCommand = protectedFinancialCommandLog(command);
     this.logInfo('WHATSAPP_MESSAGE_TEXT', {
       originIp,
       textLength: incoming.text.length,
-      command: maskDigitsInText(command).slice(0, 120),
+      ...(protectedCommand ?? { command: maskDigitsInText(command).slice(0, 120) }),
     });
     this.logInfo('BOT_HANDLER_SELECTED', {
       originIp,
@@ -1997,7 +2009,7 @@ export class WhatsAppPaymentBot {
       return this.handleSupportRequest(incoming, { replyTo, originIp });
     }
     if (MENU_COMMANDS.has(command) || CANCEL_QUEUE_COMMANDS.has(command)) {
-      const clearResult = this.matchQueue?.clearPlayerState?.(incoming.phone, {
+      const clearResult = await this.matchQueue?.clearPlayerState?.(incoming.phone, {
         actor: incoming.phone,
         reason: `whatsapp_${command}`,
       });
@@ -2120,7 +2132,7 @@ export class WhatsAppPaymentBot {
       if (this.safeEntryEnabled && this.matchQueue?.isConfigured?.()) {
         const queueResult = this.financialWalletService?.isEnabled?.()
           ? await this.matchQueue.joinFinancialQueue(incoming.phone, selectedTable, { replyTo })
-          : this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
+          : await this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
         if (queueResult.blocked) {
           if (queueResult.reason === 'DEMO_INSUFFICIENT_CREDITS') {
             await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_INSUFFICIENT', demoCreditsInsufficient({

@@ -389,9 +389,24 @@ export function setupSocketServer(httpServer, {
         matchManager.adminEndMatch?.(onlineMatch.matchId, 'financial_reservation_commit_failed');
         roomManager.updateRoom(room.roomId, { status: 'cancelled', matchId: onlineMatch.matchId });
         logError('MATCH_FINANCIAL_START_FAILED', { matchId: onlineMatch.matchId, roomId: room.roomId, reason: error.message });
+        let recovery;
+        try {
+          recovery = await financialWalletService.recoverFailedMatchStart(
+            entries.map((entry) => entry.entryId).filter(Boolean),
+            onlineMatch.matchId,
+            error.message,
+          );
+        } catch (recoveryError) {
+          logError('MATCH_FINANCIAL_START_RECOVERY_FAILED', {
+            matchId: onlineMatch.matchId, roomId: room.roomId, reason: recoveryError.message,
+          });
+          recovery = { reviewRequired: true };
+        }
         entries.forEach((entry) => socketManager.getSocket(entry.socketId)?.emit('matchmakingError', {
           reason: 'FINANCIAL_RESERVATION_COMMIT_FAILED',
-          message: 'A partida não pôde iniciar. A reserva financeira permanece protegida para revisão.',
+          message: recovery?.recovered
+            ? 'A partida não pôde iniciar e a reserva foi devolvida com segurança.'
+            : 'A partida não pôde iniciar. A operação foi registrada para revisão financeira.',
         }));
         return null;
       }
@@ -496,7 +511,7 @@ export function setupSocketServer(httpServer, {
     return room;
   };
 
-  queueManager.setTimeoutHandler((entry) => {
+  queueManager.setTimeoutHandler(async (entry) => {
     if (paymentGateEnabled && entry.paymentId) {
       paymentService.releaseAccessReservation({
         paymentId: entry.paymentId,
@@ -505,7 +520,7 @@ export function setupSocketServer(httpServer, {
       });
     }
     const abortResult = entry.entryId && whatsappMatchQueue
-      ? whatsappMatchQueue.abortMatchAndReleaseParticipants({
+      ? await whatsappMatchQueue.abortMatchAndReleaseParticipants({
           matchId: entryService?.getEntry?.(entry.entryId)?.whatsappMatchId,
           reason: 'queue_timeout_before_start',
           cancelledBy: null,
@@ -863,7 +878,7 @@ export function setupSocketServer(httpServer, {
       }
     });
 
-    socket.on('leaveQueue', (payload = {}, ack) => {
+    socket.on('leaveQueue', async (payload = {}, ack) => {
       const leaveRate = actionRateLimiter.consume(`cancel:${socket.entryAccess?.entryId || socket.id}`, {
         limit: 6,
         windowMs: 60_000,
@@ -881,7 +896,7 @@ export function setupSocketServer(httpServer, {
         });
       }
       const abortResult = leaveResult.entry?.entryId && whatsappMatchQueue
-        ? whatsappMatchQueue.abortMatchAndReleaseParticipants({
+        ? await whatsappMatchQueue.abortMatchAndReleaseParticipants({
             matchId: socket.entryAccess?.whatsappMatchId,
             reason: 'player_left_before_start',
             cancelledBy: entryService?.getEntry?.(leaveResult.entry.entryId, { includeSecrets: true })?.phone ?? null,

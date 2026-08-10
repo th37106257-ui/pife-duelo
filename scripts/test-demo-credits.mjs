@@ -180,21 +180,21 @@ const entryService = new WhatsAppEntryService({
   publicGameUrl: 'https://pife.example',
 });
 const queue = new MatchQueue({ entryService, demoCreditsService: queueCredits, preMatchTimeoutSeconds: 60 });
-assert.equal(queue.joinQueue(phones[0], 5, { replyTo: phones[0] }).blocked, false);
+assert.equal((await queue.joinQueue(phones[0], 5, { replyTo: phones[0] })).blocked, false);
 assert.equal(queueCredits.getBalance(phones[0]).availableBalance, 95);
 assert.equal(queueCredits.getBalance(phones[0]).reservedBalance, 5);
-assert.equal(queue.clearPlayerState(phones[0], { actor: phones[0], reason: 'test_cancel' }).cleared, true);
+assert.equal((await queue.clearPlayerState(phones[0], { actor: phones[0], reason: 'test_cancel' })).cleared, true);
 assert.equal(queueCredits.getBalance(phones[0]).availableBalance, 100);
 
-const first = queue.joinQueue(phones[0], 5, { replyTo: phones[0] });
-const second = queue.joinQueue(phones[1], 5, { replyTo: phones[1] });
+const first = await queue.joinQueue(phones[0], 5, { replyTo: phones[0] });
+const second = await queue.joinQueue(phones[1], 5, { replyTo: phones[1] });
 assert.equal(first.match, null);
 assert.ok(second.match?.matchId);
 assert.equal(queueCredits.getBalance(phones[0]).reservedBalance, 5);
 assert.equal(queueCredits.getBalance(phones[1]).reservedBalance, 5);
-assert.equal(queue.abortMatchAndReleaseParticipants({
+assert.equal((await queue.abortMatchAndReleaseParticipants({
   matchId: second.match.matchId, reason: 'queue_timeout_before_start',
-}).aborted, true);
+})).aborted, true);
 assert.equal(queueCredits.getBalance(phones[0]).availableBalance, 100);
 assert.equal(queueCredits.getBalance(phones[1]).availableBalance, 100);
 
