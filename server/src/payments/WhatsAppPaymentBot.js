@@ -13,6 +13,11 @@ import {
   adminReview as adminReviewMessage,
   cancelConfirmation as cancelConfirmationMessage,
   cancellationProtocol,
+  demoCreditsBalanceMenu,
+  demoCreditsExplanation,
+  demoCreditsHistory,
+  demoCreditsInitialGrant,
+  demoCreditsInsufficient,
   friendlyActionError,
   howItWorksMenu,
   invalidCommand,
@@ -141,6 +146,8 @@ const STATUS_COMMANDS = new Set(['status', 'situacao']);
 const LINK_COMMANDS = new Set(['link', 'acesso', 'meu link']);
 const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
 const UPDATES_COMMANDS = new Set(['5', 'atualizacoes', 'atualizacao', 'novidades', 'roadmap']);
+const DEMO_CREDITS_COMMANDS = new Set(['6', 'creditos', 'credito', 'meus creditos', 'creditos de teste']);
+const FINANCIAL_WALLET_COMMANDS = new Set(['carteira', 'saldo financeiro', 'meu perfil e saldo', 'perfil financeiro']);
 const UPDATE_SECTION_COMMANDS = new Map([
   ['1', 'available'],
   ['novidades disponiveis', 'available'],
@@ -169,7 +176,9 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (currentState?.state === 'rules_menu' && /^[1-6]$/.test(command)) return 'rules_topic';
   if (currentState?.state === 'support_menu' && /^[1-6]$/.test(command)) return 'support_topic';
   if (currentState?.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command)) return 'updates_section';
+  if (currentState?.state === 'demo_credits_menu' && ['1', '2'].includes(command)) return 'demo_credits_section';
   if (UPDATES_COMMANDS.has(command) || (currentState?.state === 'updates_menu' && command === 'voltar')) return 'updates';
+  if (DEMO_CREDITS_COMMANDS.has(command)) return 'demo_credits';
   const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
@@ -350,6 +359,10 @@ function money(value) {
   return `R$${Number(value || 0).toFixed(2).replace('.', ',')}`;
 }
 
+function centsMoney(value) {
+  return (Number(value || 0) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
 function errorMessage(error) {
   const messages = {
     PAYMENT_NOT_FOUND: 'Pagamento não encontrado.',
@@ -367,6 +380,8 @@ export class WhatsAppPaymentBot {
     paymentService,
     entryService,
     matchQueue,
+    demoCreditsService = null,
+    financialWalletService = null,
     safeEntryEnabled = false,
     paymentsEnabled = false,
     cleanConversationEnabled = false,
@@ -384,6 +399,8 @@ export class WhatsAppPaymentBot {
     this.paymentService = paymentService;
     this.entryService = entryService;
     this.matchQueue = matchQueue;
+    this.demoCreditsService = demoCreditsService;
+    this.financialWalletService = financialWalletService;
     this.safeEntryEnabled = Boolean(safeEntryEnabled);
     this.paymentsEnabled = Boolean(paymentsEnabled);
     this.evolutionClient = evolutionClient;
@@ -569,6 +586,7 @@ export class WhatsAppPaymentBot {
       queue,
       paidConfirmed,
       canCancel,
+      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
     };
   }
 
@@ -589,7 +607,7 @@ export class WhatsAppPaymentBot {
       case WHATSAPP_PLAYER_STATES.REFUND_PENDING:
         return refundPendingMessage(context);
       default:
-        return mainMenu({ paymentsEnabled: this.paymentsEnabled });
+        return this.safeMenuText();
     }
   }
 
@@ -693,7 +711,10 @@ export class WhatsAppPaymentBot {
   }
 
   safeMenuText() {
-    return mainMenu({ paymentsEnabled: this.paymentsEnabled });
+    return mainMenu({
+      paymentsEnabled: this.paymentsEnabled,
+      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
+    });
   }
 
   buildTestModeLink() {
@@ -705,8 +726,48 @@ export class WhatsAppPaymentBot {
     return testModeMessage(testModeLink);
   }
 
-  safeTablesText() {
-    return tablesMenu({ paymentsEnabled: this.paymentsEnabled });
+  safeTablesText(playerPhone = null) {
+    const demoCreditsEnabled = Boolean(this.demoCreditsService?.isEnabled?.());
+    const demoBalance = demoCreditsEnabled && playerPhone
+      ? this.demoCreditsService.getBalance(playerPhone).availableBalance
+      : null;
+    return tablesMenu({ paymentsEnabled: this.paymentsEnabled, demoCreditsEnabled, demoBalance });
+  }
+
+  async prepareDemoCreditsAccount(replyTo, playerPhone) {
+    if (!this.demoCreditsService?.isEnabled?.()) return null;
+    const balance = this.demoCreditsService.getBalance(playerPhone);
+    if (balance.initialGrantApplied) {
+      await this.sendPermanent(
+        replyTo,
+        playerPhone,
+        demoCreditsInitialGrant(this.demoCreditsService.startingBalance),
+        { replyType: 'demo_credits_initial_grant' },
+      );
+    }
+    return balance;
+  }
+
+  async handleDemoCreditsRequest(incoming, { replyTo, originIp }) {
+    if (!this.demoCreditsService?.isEnabled?.()) {
+      await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
+      return { type: 'demo_credits_disabled', decision: 'reply_sent', reason: 'feature_disabled', state: 'idle', originIp };
+    }
+    const balance = await this.prepareDemoCreditsAccount(replyTo, incoming.phone);
+    this.setConversationState(incoming.phone, 'demo_credits_menu');
+    await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_MENU', demoCreditsBalanceMenu(balance));
+    return { type: 'demo_credits_balance_sent', decision: 'reply_sent', reason: 'balance_requested', state: 'demo_credits_menu', originIp };
+  }
+
+  async handleDemoCreditsSection(incoming, { replyTo, command, originIp }) {
+    if (!this.demoCreditsService?.isEnabled?.()) return this.handleDemoCreditsRequest(incoming, { replyTo, originIp });
+    if (command === '1') {
+      const events = this.demoCreditsService.getHistory(incoming.phone);
+      await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_HISTORY', demoCreditsHistory(events));
+      return { type: 'demo_credits_history_sent', decision: 'reply_sent', reason: 'history_requested', state: 'demo_credits_menu', originIp };
+    }
+    await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_EXPLANATION', demoCreditsExplanation());
+    return { type: 'demo_credits_explanation_sent', decision: 'reply_sent', reason: 'explanation_requested', state: 'demo_credits_menu', originIp };
   }
 
   safeRulesText() {
@@ -885,11 +946,14 @@ export class WhatsAppPaymentBot {
       rawText: maskDigitsInText(rawText),
       senderPhone: maskPhone(senderPhone),
     });
+    const isFinancialCommand = /^(?:\/admin|admin)\s+(?:saque|saques|financeiro|saldo|extrato)\b/i.test(rawText);
+    const isFinancialAdmin = Boolean(this.financialWalletService?.config?.financialAdminNumbers?.includes(senderPhone));
     const isAdmin = Boolean(
       senderPhone
       && (
         this.adminNumbers.includes(senderPhone)
         || this.entryService?.isAdmin?.(senderPhone)
+        || (isFinancialCommand && isFinancialAdmin)
       ),
     );
     this.logInfo('ADMIN_COMMAND_AUTH_CHECK', {
@@ -904,6 +968,178 @@ export class WhatsAppPaymentBot {
       });
       await this.send(replyTo, '❌ Comando admin não autorizado para este número.');
       return { type: 'entry_admin_unauthorized', decision: 'reply_sent', reason: 'admin_not_authorized' };
+    }
+
+    if (this.financialWalletService?.isEnabled?.() && isFinancialCommand) {
+      try {
+        if (/^(?:\/admin|admin)\s+saques\s+pendentes$/i.test(rawText)) {
+          const items = await this.financialWalletService.listPendingWithdrawals(senderPhone);
+          await this.send(replyTo, ['💸 *SAQUES PENDENTES*', ...(items.length
+            ? items.map((item) => `${item.public_reference} | ${centsMoney(item.amount_cents)} | ${item.public_id} | tel. final ${item.phone_last4}`)
+            : ['Nenhum saque pendente.']), '', this.financialWalletService.notice()].join('\n'));
+          return { type: 'financial_admin_pending_withdrawals', decision: 'reply_sent' };
+        }
+        const detailsMatch = rawText.match(/^(?:\/admin|admin)\s+saque\s+detalhes\s+([A-Z0-9-]+)$/i);
+        if (detailsMatch) {
+          const item = await this.financialWalletService.getWithdrawalDetails(senderPhone, detailsMatch[1]);
+          await this.send(replyTo, [
+            '💸 *DETALHES DO SAQUE*', `Solicitação: ${item.public_reference}`, `Jogador: ${item.display_name}`,
+            `ID: ${item.public_id}`, `Telefone: final ${String(item.phone_normalized).slice(-4)}`,
+            `Valor: ${centsMoney(item.amount_cents)}`, `Tipo Pix: ${item.pix_key_type}`, `Chave Pix: ${item.pix_key}`,
+            `Titular: ${item.holder_name}`, `Status: ${item.status}`, '', this.financialWalletService.notice(),
+          ].join('\n'));
+          return { type: 'financial_admin_withdrawal_details', decision: 'reply_sent' };
+        }
+        const paidMatch = rawText.match(/^(?:\/admin|admin)\s+saque\s+pago\s+([A-Z0-9-]+)\s+(\S+)$/i);
+        if (paidMatch) {
+          const details = await this.financialWalletService.getWithdrawalDetails(senderPhone, paidMatch[1]);
+          const result = await this.financialWalletService.markWithdrawalPaid(senderPhone, paidMatch[1], paidMatch[2]);
+          await this.send(replyTo, `✅ Saque ${result.public_reference} marcado como pago${result.duplicate ? ' (já processado)' : ''}.`);
+          if (!result.duplicate) await this.send(details.phone_normalized, ['✅ *SAQUE PAGO*', `Operação: ${result.public_reference}`, `Valor: ${centsMoney(result.amount_cents)}`, '', this.financialWalletService.notice()].join('\n'));
+          return { type: 'financial_admin_withdrawal_paid', decision: 'reply_sent', duplicate: Boolean(result.duplicate) };
+        }
+        const rejectMatch = rawText.match(/^(?:\/admin|admin)\s+saque\s+rejeitar\s+([A-Z0-9-]+)\s+(.+)$/i);
+        if (rejectMatch) {
+          const details = await this.financialWalletService.getWithdrawalDetails(senderPhone, rejectMatch[1]);
+          const result = await this.financialWalletService.rejectWithdrawal(senderPhone, rejectMatch[1], rejectMatch[2]);
+          await this.send(replyTo, `✅ Saque ${result.public_reference} rejeitado${result.duplicate ? ' (já processado)' : ''}.`);
+          if (!result.duplicate) await this.send(details.phone_normalized, ['❌ *SAQUE REJEITADO*', `Operação: ${result.public_reference}`, `Motivo: ${result.failure_reason}`, 'O valor reservado voltou ao saldo disponível.', '', this.financialWalletService.notice()].join('\n'));
+          return { type: 'financial_admin_withdrawal_rejected', decision: 'reply_sent', duplicate: Boolean(result.duplicate) };
+        }
+        const reviewMatch = rawText.match(/^(?:\/admin|admin)\s+saque\s+revisar\s+([A-Z0-9-]+)\s+(.+)$/i);
+        if (reviewMatch) {
+          const result = await this.financialWalletService.markWithdrawalReview(senderPhone, reviewMatch[1], reviewMatch[2]);
+          await this.send(replyTo, `⚠️ Saque ${result.public_reference} enviado para revisão.`);
+          return { type: 'financial_admin_withdrawal_review', decision: 'reply_sent' };
+        }
+        if (/^(?:\/admin|admin)\s+financeiro\s+status$/i.test(rawText)) {
+          const status = await this.financialWalletService.getStatus();
+          await this.send(replyTo, ['📊 *STATUS FINANCEIRO*', `Modo: ${status.mode}`, `Provedor: ${status.provider}`, `Contas: ${status.accounts}`, `Depósitos pendentes: ${status.pending_deposits}`, `Saques pendentes: ${status.pending_withdrawals}`, '', this.financialWalletService.notice()].join('\n'));
+          return { type: 'financial_admin_status', decision: 'reply_sent' };
+        }
+        if (/^(?:\/admin|admin)\s+financeiro\s+conciliar$/i.test(rawText)) {
+          const result = await this.financialWalletService.reconcile(senderPhone);
+          await this.send(replyTo, [`Conciliação: ${result.status}`, `Passivo interno: ${centsMoney(result.internal_liability_cents)}`, `Saldo do provedor: ${centsMoney(result.provider_balance_cents)}`, `Diferença: ${centsMoney(result.mismatch_cents)}`, '', this.financialWalletService.notice()].join('\n'));
+          return { type: 'financial_admin_reconciliation', decision: 'reply_sent' };
+        }
+        const accountMatch = rawText.match(/^(?:\/admin|admin)\s+(saldo|extrato)\s+(\+?\d{8,15})$/i);
+        if (accountMatch) {
+          const account = await this.financialWalletService.getAccount(accountMatch[2]);
+          if (!account) throw new Error('FINANCIAL_ACCOUNT_NOT_FOUND');
+          const lines = [`ID: ${account.public_id}`, `Disponível: ${centsMoney(account.available_balance_cents)}`, `Reservado: ${centsMoney(account.reserved_balance_cents)}`, `Saque pendente: ${centsMoney(account.withdrawal_pending_balance_cents)}`];
+          if (accountMatch[1].toLowerCase() === 'extrato') {
+            const history = await this.financialWalletService.listHistory(accountMatch[2]);
+            lines.push('', ...history.map((item) => `${item.public_reference} | ${item.transaction_type} | ${centsMoney(item.amount_cents)}`));
+          }
+          await this.send(replyTo, lines.join('\n'));
+          return { type: 'financial_admin_account', decision: 'reply_sent' };
+        }
+      } catch (error) {
+        await this.send(replyTo, `❌ Operação financeira recusada: ${error.message}`);
+        return { type: 'financial_admin_failed', decision: 'reply_sent', reason: error.message };
+      }
+    }
+
+    if (normalizedText === 'admin demo status' || normalizedText === '/admin demo status') {
+      const status = this.demoCreditsService?.getStatus?.() ?? {
+        enabled: false,
+        persistenceConfigured: false,
+        accountCount: 0,
+        activeReservations: 0,
+        ledgerEvents: 0,
+      };
+      await this.send(replyTo, [
+        '*🧪 STATUS DOS CRÉDITOS DE TESTE*',
+        '',
+        `Ativo: ${status.enabled ? 'sim' : 'não'}`,
+        `Persistência configurada: ${status.persistenceConfigured ? 'sim' : 'não'}`,
+        `Contas de teste: ${status.accountCount}`,
+        `Reservas ativas: ${status.activeReservations}`,
+        `Eventos no histórico: ${status.ledgerEvents}`,
+        '',
+        'AMBIENTE DEMONSTRATIVO — SEM VALOR FINANCEIRO',
+      ].join('\n'));
+      return { type: 'demo_admin_status', decision: 'reply_sent', reason: 'demo_status_ok' };
+    }
+
+    const demoBalanceMatch = rawText.match(/^(?:\/admin|admin)\s+demo\s+saldo\s+(.+)$/i);
+    if (demoBalanceMatch) {
+      const targetPhone = normalizePhone(demoBalanceMatch[1]);
+      if (!targetPhone || !this.demoCreditsService?.isEnabled?.()) {
+        await this.send(replyTo, !this.demoCreditsService?.isEnabled?.()
+          ? '⚠️ Créditos de Teste estão desligados.'
+          : '❌ Número inválido.');
+        return { type: 'demo_admin_balance_failed', decision: 'reply_sent', reason: targetPhone ? 'feature_disabled' : 'invalid_phone' };
+      }
+      const balance = this.demoCreditsService.getBalance(targetPhone);
+      await this.send(replyTo, [
+        '*🧪 SALDO DE TESTE*',
+        `Jogador: ${maskPhone(targetPhone)}`,
+        `Disponível: ${balance.availableBalance}`,
+        `Reservado: ${balance.reservedBalance}`,
+        'Sem valor financeiro.',
+      ].join('\n'));
+      return { type: 'demo_admin_balance', decision: 'reply_sent', reason: 'demo_balance_ok' };
+    }
+
+    const demoStatementMatch = rawText.match(/^(?:\/admin|admin)\s+demo\s+extrato\s+(.+)$/i);
+    if (demoStatementMatch) {
+      const targetPhone = normalizePhone(demoStatementMatch[1]);
+      if (!targetPhone || !this.demoCreditsService?.isEnabled?.()) {
+        await this.send(replyTo, !this.demoCreditsService?.isEnabled?.() ? '⚠️ Créditos de Teste estão desligados.' : '❌ Número inválido.');
+        return { type: 'demo_admin_history_failed', decision: 'reply_sent', reason: targetPhone ? 'feature_disabled' : 'invalid_phone' };
+      }
+      await this.send(replyTo, demoCreditsHistory(this.demoCreditsService.getHistory(targetPhone)));
+      return { type: 'demo_admin_history', decision: 'reply_sent', reason: 'demo_history_ok' };
+    }
+
+    const demoGrantMatch = rawText.match(/^(?:\/admin|admin)\s+demo\s+conceder\s+(\+?\d{8,15})\s+(\d+)\s+(.+)$/i);
+    if (demoGrantMatch) {
+      const targetPhone = normalizePhone(demoGrantMatch[1]);
+      try {
+        const result = this.demoCreditsService?.adminGrantCredits?.(
+          targetPhone,
+          Number(demoGrantMatch[2]),
+          sanitizeText(demoGrantMatch[3]),
+          senderPhone,
+        );
+        if (!result) throw new Error('DEMO_CREDITS_DISABLED');
+        await this.send(replyTo, [
+          `✅ ${Number(demoGrantMatch[2])} Créditos de Teste adicionados.`,
+          `Saldo anterior: ${result.previousBalance}`,
+          `Novo saldo: ${result.account.availableBalance}`,
+          `Referência: ${result.publicReference}`,
+          'Sem valor financeiro.',
+        ].join('\n'));
+        return { type: 'demo_admin_grant', decision: 'reply_sent', reason: 'demo_grant_ok' };
+      } catch (error) {
+        await this.send(replyTo, `❌ Não foi possível conceder Créditos de Teste: ${error.message}`);
+        return { type: 'demo_admin_grant_failed', decision: 'reply_sent', reason: error.message };
+      }
+    }
+
+    const demoResetMatch = rawText.match(/^(?:\/admin|admin)\s+demo\s+reset\s+(\+?\d{8,15})\s+(.+)$/i);
+    if (demoResetMatch) {
+      const targetPhone = normalizePhone(demoResetMatch[1]);
+      try {
+        const result = this.demoCreditsService?.adminResetDemoAccount?.(
+          targetPhone,
+          sanitizeText(demoResetMatch[2]),
+          senderPhone,
+        );
+        if (!result) throw new Error('DEMO_CREDITS_DISABLED');
+        await this.send(replyTo, [
+          '✅ Conta de Créditos de Teste reiniciada.',
+          `Saldo anterior: ${result.previousBalance}`,
+          `Novo saldo: ${result.account.availableBalance}`,
+          `Referência: ${result.publicReference}`,
+          'Histórico preservado.',
+        ].join('\n'));
+        return { type: 'demo_admin_reset', decision: 'reply_sent', reason: 'demo_reset_ok' };
+      } catch (error) {
+        await this.send(replyTo, `❌ Não foi possível reiniciar a conta de teste: ${error.message}`);
+        return { type: 'demo_admin_reset_failed', decision: 'reply_sent', reason: error.message };
+      }
     }
 
     if (normalizedText === 'admin ping' || normalizedText === '/admin ping') {
@@ -938,6 +1174,11 @@ export class WhatsAppPaymentBot {
         'admin recolocar NUMERO',
         'admin cancelar NUMERO',
         'admin reembolsar NUMERO',
+        'admin demo status',
+        'admin demo saldo NUMERO',
+        'admin demo extrato NUMERO',
+        'admin demo conceder NUMERO QUANTIDADE MOTIVO',
+        'admin demo reset NUMERO MOTIVO',
       ].join('\n'));
       this.logInfo('ADMIN_COMMAND_EXECUTED', {
         command: 'status',
@@ -1123,7 +1364,7 @@ export class WhatsAppPaymentBot {
   }
 
   safeQueueJoinedText(amount) {
-    return waitingForOpponent({ table: amount });
+    return waitingForOpponent({ table: amount, demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()) });
     /* istanbul ignore next */
     return [
       `✅ Você entrou na fila da Mesa R$${Number(amount).toFixed(0)}.`,
@@ -1134,7 +1375,10 @@ export class WhatsAppPaymentBot {
   }
 
   safeQueueDuplicateText() {
-    return queueDuplicateMessage({ table: arguments[0]?.table ?? arguments[0]?.tableValue ?? null });
+    return queueDuplicateMessage({
+      table: arguments[0]?.table ?? arguments[0]?.tableValue ?? null,
+      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
+    });
     /* istanbul ignore next */
     return '⏳ Você já está aguardando um adversário nesta mesa.';
   }
@@ -1146,7 +1390,12 @@ export class WhatsAppPaymentBot {
   }
 
   safeMatchFoundText(amount, accessLink) {
-    return matchFoundMessage({ table: amount, accessLink, publicReference: arguments[2] ?? null });
+    return matchFoundMessage({
+      table: amount,
+      accessLink,
+      publicReference: arguments[2] ?? null,
+      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
+    });
     /* istanbul ignore next */
     return [
       '🎮 Partida encontrada!',
@@ -1158,19 +1407,33 @@ export class WhatsAppPaymentBot {
   }
 
   safeOtherQueueText() {
-    return otherQueueMessage({ table: arguments[0]?.table ?? arguments[0]?.tableValue ?? null });
+    return otherQueueMessage({
+      table: arguments[0]?.table ?? arguments[0]?.tableValue ?? null,
+      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
+    });
     /* istanbul ignore next */
     return '⏳ Você já está aguardando adversário em outra mesa. Aguarde ou digite menu.';
   }
 
   safeQueueCancelledText() {
+    if (this.demoCreditsService?.isEnabled?.()) {
+      return [
+        '*✅ ENTRADA CANCELADA*',
+        '',
+        'Sua espera foi cancelada e os Créditos de Teste foram devolvidos ao seu saldo.',
+        'Você já pode escolher outra Mesa.',
+      ].join('\n');
+    }
     return cancellationProtocol();
     /* istanbul ignore next */
     return '\u2705 Sua entrada foi cancelada. Voc\u00ea voltou ao menu.';
   }
 
   safePaidEntryActiveText(entry = null) {
-    return paidEntryActiveMessage({ table: entry?.selectedTable ?? null });
+    return paidEntryActiveMessage({
+      table: entry?.selectedTable ?? null,
+      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
+    });
     /* istanbul ignore next */
     const amount = entry?.selectedTable ? ` na Mesa R$${Number(entry.selectedTable).toFixed(0)}` : '';
     return [
@@ -1308,7 +1571,11 @@ export class WhatsAppPaymentBot {
     const context = this.getPlayerContext(incoming.phone);
     if ([WHATSAPP_PLAYER_STATES.IDLE, WHATSAPP_PLAYER_STATES.MATCH_FINISHED].includes(context.state)) {
       this.setConversationState(incoming.phone, 'idle');
-      await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', mainMenu({ paymentsEnabled: this.paymentsEnabled }));
+      if (this.financialWalletService?.isEnabled?.()) {
+        await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', await this.financialMainMenu(incoming));
+      } else {
+        await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
+      }
       return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
     }
 
@@ -1321,6 +1588,143 @@ export class WhatsAppPaymentBot {
       state: context.state,
       originIp,
     };
+  }
+
+  async financialMainMenu(incoming) {
+    const account = await this.financialWalletService.getOrCreateAccount(incoming.phone, {
+      displayName: sanitizeText(incoming.pushName || 'Jogador'),
+    });
+    this.setConversationState(incoming.phone, 'financial_menu');
+    return [
+      '🎴 *PIFE DUELO*',
+      '',
+      `👤 Jogador: ${account.display_name}`,
+      `🆔 ID: ${account.public_id}`,
+      `💰 Saldo disponível: ${centsMoney(account.available_balance_cents)}`,
+      '',
+      '1 — Jogar agora',
+      '2 — Meu perfil e saldo',
+      '3 — Adicionar saldo',
+      '4 — Solicitar saque',
+      '5 — Extrato',
+      '6 — Regras',
+      '7 — Suporte',
+      '',
+      this.financialWalletService.notice(),
+      '🧪 Saldo de demonstração — não possui valor real.',
+    ].join('\n');
+  }
+
+  async handleFinancialCommand(incoming, { replyTo, command, originIp }) {
+    const wallet = this.financialWalletService;
+    if (!wallet?.isEnabled?.()) return null;
+    const state = this.getConversationState(incoming.phone).state;
+    if (FINANCIAL_WALLET_COMMANDS.has(command)) {
+      await this.sendPanel(replyTo, incoming.phone, 'FINANCIAL_MENU', await this.financialMainMenu(incoming));
+      return { type: 'financial_menu', decision: 'reply_sent', originIp };
+    }
+    if (state === 'financial_menu' && command === '1') {
+      this.setConversationState(incoming.phone, 'financial_play_menu');
+      await this.send(replyTo, [
+        '🎮 *COMO DESEJA JOGAR?*', '',
+        '1 — Jogar com bot',
+        'Partida gratuita para treinamento. Não usa saldo e não gera prêmio.', '',
+        '2 — Jogar com outro jogador',
+        'A entrada será reservada antes da partida.', '', '0 — Voltar', '', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_play_menu', decision: 'reply_sent', originIp };
+    }
+    if (state === 'financial_play_menu' && command === '1') {
+      this.setConversationState(incoming.phone, 'idle');
+      await this.send(replyTo, this.safeTestModeText());
+      return { type: 'financial_training_link', decision: 'reply_sent', originIp };
+    }
+    if (state === 'financial_play_menu' && command === '2') {
+      this.setConversationState(incoming.phone, 'choosing_table');
+      const tables = [2, 5, 10, 20].map((value, index) => {
+        const feePercent = value <= 5 ? 10 : (value === 10 ? 15 : 18);
+        const prize = value * 2 * (1 - feePercent / 100);
+        return `${index + 1} — Entrada ${centsMoney(value * 100)} | Prêmio ${centsMoney(Math.round(prize * 100))} | Taxa ${feePercent}%`;
+      });
+      await this.send(replyTo, ['🎴 *MESAS ONLINE*', ...tables, '', 'A entrada é reservada agora e liberada se a partida não iniciar.', this.financialWalletService.notice()].join('\n'));
+      return { type: 'financial_tables', decision: 'reply_sent', originIp };
+    }
+    if ((state === 'financial_menu' && command === '2') || command === 'saldo financeiro') {
+      const account = await wallet.getOrCreateAccount(incoming.phone, { displayName: incoming.pushName || 'Jogador' });
+      await this.send(replyTo, [
+        '👤 *MEU PERFIL E SALDO*', `ID: ${account.public_id}`,
+        `Disponível: ${centsMoney(account.available_balance_cents)}`,
+        `Reservado em partidas: ${centsMoney(account.reserved_balance_cents)}`,
+        `Reservado para saque: ${centsMoney(account.withdrawal_pending_balance_cents)}`, '', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_profile', decision: 'reply_sent', originIp };
+    }
+    if (state === 'financial_menu' && command === '3') {
+      await this.send(replyTo, ['💠 *ADICIONAR SALDO*', 'Envie: depositar VALOR', 'Exemplo: depositar 20', '', wallet.notice()].join('\n'));
+      return { type: 'financial_deposit_help', decision: 'reply_sent', originIp };
+    }
+    const deposit = command.match(/^depositar\s+(\d+(?:[,.]\d{1,2})?)$/);
+    if (deposit) {
+      const amountCents = Math.round(Number(deposit[1].replace(',', '.')) * 100);
+      const order = await wallet.createDeposit(incoming.phone, amountCents, {
+        displayName: incoming.pushName || 'Jogador',
+        idempotencyKey: `whatsapp:${incoming.messageId || Date.now()}:deposit`,
+      });
+      await this.send(replyTo, [
+        '💠 *COBRANÇA PIX SANDBOX*', `Valor: ${centsMoney(order.amount_cents)}`,
+        `Operação: ${order.public_reference}`, '', 'Pix copia e cola:', order.pix_copy_paste,
+        '', 'A confirmação ocorre somente pelo webhook autenticado.', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_deposit_created', decision: 'reply_sent', publicReference: order.public_reference, originIp };
+    }
+    if (state === 'financial_menu' && command === '4') {
+      await this.send(replyTo, [
+        '💸 *SOLICITAR SAQUE*', `Mínimo: ${centsMoney(wallet.config.minWithdrawalAmountCents)}`,
+        'Envie: sacar VALOR TIPO CHAVE | NOME DO TITULAR',
+        'Exemplo: sacar 20 EMAIL jogador@exemplo.com | Jogador Silva', '', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_withdrawal_help', decision: 'reply_sent', originIp };
+    }
+    const withdrawal = incoming.text.match(/^sacar\s+(\d+(?:[,.]\d{1,2})?)\s+(CPF|CNPJ|EMAIL|PHONE|EVP)\s+([^|]+)\|\s*(.+)$/i);
+    if (withdrawal) {
+      const amountCents = Math.round(Number(withdrawal[1].replace(',', '.')) * 100);
+      const before = await wallet.getOrCreateAccount(incoming.phone, { displayName: incoming.pushName || 'Jogador' });
+      const request = await wallet.requestWithdrawal(incoming.phone, {
+        amountCents, pixKeyType: withdrawal[2], pixKey: withdrawal[3].trim(), holderName: withdrawal[4].trim(),
+        idempotencyKey: `whatsapp:${incoming.messageId || Date.now()}:withdrawal`,
+      });
+      const after = await wallet.getAccount(incoming.phone);
+      const adminMessage = [
+        '💸 *NOVA SOLICITAÇÃO DE SAQUE*', `Solicitação: ${request.public_reference}`,
+        `Jogador: ${before.display_name}`, `ID: ${before.public_id}`, `Telefone: final ${String(before.phone_normalized).slice(-4)}`,
+        `Tipo da chave: ${withdrawal[2].toUpperCase()}`, `Chave Pix: ${withdrawal[3].trim()}`,
+        `Titular informado: ${withdrawal[4].trim()}`, `Saldo total antes: ${centsMoney(before.available_balance_cents)}`,
+        `Valor solicitado: ${centsMoney(request.amount_cents)}`, `Saldo disponível após reserva: ${centsMoney(after.available_balance_cents)}`,
+        '', `Após transferir: admin saque pago ${request.public_reference} ID_DA_TRANSFERENCIA`,
+        `Para rejeitar: admin saque rejeitar ${request.public_reference} MOTIVO`, '', wallet.notice(),
+      ].join('\n');
+      const deliveries = await Promise.allSettled(wallet.config.financialAdminNumbers.map((phone) => this.send(phone, adminMessage, { replyType: 'financial_withdrawal_admin' })));
+      if (deliveries.some((item) => item.status === 'rejected' || item.value?.ok === false)) {
+        this.logWarn('WITHDRAWAL_ADMIN_NOTIFICATION_FAILED', { publicReference: request.public_reference });
+      } else {
+        this.logInfo('WITHDRAWAL_ADMIN_NOTIFIED', { publicReference: request.public_reference, recipients: deliveries.length });
+      }
+      await this.send(replyTo, [
+        '✅ Solicitação de saque registrada.', `Operação: ${request.public_reference}`,
+        `Valor reservado: ${centsMoney(request.amount_cents)}`, 'Status: aguardando pagamento manual do administrador.', '', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_withdrawal_requested', decision: 'reply_sent', publicReference: request.public_reference, originIp };
+    }
+    if ((state === 'financial_menu' && command === '5') || command === 'extrato financeiro') {
+      const history = await wallet.listHistory(incoming.phone);
+      await this.send(replyTo, [
+        '📜 *EXTRATO FINANCEIRO*',
+        ...(history.length ? history.map((item) => `${item.public_reference} | ${item.transaction_type} | ${centsMoney(item.amount_cents)}`) : ['Nenhuma movimentação.']),
+        '', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_history', decision: 'reply_sent', originIp };
+    }
+    return null;
   }
 
   async handleCancelCommand(incoming, { replyTo, originIp }) {
@@ -1388,7 +1792,7 @@ export class WhatsAppPaymentBot {
     await this.sendPermanent(replyTo, incoming.phone, cancellationProtocol({
       publicReference: before.publicReference,
     }), { replyType: 'cancellation_protocol' });
-    await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', mainMenu({ paymentsEnabled: this.paymentsEnabled }));
+    await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
     return {
       type: 'whatsapp_queue_cancelled',
       decision: 'reply_sent',
@@ -1498,6 +1902,8 @@ export class WhatsAppPaymentBot {
         || LINK_COMMANDS.has(command)
         || IDENTIFY_COMMANDS.has(command)
         || UPDATES_COMMANDS.has(command)
+        || DEMO_CREDITS_COMMANDS.has(command)
+        || (currentState.state === 'demo_credits_menu' && ['1', '2'].includes(command))
         || (currentState.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command))
         || SAFE_TABLES.has(command)
         || isAdminCommandText(command)
@@ -1559,6 +1965,11 @@ export class WhatsAppPaymentBot {
       };
     }
     if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
+    const financialResult = await this.handleFinancialCommand(incoming, { replyTo, command, originIp });
+    if (financialResult) return financialResult;
+    if (currentState.state === 'demo_credits_menu' && ['1', '2'].includes(command)) {
+      return this.handleDemoCreditsSection(incoming, { replyTo, command, originIp });
+    }
     if (currentState.state === 'cancel_confirmation' && ['1', '2'].includes(command)) {
       return this.handleCancelConfirmation(incoming, { replyTo, command, originIp });
     }
@@ -1573,6 +1984,9 @@ export class WhatsAppPaymentBot {
     }
     if (UPDATES_COMMANDS.has(command) || (currentState.state === 'updates_menu' && command === 'voltar')) {
       return this.handleUpdatesRequest(incoming, { replyTo, originIp });
+    }
+    if (DEMO_CREDITS_COMMANDS.has(command)) {
+      return this.handleDemoCreditsRequest(incoming, { replyTo, originIp });
     }
     if (STATUS_COMMANDS.has(command)) return this.handleStatusCommand(incoming, { replyTo, originIp });
     if (LINK_COMMANDS.has(command)) return this.handleLinkCommand(incoming, { replyTo, originIp });
@@ -1704,11 +2118,25 @@ export class WhatsAppPaymentBot {
     if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
       const selectedTable = SAFE_TABLES.get(command);
       if (this.safeEntryEnabled && this.matchQueue?.isConfigured?.()) {
-        const queueResult = this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
+        const queueResult = this.financialWalletService?.isEnabled?.()
+          ? await this.matchQueue.joinFinancialQueue(incoming.phone, selectedTable, { replyTo })
+          : this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
         if (queueResult.blocked) {
+          if (queueResult.reason === 'DEMO_INSUFFICIENT_CREDITS') {
+            await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_INSUFFICIENT', demoCreditsInsufficient({
+              availableBalance: queueResult.availableBalance,
+              requiredAmount: queueResult.requiredAmount ?? selectedTable,
+            }));
+            return { type: 'demo_credits_insufficient', decision: 'reply_sent', reason: queueResult.reason, state: 'choosing_table', selectedTable, originIp };
+          }
+          if (queueResult.reason === 'DEMO_ACTIVE_RESERVATION_EXISTS') {
+            await this.renderCurrentContext(replyTo, incoming.phone);
+            return { type: 'demo_credits_active_reservation', decision: 'reply_sent', reason: queueResult.reason, state: currentState.state, selectedTable, originIp };
+          }
           if (queueResult.reason === 'already_in_queue') {
             await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', queueDuplicateMessage({
               table: queueResult.queue?.tableValue ?? selectedTable,
+              demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
             }));
             return { type: 'whatsapp_queue_duplicate', decision: 'reply_sent', reason: 'already_in_queue', state: 'choosing_table', selectedTable, originIp };
           }
@@ -1720,6 +2148,7 @@ export class WhatsAppPaymentBot {
           if (queueResult.reason === 'already_in_other_queue') {
             await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', otherQueueMessage({
               table: queueResult.queue?.tableValue ?? queueResult.queue?.entry?.tableValue,
+              demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
             }));
             return { type: 'whatsapp_queue_other_table_blocked', decision: 'reply_sent', reason: 'already_in_other_queue', state: 'choosing_table', selectedTable, originIp };
           }
@@ -1848,7 +2277,12 @@ export class WhatsAppPaymentBot {
           };
         }
 
-        await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', waitingForOpponent({ table: selectedTable }));
+        await this.sendPanel(replyTo, incoming.phone, 'WAITING_FOR_OPPONENT', waitingForOpponent({
+          table: selectedTable,
+          demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
+          availableBalance: queueResult.demoReservation?.account?.availableBalance ?? null,
+          reservedAmount: queueResult.demoReservation?.reservation?.amount ?? null,
+        }));
         return {
           type: 'whatsapp_queue_joined',
           decision: 'reply_sent',
@@ -1902,7 +2336,8 @@ export class WhatsAppPaymentBot {
         };
       }
       this.setConversationState(incoming.phone, 'choosing_table');
-      await this.sendPanel(replyTo, incoming.phone, 'TABLE_SELECTION', this.safeTablesText());
+      await this.prepareDemoCreditsAccount(replyTo, incoming.phone);
+      await this.sendPanel(replyTo, incoming.phone, 'TABLE_SELECTION', this.safeTablesText(incoming.phone));
       return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
     }
 

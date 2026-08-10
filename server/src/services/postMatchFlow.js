@@ -153,6 +153,8 @@ export function createPostMatchFlow({
   entryService = null,
   whatsappBot = null,
   whatsappMatchQueue = null,
+  demoCreditsService = null,
+  financialWalletService = null,
   whatsappEnabled = true,
   adminSummaryEnabled = false,
   logInfo = () => {},
@@ -282,6 +284,59 @@ export function createPostMatchFlow({
     report.participantLabels = releasedEntries.map((entry) => entry.phoneMasked).filter(Boolean);
     report.winnerLabel = entryForPlayer(releasedEntries, report.winnerId)?.phoneMasked ?? null;
     report.loserLabel = entryForPlayer(releasedEntries, report.loserId)?.phoneMasked ?? null;
+    if (financialWalletService?.isEnabled?.()) {
+      try {
+        const winnerEntry = entryForPlayer(releasedEntries, report.winnerId);
+        if (winnerEntry?.notifyTo) {
+          const economy = calculatePrize(report.table);
+          report.financialSettlement = await financialWalletService.settleMatch({
+            matchId,
+            winnerPhone: winnerEntry.notifyTo,
+            platformFeeCents: Math.round(Number(economy?.platformFeeAmount || 0) * 100),
+            gameCode: 'PIFE_DUELO',
+          });
+        } else {
+          report.financialSettlement = await financialWalletService.compensateMatch(matchId, reason || 'match_without_authoritative_winner');
+        }
+      } catch (error) {
+        logError('POST_MATCH_FINANCIAL_SETTLEMENT_FAILED', { matchId, reason: error.message });
+      }
+    }
+    if (demoCreditsService?.isEnabled?.()) {
+      report.demoCreditsEnabled = true;
+      report.tableLabel = `${Number(report.table || 0)} Créditos de Teste`;
+      try {
+        const participants = releasedEntries
+          .filter((entry) => entry.notifyTo && entry.entryId)
+          .map((entry) => ({
+            playerId: entry.notifyTo,
+            entryId: entry.entryId,
+            matchPlayerId: entry.playerId,
+          }));
+        const settlement = demoCreditsService.settleMatchResult({
+          matchId,
+          tableId: report.table,
+          winnerMatchPlayerId: report.winnerId,
+          reason,
+          participants,
+        });
+        report.demoCredits = {
+          rewardAmount: settlement.rewardAmount ?? 0,
+          winnerPlayerId: settlement.winnerPlayerId ?? null,
+          compensatedPlayers: settlement.compensated?.length ?? 0,
+          balances: participants.map((participant) => ({
+            matchPlayerId: participant.matchPlayerId,
+            balance: demoCreditsService.getBalance(participant.playerId).availableBalance,
+          })),
+        };
+      } catch (error) {
+        logError('POST_MATCH_CLEANUP_ERROR', {
+          matchId,
+          reason: 'demo_credits_settlement_failed',
+          message: error?.message ?? String(error),
+        });
+      }
+    }
     if (typeof emitResult === 'function') emitResult(gameState, 'matchFinished');
 
     if (!whatsappEnabled) {

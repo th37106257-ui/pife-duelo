@@ -5,10 +5,13 @@ try {
   // Permite validar os modulos base antes do npm install em ambientes sem rede.
 }
 
+import { resolveFinancialConfig } from './financial/financialConfig.js';
+
 const productionFrontendUrl = 'https://pife-duelo-production-4f73.up.railway.app';
 const defaultClientUrl = process.env.NODE_ENV === 'production' ? productionFrontendUrl : 'http://localhost:5173';
 const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || defaultClientUrl;
 const defaultWhatsappEntryStorePath = process.env.NODE_ENV === 'production' ? '/data/whatsapp-entries.json' : '';
+const defaultDemoCreditsStorePath = process.env.NODE_ENV === 'production' ? '/data/demo-credits/state.json' : '';
 const allowedClientUrls = [
   frontendUrl,
   process.env.CLIENT_URL,
@@ -72,6 +75,10 @@ export const config = {
   WHATSAPP_ENTRY_ACCESS_SECRET: process.env.WHATSAPP_ENTRY_ACCESS_SECRET || '',
   WHATSAPP_ENTRY_EXPIRY_MINUTES: Number(process.env.WHATSAPP_ENTRY_EXPIRY_MINUTES || 60),
   WHATSAPP_ENTRY_ACCESS_TTL_MINUTES: Number(process.env.WHATSAPP_ENTRY_ACCESS_TTL_MINUTES || 180),
+  DEMO_CREDITS_ENABLED: parseBooleanDefault(process.env.DEMO_CREDITS_ENABLED, false),
+  DEMO_CREDITS_STARTING_BALANCE: parsePositiveInteger(process.env.DEMO_CREDITS_STARTING_BALANCE, 100),
+  DEMO_CREDITS_HISTORY_LIMIT: parsePositiveInteger(process.env.DEMO_CREDITS_HISTORY_LIMIT, 50),
+  DEMO_CREDITS_STORE_PATH: process.env.DEMO_CREDITS_STORE_PATH || defaultDemoCreditsStorePath,
   PAYMENT_STORE_PATH: process.env.PAYMENT_STORE_PATH || '',
   PAYMENT_ACCESS_SECRET: process.env.PAYMENT_ACCESS_SECRET || '',
   PAYMENT_EXPIRY_MINUTES: Number(process.env.PAYMENT_EXPIRY_MINUTES || 60),
@@ -90,6 +97,7 @@ export const config = {
   PIX_KEY: process.env.PIX_KEY || '',
   PIX_RECEIVER: process.env.PIX_RECEIVER || '',
   ROOM_MODE: 'duel_1v1',
+  FINANCIAL: resolveFinancialConfig(process.env),
 };
 
 export default config;

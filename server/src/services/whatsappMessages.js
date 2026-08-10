@@ -2,6 +2,18 @@ function money(value) {
   return `R$${Number(value || 0).toFixed(2).replace('.', ',')}`;
 }
 
+function tableLabel(value, demoCreditsEnabled = false) {
+  return demoCreditsEnabled
+    ? `${Number(value || 0)} Créditos de Teste`
+    : money(value);
+}
+
+function tableInSentence(value, demoCreditsEnabled = false) {
+  return demoCreditsEnabled
+    ? `Mesa de ${tableLabel(value, true)}`
+    : `Mesa ${tableLabel(value, false)}`;
+}
+
 function optionalReference(publicReference) {
   return publicReference ? `\nReferência: *${publicReference}*` : '';
 }
@@ -17,7 +29,7 @@ export const WHATSAPP_PLAYER_STATES = Object.freeze({
   REFUND_PENDING: 'REFUND_PENDING',
 });
 
-export function mainMenu({ paymentsEnabled = false } = {}) {
+export function mainMenu({ paymentsEnabled = false, demoCreditsEnabled = false } = {}) {
   return [
     '*🎴 PIFE DUELO*',
     '_Seu lobby pelo WhatsApp_',
@@ -32,9 +44,12 @@ export function mainMenu({ paymentsEnabled = false } = {}) {
     '',
     '📢 *5 — Atualizações*',
     '',
+    ...(demoCreditsEnabled ? ['🧪 *6 — Meus Créditos de Teste*', ''] : []),
     paymentsEnabled
       ? '👇 _Digite o número da opção._'
-      : '🆓 _Fase de testes gratuitos: sem cobrança e sem prêmio real._',
+      : demoCreditsEnabled
+        ? '🧪 _Simulação com Créditos de Teste, sem valor em dinheiro._'
+        : '🆓 _Fase de testes gratuitos: sem cobrança e sem prêmio real._',
   ].join('\n');
 }
 
@@ -58,7 +73,30 @@ export function howItWorksMenu({ paymentsEnabled = false } = {}) {
   ].join('\n');
 }
 
-export function tablesMenu({ paymentsEnabled = false } = {}) {
+export function tablesMenu({ paymentsEnabled = false, demoCreditsEnabled = false, demoBalance = null } = {}) {
+  if (demoCreditsEnabled) {
+    return [
+      '*🃏 ESCOLHA UMA MESA*',
+      '',
+      `🧪 Seu saldo: *${Number(demoBalance ?? 0)} Créditos de Teste*`,
+      '',
+      '1️⃣ *Mesa 1*',
+      'Entrada: 2 Créditos de Teste',
+      '',
+      '2️⃣ *Mesa 2*',
+      'Entrada: 5 Créditos de Teste',
+      '',
+      '3️⃣ *Mesa 3*',
+      'Entrada: 10 Créditos de Teste',
+      '',
+      '4️⃣ *Mesa 4*',
+      'Entrada: 20 Créditos de Teste',
+      '',
+      '⚠️ Os Créditos de Teste não possuem valor em dinheiro e servem apenas para testar o funcionamento do Pife Duelo.',
+      '',
+      '↩️ Digite *menu* para voltar.',
+    ].join('\n');
+  }
   return [
     '*🃏 ESCOLHA UMA MESA*',
     '_Digite o número da categoria:_',
@@ -76,6 +114,94 @@ export function tablesMenu({ paymentsEnabled = false } = {}) {
       : '🆓 _Nenhum valor será cobrado e não há prêmio real nesta fase._',
     '',
     '↩️ Digite *menu* para voltar.',
+  ].join('\n');
+}
+
+export function demoCreditsBalanceMenu({ availableBalance, reservedBalance }) {
+  return [
+    '*🧪 MEUS CRÉDITOS DE TESTE*',
+    '',
+    `✅ Disponível: *${Number(availableBalance ?? 0)}*`,
+    '',
+    `🔒 Reservado em partidas: *${Number(reservedBalance ?? 0)}*`,
+    '',
+    'Os Créditos de Teste não possuem valor em dinheiro, não podem ser comprados, transferidos ou sacados.',
+    '',
+    '📋 *1 — Ver histórico recente*',
+    '',
+    'ℹ️ *2 — Como funcionam os créditos*',
+    '',
+    '↩️ Digite *menu* para voltar.',
+  ].join('\n');
+}
+
+export function demoCreditsInitialGrant(amount) {
+  return [
+    `🧪 Você recebeu *${Number(amount)} Créditos de Teste*.` ,
+    '',
+    'Eles não possuem valor em dinheiro e servem apenas para testar o Pife Duelo.',
+  ].join('\n');
+}
+
+export function demoCreditsExplanation() {
+  return [
+    '*ℹ️ COMO FUNCIONAM OS CRÉDITOS DE TESTE*',
+    '',
+    '• São concedidos gratuitamente para validar o sistema.',
+    '',
+    '• Ao entrar em uma fila, o custo da Mesa fica reservado.',
+    '',
+    '• A reserva só é consumida quando os dois jogadores iniciam a Partida.',
+    '',
+    '• Se a espera for cancelada antes do início, a reserva volta ao saldo disponível.',
+    '',
+    '• O vencedor recebe apenas uma recompensa fictícia de teste.',
+    '',
+    '⚠️ Não possuem valor em dinheiro e não podem ser comprados, vendidos, transferidos ou sacados.',
+    '',
+    '↩️ Digite *menu* para voltar.',
+  ].join('\n');
+}
+
+export function demoCreditsHistory(events = []) {
+  const labels = {
+    DEMO_INITIAL_GRANT: 'Saldo inicial de teste',
+    DEMO_ADMIN_GRANT: 'Concessão administrativa',
+    DEMO_ENTRY_RESERVED: 'Entrada reservada',
+    DEMO_ENTRY_RELEASED: 'Reserva devolvida',
+    DEMO_ENTRY_CONSUMED: 'Entrada iniciada',
+    DEMO_MATCH_REWARD: 'Vitória na partida',
+    DEMO_SYSTEM_COMPENSATION: 'Compensação por falha do sistema',
+    DEMO_ACCOUNT_RESET: 'Conta de teste reiniciada',
+  };
+  const lines = events.length
+    ? events.map((event) => {
+      const positive = ['DEMO_INITIAL_GRANT', 'DEMO_ADMIN_GRANT', 'DEMO_ENTRY_RELEASED', 'DEMO_MATCH_REWARD', 'DEMO_SYSTEM_COMPENSATION'].includes(event.type);
+      const prefix = positive ? '+' : event.type === 'DEMO_ENTRY_CONSUMED' ? '•' : '-';
+      return `${prefix}${Number(event.amount)} — ${labels[event.type] || 'Operação de teste'}${event.publicReference ? ` (${event.publicReference})` : ''}`;
+    })
+    : ['Nenhuma movimentação registrada.'];
+  return [
+    '*📋 HISTÓRICO RECENTE*',
+    '',
+    ...lines,
+    '',
+    '⚠️ Créditos fictícios, gratuitos e sem valor em dinheiro.',
+    '',
+    '↩️ Digite *menu* para voltar.',
+  ].join('\n');
+}
+
+export function demoCreditsInsufficient({ availableBalance, requiredAmount }) {
+  return [
+    '*⚠️ CRÉDITOS INSUFICIENTES*',
+    '',
+    'Você não possui Créditos de Teste suficientes para esta Mesa.',
+    '',
+    `Saldo atual: *${Number(availableBalance ?? 0)}*`,
+    `Custo da Mesa: *${Number(requiredAmount ?? 0)}*`,
+    '',
+    'Digite *jogar* para escolher outra Mesa ou *suporte* se precisar de ajuda.',
   ].join('\n');
 }
 
@@ -239,11 +365,19 @@ export function supportContact({ supportLink = '', publicReference = null, hasAc
   ].filter(Boolean).join('\n');
 }
 
-export function waitingForOpponent({ table }) {
+export function waitingForOpponent({ table, demoCreditsEnabled = false, availableBalance = null, reservedAmount = null }) {
+  const hasAvailableBalance = availableBalance !== null
+    && availableBalance !== undefined
+    && Number.isFinite(Number(availableBalance));
   return [
     '*⏳ AGUARDANDO ADVERSÁRIO*',
     '',
-    `Você está aguardando na Mesa ${money(table)}.`,
+    `Você está aguardando na ${tableInSentence(table, demoCreditsEnabled)}.`,
+    ...(demoCreditsEnabled ? [
+      `Créditos reservados: ${Number(reservedAmount ?? table ?? 0)}`,
+      ...(hasAvailableBalance ? [`Saldo disponível: ${Number(availableBalance)}`] : []),
+      '',
+    ] : []),
     'Assim que outro jogador escolher a mesma Mesa, a Sala de espera será preparada.',
     '',
     '🔎 *status* — consultar a espera',
@@ -256,31 +390,31 @@ export function waitingForOpponent({ table }) {
   ].join('\n');
 }
 
-export function queueDuplicate({ table }) {
+export function queueDuplicate({ table, demoCreditsEnabled = false }) {
   return [
     '*AGUARDANDO ADVERSÁRIO*',
     '',
-    `Você já está na Mesa ${money(table)}.`,
+    `Você já está na ${tableInSentence(table, demoCreditsEnabled)}.`,
     'Não criamos uma segunda Entrada.',
     '',
     'Digite *status*, *cancelar* ou *suporte*.',
   ].join('\n');
 }
 
-export function otherQueue({ table }) {
+export function otherQueue({ table, demoCreditsEnabled = false }) {
   return [
     '*ENTRADA JÁ ATIVA*',
     '',
-    `Você já está aguardando na Mesa ${money(table)}.`,
+    `Você já está aguardando na ${tableInSentence(table, demoCreditsEnabled)}.`,
     'Para trocar de Mesa, digite *cancelar* e confirme antes do início.',
   ].join('\n');
 }
 
-export function matchLinkReady({ table, publicReference = null }) {
+export function matchLinkReady({ table, publicReference = null, demoCreditsEnabled = false }) {
   return [
     '*🔗 SALA DE ESPERA PRONTA*',
     '',
-    `Mesa: ${money(table)}`,
+    `Mesa: ${tableLabel(table, demoCreditsEnabled)}`,
     publicReference ? `Referência: *${publicReference}*` : '',
     'Seu acesso já foi preparado. Não entre novamente na fila.',
     '',
@@ -290,11 +424,11 @@ export function matchLinkReady({ table, publicReference = null }) {
   ].filter(Boolean).join('\n');
 }
 
-export function preMatchWaiting({ table, publicReference = null }) {
+export function preMatchWaiting({ table, publicReference = null, demoCreditsEnabled = false }) {
   return [
     '*SALA DE ESPERA*',
     '',
-    `Mesa: ${money(table)}`,
+    `Mesa: ${tableLabel(table, demoCreditsEnabled)}`,
     publicReference ? `Referência: *${publicReference}*` : '',
     'Aguarde os dois jogadores entrarem. A Partida ainda não começou.',
     '',
@@ -304,11 +438,11 @@ export function preMatchWaiting({ table, publicReference = null }) {
   ].filter(Boolean).join('\n');
 }
 
-export function activeMatch({ table, publicReference = null }) {
+export function activeMatch({ table, publicReference = null, demoCreditsEnabled = false }) {
   return [
     '*🎮 PARTIDA ATIVA*',
     '',
-    table ? `Mesa: ${money(table)}` : '',
+    table ? `Mesa: ${tableLabel(table, demoCreditsEnabled)}` : '',
     publicReference ? `Referência: *${publicReference}*` : '',
     'Finalize a Partida antes de escolher outra Mesa.',
     'Sair agora pode ser tratado como Desistência.',
@@ -353,11 +487,11 @@ export function refundPending({ table, publicReference = null }) {
   ].filter(Boolean).join('\n');
 }
 
-export function cancelConfirmation({ table }) {
+export function cancelConfirmation({ table, demoCreditsEnabled = false }) {
   return [
     '*⚠️ CONFIRMAR CANCELAMENTO*',
     '',
-    `Você está aguardando na Mesa ${money(table)}.`,
+    `Você está aguardando na ${tableInSentence(table, demoCreditsEnabled)}.`,
     'Deseja realmente cancelar a espera?',
     '',
     '⏳ *1 — Continuar aguardando*',
@@ -378,21 +512,21 @@ export function cancellationProtocol({ publicReference = null } = {}) {
   ].filter(Boolean).join('\n');
 }
 
-export function paidEntryActive({ table }) {
+export function paidEntryActive({ table, demoCreditsEnabled = false }) {
   return [
     '*ENTRADA PRESERVADA*',
     '',
-    table ? `Mesa: ${money(table)}` : '',
+    table ? `Mesa: ${tableLabel(table, demoCreditsEnabled)}` : '',
     'Esta Entrada não pode ser cancelada automaticamente.',
     'Aguarde o início ou fale com o suporte/admin.',
   ].filter(Boolean).join('\n');
 }
 
-export function matchFound({ table, accessLink, publicReference = null }) {
+export function matchFound({ table, accessLink, publicReference = null, demoCreditsEnabled = false }) {
   return [
     '*🎮 Partida encontrada!*',
     '',
-    `Mesa: ${money(table)}`,
+    `Mesa: ${tableLabel(table, demoCreditsEnabled)}`,
     publicReference ? `Referência: *${publicReference}*` : '',
     'Sua Sala de espera está pronta.',
     'Entre na sala pelo link abaixo:',
@@ -429,6 +563,26 @@ export function unavailableLink() {
 }
 
 export function postMatchPlayerResult(report, won) {
+  if (report.demoCreditsEnabled) {
+    const currentPlayerId = won ? report.winnerId : report.loserId;
+    const balance = report.demoCredits?.balances?.find((item) => item.matchPlayerId === currentPlayerId)?.balance;
+    return [
+      won ? '*🏆 VITÓRIA CONFIRMADA*' : '*🎴 PARTIDA ENCERRADA*',
+      '',
+      `Mesa: ${Number(report.table || 0)} Créditos de Teste`,
+      `Resultado: ${won ? 'Vitória' : 'Derrota'}`,
+      `Duração: ${report.durationLabel}`,
+      report.publicReference ? `Referência: *${report.publicReference}*` : '',
+      '',
+      won
+        ? `Você recebeu ${Number(report.demoCredits?.rewardAmount || 0)} Créditos de Teste.`
+        : `${Number(report.table || 0)} Créditos de Teste foram utilizados nesta entrada.`,
+      Number.isFinite(balance) ? `Novo saldo: ${balance}` : '',
+      '',
+      'Esses créditos não possuem valor em dinheiro.',
+      'Digite *jogar* para escolher uma Mesa ou *menu* para ver as opções.',
+    ].filter(Boolean).join('\n');
+  }
   return [
     won ? '*🏆 VOCÊ VENCEU NO PIFE DUELO*' : '*🎴 PARTIDA ENCERRADA*',
     '',
@@ -467,5 +621,12 @@ export function postMatchAdminReport(report, { queueCleaned, entriesReleased, en
     `Entradas liberadas: ${entriesReleased ? 'SIM' : 'NÃO/APENAS WEB'}`,
     `Status das entradas: ${entryStatuses.length ? entryStatuses.join(' / ') : 'não vinculado'}`,
     `Estado da Partida: ${report.terminalStatus || 'finished'}`,
+    ...(report.demoCreditsEnabled ? [
+      '',
+      '*AMBIENTE DEMONSTRATIVO — SEM VALOR FINANCEIRO*',
+      `Custo em créditos: ${Number(report.table || 0)}`,
+      `Recompensa fictícia: ${Number(report.demoCredits?.rewardAmount || 0)}`,
+      `Compensações: ${Number(report.demoCredits?.compensatedPlayers || 0)}`,
+    ] : []),
   ].join('\n');
 }

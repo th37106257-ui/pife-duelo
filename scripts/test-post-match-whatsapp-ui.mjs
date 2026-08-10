@@ -5,7 +5,24 @@ import { createServer } from 'vite';
 
 const vite = await createServer({
   appType: 'custom',
+  configLoader: 'runner',
   logLevel: 'silent',
+  optimizeDeps: {
+    include: [],
+    noDiscovery: true,
+  },
+  plugins: [{
+    name: 'test-disable-client-dependency-optimizer',
+    enforce: 'post',
+    configResolved(config) {
+      config.optimizeDeps.include = [];
+      config.optimizeDeps.noDiscovery = true;
+      for (const environment of Object.values(config.environments ?? {})) {
+        environment.optimizeDeps.include = [];
+        environment.optimizeDeps.noDiscovery = true;
+      }
+    },
+  }],
   server: { middlewareMode: true },
 });
 

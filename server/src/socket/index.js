@@ -18,6 +18,8 @@ export function setupSocketServer(httpServer, {
   safeEntryEnabled = false,
   whatsappBot = null,
   whatsappMatchQueue = null,
+  demoCreditsService = null,
+  financialWalletService = null,
   postMatchFlow: sharedPostMatchFlow = null,
   corsOptions,
 } = {}) {
@@ -291,7 +293,7 @@ export function setupSocketServer(httpServer, {
     });
   });
 
-  const emitMatchFound = (entries) => {
+  const emitMatchFound = async (entries) => {
     const [first, second] = entries;
     const whatsappPreMatchIds = new Set(entries
       .map((entry) => entry.entryId
@@ -323,6 +325,19 @@ export function setupSocketServer(httpServer, {
         throw new Error('ENTRY_ACCESS_INVALID_FOR_MATCH');
       }
     });
+    const demoParticipants = entries
+      .filter((entry) => entry.entryId)
+      .map((entry) => {
+        const storedEntry = entryService?.getEntry?.(entry.entryId, { includeSecrets: true });
+        return {
+          playerId: storedEntry?.phone || null,
+          entryId: entry.entryId,
+          matchPlayerId: entry.playerId,
+        };
+      });
+    if (demoCreditsService?.isEnabled?.()) {
+      demoCreditsService.validateMatchReservations(demoParticipants, first.tableValue);
+    }
     const roomPlayers = [
       {
         id: first.playerId,
@@ -363,6 +378,49 @@ export function setupSocketServer(httpServer, {
     });
 
     const onlineMatch = matchManager.createOnlineMatch(room.roomId, room.players, room.tableValue);
+
+    if (financialWalletService?.isEnabled?.()) {
+      try {
+        await financialWalletService.commitMatchReservations(
+          entries.map((entry) => entry.entryId).filter(Boolean),
+          onlineMatch.matchId,
+        );
+      } catch (error) {
+        matchManager.adminEndMatch?.(onlineMatch.matchId, 'financial_reservation_commit_failed');
+        roomManager.updateRoom(room.roomId, { status: 'cancelled', matchId: onlineMatch.matchId });
+        logError('MATCH_FINANCIAL_START_FAILED', { matchId: onlineMatch.matchId, roomId: room.roomId, reason: error.message });
+        entries.forEach((entry) => socketManager.getSocket(entry.socketId)?.emit('matchmakingError', {
+          reason: 'FINANCIAL_RESERVATION_COMMIT_FAILED',
+          message: 'A partida não pôde iniciar. A reserva financeira permanece protegida para revisão.',
+        }));
+        return null;
+      }
+    }
+
+    if (demoCreditsService?.isEnabled?.()) {
+      try {
+        demoCreditsService.consumeMatchReservations(demoParticipants, {
+          matchId: onlineMatch.matchId,
+          tableId: room.tableValue,
+        });
+      } catch (error) {
+        matchManager.adminEndMatch?.(onlineMatch.matchId, 'demo_credit_consume_failed');
+        roomManager.updateRoom(room.roomId, { status: 'cancelled', matchId: onlineMatch.matchId });
+        logError('DEMO_BALANCE_INCONSISTENCY', {
+          matchId: onlineMatch.matchId,
+          roomId: room.roomId,
+          tableId: room.tableValue,
+          reason: error.message,
+        });
+        entries.forEach((entry) => {
+          socketManager.getSocket(entry.socketId)?.emit('matchmakingError', {
+            reason: 'DEMO_CREDITS_CONSUME_FAILED',
+            message: 'A Partida não pôde iniciar. Sua reserva continua protegida para revisão.',
+          });
+        });
+        return null;
+      }
+    }
 
     if (paymentGateEnabled) {
       entries.forEach((entry) => {
@@ -600,7 +658,7 @@ export function setupSocketServer(httpServer, {
       });
     });
 
-    onSafe('joinQueue', (payload = {}, ack) => {
+    onSafe('joinQueue', async (payload = {}, ack) => {
       const playerName = String(payload.playerName || '').trim().slice(0, 32) || 'Jogador';
       const tableValue = Number(payload.tableValue);
       logInfo('JOIN_QUEUE_RECEIVED', {
@@ -801,7 +859,7 @@ export function setupSocketServer(httpServer, {
 
       const matchEntries = queueManager.findMatch(tableValue);
       if (matchEntries) {
-        emitMatchFound(matchEntries);
+        await emitMatchFound(matchEntries);
       }
     });
 

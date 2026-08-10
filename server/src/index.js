@@ -22,6 +22,13 @@ import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/
 import { createWhatsAppProvider } from './payments/WhatsAppProvider.js';
 import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
+import { DemoCreditsRepository } from './demoCredits/DemoCreditsRepository.js';
+import { DemoCreditsService } from './demoCredits/DemoCreditsService.js';
+import { assertFinancialConfig } from './financial/financialConfig.js';
+import { PostgresFinancialRepository } from './financial/PostgresFinancialRepository.js';
+import { FinancialWalletService } from './financial/FinancialWalletService.js';
+import { AsaasSandboxProvider } from './financial/paymentProviders/AsaasSandboxProvider.js';
+import { MockPaymentProvider } from './financial/paymentProviders/MockPaymentProvider.js';
 import { MatchQueue } from './services/matchQueue.js';
 import { createPostMatchFlow } from './services/postMatchFlow.js';
 import { buildPublicMatchReference } from './services/publicMatchReference.js';
@@ -43,6 +50,7 @@ const playerManager = new PlayerManager();
 const socketManager = new SocketManager({ playerManager });
 const queueManager = new QueueManager();
 const reportedStuckMatches = new Set();
+const financialWebhookRate = new Map();
 const paymentStore = new PaymentStore({ filePath: config.PAYMENT_STORE_PATH || null });
 const paymentService = new PaymentService({
   store: paymentStore,
@@ -67,11 +75,55 @@ const whatsappProviderContext = createWhatsAppProvider({
   logWarn,
   logError,
 });
+const demoCreditsRepository = new DemoCreditsRepository({
+  filePath: config.DEMO_CREDITS_ENABLED ? (config.DEMO_CREDITS_STORE_PATH || null) : null,
+});
+const demoCreditsService = new DemoCreditsService({
+  repository: demoCreditsRepository,
+  enabled: config.DEMO_CREDITS_ENABLED,
+  startingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
+  historyLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
+  logInfo,
+  logWarn,
+  logError,
+});
+const financialConfig = assertFinancialConfig(config.FINANCIAL);
+if (financialConfig.enabled && config.DEMO_CREDITS_ENABLED) {
+  throw new Error('FINANCIAL_AND_DEMO_CREDITS_CANNOT_RUN_TOGETHER');
+}
+let financialRepository = null;
+let financialWalletService = null;
+if (financialConfig.ready) {
+  financialRepository = new PostgresFinancialRepository({ connectionString: financialConfig.databaseUrl });
+  const financialProvider = financialConfig.provider === 'mock'
+    ? new MockPaymentProvider({ webhookToken: financialConfig.asaasWebhookToken })
+    : new AsaasSandboxProvider({
+        apiKey: financialConfig.asaasApiKey,
+        webhookToken: financialConfig.asaasWebhookToken,
+        baseUrl: financialConfig.asaasBaseUrl,
+      });
+  financialWalletService = new FinancialWalletService({
+    repository: financialRepository,
+    provider: financialProvider,
+    config: financialConfig,
+    logInfo,
+    logWarn,
+    logError,
+  });
+  await financialWalletService.initialize();
+}
 const evolutionClient = whatsappProviderContext.client;
 const metaCloudClient = whatsappProviderContext.metaCloudClient;
+const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
+  && config.PAYMENT_GATE_ENABLED
+  && !config.DEMO_CREDITS_ENABLED
+  && !financialConfig.enabled
+  && getPaymentConfigurationErrors().length === 0;
 const whatsappMatchQueue = new MatchQueue({
   entryService: whatsappEntryService,
-  paymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED && config.PAYMENT_GATE_ENABLED,
+  demoCreditsService,
+  financialWalletService,
+  paymentsEnabled: paymentSystemEnabled,
   preMatchTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
   releaseOnlineQueueEntry: ({
     entryId,
@@ -108,8 +160,10 @@ const whatsappPaymentBot = new WhatsAppPaymentBot({
   paymentService,
   entryService: whatsappEntryService,
   matchQueue: whatsappMatchQueue,
+  demoCreditsService,
+  financialWalletService,
   safeEntryEnabled: config.WHATSAPP_SAFE_ENTRY_ENABLED,
-  paymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED && config.PAYMENT_GATE_ENABLED,
+  paymentsEnabled: paymentSystemEnabled,
   cleanConversationEnabled: config.WHATSAPP_CLEAN_CONVERSATION_ENABLED,
   evolutionClient,
   pixKey: config.PIX_KEY,
@@ -125,6 +179,8 @@ const postMatchFlow = createPostMatchFlow({
   entryService: whatsappEntryService,
   whatsappBot: whatsappPaymentBot,
   whatsappMatchQueue,
+  demoCreditsService,
+  financialWalletService,
   whatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
   adminSummaryEnabled: config.ADMIN_MATCH_SUMMARY_ENABLED,
   logInfo,
@@ -133,9 +189,6 @@ const postMatchFlow = createPostMatchFlow({
 });
 whatsappMatchQueue.setPendingMatchTerminalHandler((result) => postMatchFlow.notifyPendingMatchTerminal(result));
 whatsappMatchQueue.restorePendingMatchTimeouts();
-const paymentSystemEnabled = config.WHATSAPP_PAYMENTS_ENABLED
-  && config.PAYMENT_GATE_ENABLED
-  && getPaymentConfigurationErrors().length === 0;
 const whatsappConnectivityConfigured = getWhatsAppProviderConfigurationErrors({ includeWebhook: true }).length === 0;
 const whatsappConnectivityTestEnabled = config.WHATSAPP_CONNECTIVITY_TEST_ENABLED
   && whatsappConnectivityConfigured;
@@ -546,6 +599,34 @@ function releaseWhatsAppEntriesAfterMatch(gameState, reason = 'match_finished') 
   return released;
 }
 
+app.post('/api/financial/webhooks/asaas', async (request, response) => {
+  if (!financialWalletService || !financialConfig.pixDepositsEnabled) {
+    response.status(503).json({ error: 'financial-wallet-disabled' });
+    return;
+  }
+  const origin = request.ip || 'unknown';
+  const now = Date.now();
+  const bucket = financialWebhookRate.get(origin);
+  if (!bucket || now - bucket.startedAt >= 60_000) financialWebhookRate.set(origin, { startedAt: now, count: 1 });
+  else if (++bucket.count > 120) {
+    response.status(429).json({ error: 'financial-webhook-rate-limited' });
+    return;
+  }
+  try {
+    logInfo('DEPOSIT_WEBHOOK_RECEIVED', {
+      eventId: String(request.body?.id || '').slice(0, 120),
+      eventType: String(request.body?.event || '').slice(0, 80),
+    });
+    const result = await financialWalletService.processPaymentWebhook({ headers: request.headers, payload: request.body });
+    response.status(200).json({ ok: true, ...result });
+  } catch (error) {
+    const unauthorized = error.message === 'FINANCIAL_WEBHOOK_UNAUTHORIZED';
+    const invalid = ['FINANCIAL_WEBHOOK_INVALID', 'FINANCIAL_DEPOSIT_NOT_FOUND', 'FINANCIAL_DEPOSIT_AMOUNT_MISMATCH'].includes(error.message);
+    logWarn('DEPOSIT_WEBHOOK_REJECTED', { reason: error.message });
+    response.status(unauthorized ? 401 : (invalid ? 422 : 500)).json({ error: error.message });
+  }
+});
+
 app.get('/health', (request, response) => {
   const metrics = getProductionMetrics();
   const memory = process.memoryUsage();
@@ -569,6 +650,27 @@ app.get('/health', (request, response) => {
       gateEnabled: config.PAYMENT_GATE_ENABLED,
       postMatchWhatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
       adminMatchSummaryEnabled: config.ADMIN_MATCH_SUMMARY_ENABLED,
+    },
+    demoCreditsEnabled: config.DEMO_CREDITS_ENABLED,
+    demoCreditsStartingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
+    demoCreditsHistoryLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
+    demoCreditsPersistenceConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
+    demoCredits: {
+      startingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
+      historyLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
+      storeConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
+    },
+    financialWallet: {
+      enabled: financialConfig.enabled,
+      ready: financialConfig.ready,
+      mode: financialConfig.mode,
+      provider: financialConfig.provider,
+      pixDepositsEnabled: financialConfig.pixDepositsEnabled,
+      realMoneyGamesEnabled: financialConfig.realMoneyGamesEnabled,
+      withdrawalsEnabled: financialConfig.withdrawalsEnabled,
+      autoWithdrawalsEnabled: financialConfig.autoWithdrawalsEnabled,
+      storeConfigured: Boolean(financialConfig.databaseUrl),
+      configurationErrors: financialConfig.errors,
     },
     whatsapp: {
       provider: config.WHATSAPP_PROVIDER,
@@ -638,6 +740,15 @@ app.get('/api/status', (request, response) => {
     matchJoinTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
     whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
     whatsappCleanConversationEnabled: config.WHATSAPP_CLEAN_CONVERSATION_ENABLED,
+    demoCreditsEnabled: config.DEMO_CREDITS_ENABLED,
+    demoCreditsStartingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
+    demoCreditsHistoryLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
+    demoCreditsPersistenceConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
+    demoCredits: {
+      startingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
+      historyLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
+      storeConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
+    },
     rooms: roomManager.listRooms().length,
     matches: matchManager.listMatches().length,
     queuedPlayers: queueManager.getQueueSize(),
@@ -1465,6 +1576,8 @@ const io = setupSocketServer(server, {
   safeEntryEnabled: whatsappSafeEntryEnabled,
   whatsappBot: whatsappPaymentBot,
   whatsappMatchQueue,
+  demoCreditsService,
+  financialWalletService,
   postMatchFlow,
 });
 

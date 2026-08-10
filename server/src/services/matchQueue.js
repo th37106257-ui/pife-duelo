@@ -76,6 +76,8 @@ function createQueueEntryFromStoredEntry(entry) {
 export class MatchQueue {
   constructor({
     entryService,
+    demoCreditsService = null,
+    financialWalletService = null,
     paymentsEnabled = false,
     releaseOnlineQueueEntry = () => ({ removed: false }),
     preMatchTimeoutSeconds = config.MATCH_JOIN_TIMEOUT_SECONDS,
@@ -86,6 +88,8 @@ export class MatchQueue {
     logError = () => {},
   } = {}) {
     this.entryService = entryService;
+    this.demoCreditsService = demoCreditsService;
+    this.financialWalletService = financialWalletService;
     this.paymentsEnabled = Boolean(paymentsEnabled);
     this.releaseOnlineQueueEntry = releaseOnlineQueueEntry;
     this.preMatchTimeoutSeconds = Number(preMatchTimeoutSeconds) || 60;
@@ -108,6 +112,36 @@ export class MatchQueue {
   normalizeTable(tableId) {
     const economy = calculatePrize(tableId);
     return economy ? economy.tableValue : null;
+  }
+
+  releaseDemoReservation(entry, reason) {
+    if (!this.demoCreditsService?.isEnabled?.() || !entry?.entryId) return null;
+    const playerId = entry.playerPhone || entry.phone || entry.notifyTo;
+    if (!playerId) return null;
+    try {
+      return this.demoCreditsService.releaseReservation(playerId, {
+        publicReference: `DEMO-ENTRY-${entry.entryId}`,
+        entryId: entry.entryId,
+        matchId: entry.whatsappMatchId || entry.previousMatchId || null,
+        tableId: entry.tableValue ?? entry.selectedTable ?? null,
+      }, reason);
+    } catch (error) {
+      this.logError('DEMO_CREDITS_RESERVE_FAILED', {
+        playerId: entry.phoneMasked ?? maskPhone(playerId),
+        entryId: entry.entryId,
+        reason: error.message,
+        operation: 'release',
+      });
+      return { released: false, reason: error.message };
+    }
+  }
+
+  releaseFinancialReservation(entry, reason) {
+    if (!this.financialWalletService?.isEnabled?.() || !entry?.entryId) return null;
+    return this.financialWalletService.releaseStake(entry.entryId, reason).catch((error) => {
+      this.logError('FINANCIAL_STAKE_RELEASE_FAILED', { entryId: entry.entryId, reason: error.message });
+      return { released: false, reason: error.message };
+    });
   }
 
   syncQueueFromStore(tableId = null) {
@@ -256,6 +290,13 @@ export class MatchQueue {
     }) ?? { aborted: false, reason: 'entry_service_unavailable', participants: [] };
 
     if (!result.aborted) return result;
+
+    if (!result.alreadyProcessed) {
+      (result.participants ?? []).forEach((entry) => {
+        this.releaseDemoReservation(entry, reason);
+        this.releaseFinancialReservation(entry, reason);
+      });
+    }
 
     const pendingTimeout = this.pendingMatchTimeouts.get(safeMatchId);
     if (pendingTimeout) clearTimeout(pendingTimeout);
@@ -543,6 +584,8 @@ export class MatchQueue {
           tableValue: entry.tableValue,
           entryId: entry.entryId,
         });
+        this.releaseDemoReservation(entry, reason);
+        this.releaseFinancialReservation(entry, reason);
       }
     }
 
@@ -683,6 +726,8 @@ export class MatchQueue {
             });
           }
         }
+        this.releaseDemoReservation(entry, reason);
+        this.releaseFinancialReservation(entry, reason);
         this.logInfo('WHATSAPP_QUEUE_LEFT', {
           tableId: queueId,
           tableValue: entry.tableValue,
@@ -999,6 +1044,31 @@ export class MatchQueue {
       return { blocked: true, reason: error.message };
     }
 
+    let demoReservation = null;
+    if (this.demoCreditsService?.isEnabled?.()) {
+      try {
+        demoReservation = this.demoCreditsService.reserveCredits(phone, tableValue, {
+          publicReference: `DEMO-ENTRY-${approval.entry.entryId}`,
+          entryId: approval.entry.entryId,
+          tableId: tableValue,
+        });
+      } catch (error) {
+        try {
+          this.entryService?.cancelQueueEntry?.(approval.entry.entryId, {
+            actor: phone,
+            source: `demo-credits-${error.message}`,
+            force: true,
+          });
+        } catch {}
+        return {
+          blocked: true,
+          reason: error.message,
+          availableBalance: error.availableBalance ?? null,
+          requiredAmount: error.requiredAmount ?? tableValue,
+        };
+      }
+    }
+
     const queueEntry = createQueueEntry({
       phone,
       replyTo,
@@ -1065,7 +1135,38 @@ export class MatchQueue {
       entry: queueEntry,
       queueStatus: this.getQueueStatus(tableValue),
       match,
+      demoReservation,
     };
+  }
+
+  async joinFinancialQueue(playerPhone, tableId, { replyTo = null } = {}) {
+    if (!this.financialWalletService?.isEnabled?.()) return this.joinQueue(playerPhone, tableId, { replyTo });
+    if (!this.financialWalletService.config.realMoneyGamesEnabled) return { blocked: true, reason: 'REAL_MONEY_GAMES_DISABLED' };
+    const phone = normalizePhone(playerPhone);
+    const tableValue = this.normalizeTable(tableId);
+    if (!phone) return { blocked: true, reason: 'invalid_phone' };
+    if (!tableValue) return { blocked: true, reason: 'invalid_table' };
+    let approval;
+    try {
+      approval = this.ensureEntryAccess({ phone, tableValue });
+      await this.financialWalletService.reserveStake(phone, {
+        amountCents: Math.round(Number(tableValue) * 100),
+        entryId: approval.entry.entryId,
+        tableId: tableValue,
+        gameCode: 'PIFE_DUELO',
+      });
+      const result = this.joinQueue(phone, tableValue, { replyTo });
+      if (result.blocked) await this.financialWalletService.releaseStake(approval.entry.entryId, `queue_rejected:${result.reason}`);
+      return result;
+    } catch (error) {
+      if (approval?.entry?.entryId) {
+        try { await this.financialWalletService.releaseStake(approval.entry.entryId, `queue_failed:${error.message}`); } catch {}
+        try {
+          this.entryService?.cancelQueueEntry?.(approval.entry.entryId, { actor: phone, source: 'financial-reservation-failed', force: true });
+        } catch {}
+      }
+      return { blocked: true, reason: error.message };
+    }
   }
 
   tryCreateMatch(tableId) {
