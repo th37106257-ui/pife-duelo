@@ -10,6 +10,19 @@ function cents(value, { allowZero = false } = {}) {
   return parsed;
 }
 
+function databaseInteger(value) {
+  let parsed;
+  try {
+    parsed = typeof value === 'bigint' ? value : BigInt(String(value));
+  } catch {
+    throw new Error('FINANCIAL_DATABASE_AMOUNT_INVALID');
+  }
+  if (parsed > BigInt(Number.MAX_SAFE_INTEGER) || parsed < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new Error('FINANCIAL_DATABASE_AMOUNT_OUT_OF_RANGE');
+  }
+  return Number(parsed);
+}
+
 function safeText(value, max = 120) {
   return String(value || '').trim().slice(0, max);
 }
@@ -189,7 +202,7 @@ export class FinancialWalletService {
     );
     let deposit = existing.rows[0] ?? null;
     const duplicate = Boolean(deposit);
-    if (deposit && Number(deposit.amount_cents) !== amount) throw new Error('FINANCIAL_IDEMPOTENCY_CONFLICT');
+    if (deposit && databaseInteger(deposit.amount_cents) !== amount) throw new Error('FINANCIAL_IDEMPOTENCY_CONFLICT');
     if (!deposit) {
       const depositId = randomUUID();
       const publicRef = publicReference('DEP');
@@ -304,8 +317,8 @@ export class FinancialWalletService {
           });
           return { reviewRequired: true, reason: 'FINANCIAL_ACCOUNT_BLOCKED' };
         }
-        const amount = Number(deposit.credited_amount_cents || deposit.amount_cents);
-        if (Number(account.available_balance_cents) < amount) {
+        const amount = databaseInteger(deposit.credited_amount_cents || deposit.amount_cents);
+        if (databaseInteger(account.available_balance_cents) < amount) {
           await client.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
           await client.query("UPDATE financial_processed_webhooks SET status='REVIEW_REQUIRED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
           this.logWarn('DEPOSIT_REVERSAL_REVIEW_REQUIRED', { publicReference: deposit.public_reference, amountCents: amount });
@@ -342,7 +355,7 @@ export class FinancialWalletService {
         return { duplicate: true, deposit };
       }
       const remoteAmount = cents(remotePayment.amountCents ?? Math.round(Number(remotePayment.value || 0) * 100));
-      if (remoteAmount !== Number(deposit.amount_cents)) throw new Error('FINANCIAL_DEPOSIT_AMOUNT_MISMATCH');
+      if (remoteAmount !== databaseInteger(deposit.amount_cents)) throw new Error('FINANCIAL_DEPOSIT_AMOUNT_MISMATCH');
       const accountResult = await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [deposit.account_id]);
       const account = accountResult.rows[0];
       if (account?.status !== 'ACTIVE') {
@@ -388,7 +401,8 @@ export class FinancialWalletService {
       );
       await client.query("UPDATE financial_processed_webhooks SET status='PROCESSED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
       this.logInfo('DEPOSIT_CREDITED', { publicReference: deposit.public_reference, amountCents: remoteAmount });
-      return { credited: true, accountId: account.account_id, amountCents: remoteAmount, previousBalanceCents: Number(account.available_balance_cents), newBalanceCents: Number(account.available_balance_cents) + remoteAmount };
+      const previousBalanceCents = databaseInteger(account.available_balance_cents);
+      return { credited: true, accountId: account.account_id, amountCents: remoteAmount, previousBalanceCents, newBalanceCents: previousBalanceCents + remoteAmount };
     });
   }
 
@@ -404,7 +418,7 @@ export class FinancialWalletService {
       const duplicate = await client.query('SELECT * FROM financial_match_reservations WHERE entry_id=$1', [safeText(entryId, 100)]);
       if (duplicate.rows[0]) return { ...duplicate.rows[0], duplicate: true };
       const locked = assertAccountActive((await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0]);
-      if (Number(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
+      if (databaseInteger(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
       const reservationId = randomUUID();
       const publicRef = publicReference('RES');
       await client.query(
@@ -437,7 +451,7 @@ export class FinancialWalletService {
       if (!reservation) return { released: false, reason: 'NOT_FOUND' };
       if (reservation.status === 'RELEASED') return { released: false, duplicate: true };
       if (reservation.status !== 'RESERVED') return { released: false, reason: 'NOT_RELEASEABLE' };
-      const amount = Number(reservation.amount_cents);
+      const amount = databaseInteger(reservation.amount_cents);
       await client.query(
         `UPDATE financial_accounts SET available_balance_cents=available_balance_cents+$1::bigint,
           reserved_balance_cents=reserved_balance_cents-$1::bigint, updated_at=now() WHERE account_id=$2`,
@@ -773,13 +787,13 @@ export class FinancialWalletService {
          FROM financial_withdrawals WHERE idempotency_key=$1`, [idem],
       );
       if (existing.rows[0]) {
-        if (existing.rows[0].account_id !== account.account_id || Number(existing.rows[0].amount_cents) !== amount) {
+        if (existing.rows[0].account_id !== account.account_id || databaseInteger(existing.rows[0].amount_cents) !== amount) {
           throw new Error('FINANCIAL_IDEMPOTENCY_CONFLICT');
         }
         return { ...existing.rows[0], duplicate: true };
       }
       const locked = assertAccountActive((await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0]);
-      if (Number(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
+      if (databaseInteger(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
       const withdrawalId = randomUUID();
       const publicRef = publicReference('WD');
       await client.query(
@@ -864,7 +878,7 @@ export class FinancialWalletService {
         [transferId, withdrawal.withdrawal_id],
       );
       if (duplicate.rows[0]) throw new Error('WITHDRAWAL_TRANSFER_ID_DUPLICATE');
-      const amount = Number(withdrawal.amount_cents);
+      const amount = databaseInteger(withdrawal.amount_cents);
       await client.query(
         `UPDATE financial_accounts SET withdrawal_pending_balance_cents=withdrawal_pending_balance_cents-$1::bigint,
           updated_at=now() WHERE account_id=$2`, [amount, withdrawal.account_id],
@@ -904,7 +918,7 @@ export class FinancialWalletService {
       if (!withdrawal) throw new Error('WITHDRAWAL_NOT_FOUND');
       if (withdrawal.status === 'REJECTED') return { ...withdrawal, duplicate: true };
       if (!['AWAITING_ADMIN_PAYMENT', 'REVIEW_REQUIRED'].includes(withdrawal.status)) throw new Error('WITHDRAWAL_NOT_REJECTABLE');
-      const amount = Number(withdrawal.amount_cents);
+      const amount = databaseInteger(withdrawal.amount_cents);
       await client.query(
         `UPDATE financial_accounts SET withdrawal_pending_balance_cents=withdrawal_pending_balance_cents-$1::bigint,
           available_balance_cents=available_balance_cents+$1::bigint, updated_at=now() WHERE account_id=$2`,
@@ -967,13 +981,13 @@ export class FinancialWalletService {
        FROM financial_accounts`,
     )).rows[0];
     const provider = await this.provider.getProviderBalance();
-    const providerBalance = Number(provider.amountCents);
-    const liability = Number(internal.liability);
+    const providerBalance = databaseInteger(provider.amountCents);
+    const liability = databaseInteger(internal.liability);
     const ledgerRows = (await this.repository.query(
       `SELECT ledger_account, COALESCE(sum(amount_cents),0)::bigint AS balance_cents
        FROM financial_ledger_entries GROUP BY ledger_account ORDER BY ledger_account`,
     )).rows;
-    const ledgerBalances = Object.fromEntries(ledgerRows.map((row) => [row.ledger_account, Number(row.balance_cents)]));
+    const ledgerBalances = Object.fromEntries(ledgerRows.map((row) => [row.ledger_account, databaseInteger(row.balance_cents)]));
     const pending = (await this.repository.query(
       `SELECT
         count(*) FILTER (WHERE status IN ('CREATED','PENDING','REVIEW_REQUIRED'))::int AS pending_deposits,

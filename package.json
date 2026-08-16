@@ -17,6 +17,7 @@
     "test:entries": "node scripts/test-whatsapp-entries.mjs && node scripts/test-whatsapp-match-queue.mjs && node scripts/test-whatsapp-entry-gate-integration.mjs",
     "test:demo-credits": "node scripts/test-demo-credits.mjs",
     "test:financial-wallet": "node scripts/test-financial-wallet.mjs",
+    "test:financial-postgres": "node scripts/test-financial-postgres.mjs",
     "test:financial-whatsapp": "node scripts/test-financial-whatsapp.mjs",
     "test:report": "node scripts/test-game-rules.mjs --report",
     "DEBUG_WIN_HAND": "vite --host 0.0.0.0 --configLoader runner --open /?debug=DEBUG_WIN_HAND",
