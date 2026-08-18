@@ -6,6 +6,16 @@ import pg from 'pg';
 const { Pool } = pg;
 const migrationPath = join(dirname(fileURLToPath(import.meta.url)), 'migrations', '001_financial_wallet.sql');
 
+export function resolveFinancialDatabaseSsl({ connectionString, ssl = null, nodeEnv = process.env.NODE_ENV } = {}) {
+  if (ssl !== null && ssl !== undefined) return ssl;
+  if (nodeEnv !== 'production') return undefined;
+  try {
+    const hostname = new URL(connectionString).hostname.toLowerCase();
+    if (hostname.endsWith('.railway.internal')) return { rejectUnauthorized: false };
+  } catch {}
+  return { rejectUnauthorized: true };
+}
+
 export class PostgresFinancialRepository {
   constructor({
     connectionString,
@@ -18,7 +28,7 @@ export class PostgresFinancialRepository {
     if (!pool && !connectionString) throw new Error('FINANCIAL_DATABASE_REQUIRED');
     this.pool = pool ?? new Pool({
       connectionString,
-      ssl: ssl ?? (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : undefined),
+      ssl: resolveFinancialDatabaseSsl({ connectionString, ssl }),
       max: 10,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,

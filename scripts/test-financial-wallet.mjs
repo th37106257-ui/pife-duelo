@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveFinancialConfig } from '../server/src/financial/financialConfig.js';
-import { PostgresFinancialRepository } from '../server/src/financial/PostgresFinancialRepository.js';
+import { PostgresFinancialRepository, resolveFinancialDatabaseSsl } from '../server/src/financial/PostgresFinancialRepository.js';
 import { FinancialWalletService } from '../server/src/financial/FinancialWalletService.js';
 import { MockPaymentProvider } from '../server/src/financial/paymentProviders/MockPaymentProvider.js';
 import { AsaasSandboxProvider } from '../server/src/financial/paymentProviders/AsaasSandboxProvider.js';
@@ -12,6 +12,23 @@ import { AsaasSandboxProvider } from '../server/src/financial/paymentProviders/A
 const here = dirname(fileURLToPath(import.meta.url));
 const requireFromServer = createRequire(resolve(here, '../server/package.json'));
 const { newDb } = requireFromServer('pg-mem');
+
+assert.deepEqual(
+  resolveFinancialDatabaseSsl({ connectionString: 'postgres://user:secret@postgres.railway.internal:5432/app', nodeEnv: 'production' }),
+  { rejectUnauthorized: false },
+);
+assert.deepEqual(
+  resolveFinancialDatabaseSsl({ connectionString: 'postgres://user:secret@public.example.com:5432/app', nodeEnv: 'production' }),
+  { rejectUnauthorized: true },
+);
+assert.equal(
+  resolveFinancialDatabaseSsl({ connectionString: 'postgres://user:secret@localhost:5432/app', nodeEnv: 'test' }),
+  undefined,
+);
+assert.deepEqual(
+  resolveFinancialDatabaseSsl({ connectionString: 'postgres://user:secret@postgres.railway.internal:5432/app', ssl: { ca: 'trusted-ca' }, nodeEnv: 'production' }),
+  { ca: 'trusted-ca' },
+);
 
 const db = newDb();
 const { Pool } = db.adapters.createPg();
