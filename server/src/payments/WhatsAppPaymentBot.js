@@ -166,6 +166,16 @@ function isAdminCommandText(command) {
   );
 }
 
+function isFinancialCommandText(command) {
+  return (
+    FINANCIAL_WALLET_COMMANDS.has(command)
+    || command === 'saldo financeiro'
+    || command === 'extrato financeiro'
+    || /^depositar(?:\s|$)/.test(command)
+    || /^sacar\s+\d+(?:[,.]\d{1,2})?\s+(CPF|CNPJ|EMAIL|PHONE|EVP)\s+[^|]+\|\s*.+$/i.test(command)
+  );
+}
+
 function selectBotHandler(command, incoming = {}, currentState = null) {
   if (!incoming.text) return 'empty_text';
   if (incoming.fromMe) return 'ignored_from_me';
@@ -190,6 +200,7 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (RULES_COMMANDS.has(command)) return 'rules';
   if (STATUS_COMMANDS.has(command)) return 'status';
   if (LINK_COMMANDS.has(command)) return 'link';
+  if (isFinancialCommandText(command)) return 'financial_wallet';
   if (SUPPORT_COMMANDS.has(command)) return 'support';
   if (incoming.hasReceiptMedia) return 'receipt_media';
   return 'fallback_invalid';
@@ -490,7 +501,7 @@ export class WhatsAppPaymentBot {
           textLength,
           replyType: metadata.replyType ?? null,
           reason: metadata.reason ?? null,
-          message: result.reason || result.error || 'WHATSAPP_SEND_FAILED',
+          message: metadata.replyType === 'pix_deposit' ? 'WHATSAPP_SEND_FAILED' : (result.reason || result.error || 'WHATSAPP_SEND_FAILED'),
           httpStatus: result.httpStatus ?? null,
         });
         if (metadata.throwOnFailure) {
@@ -513,7 +524,7 @@ export class WhatsAppPaymentBot {
         textLength,
         replyType: metadata.replyType ?? null,
         reason: metadata.reason ?? null,
-        message: error.message,
+        message: metadata.replyType === 'pix_deposit' ? 'WHATSAPP_SEND_FAILED' : error.message,
       });
       if (metadata.throwOnFailure) throw error;
       return {
@@ -1627,7 +1638,11 @@ export class WhatsAppPaymentBot {
   }
 
   async handleFinancialCommand(incoming, { replyTo, command, originIp }) {
+    command = normalizeCommand(command);
     const wallet = this.financialWalletService;
+    if (/^depositar(?:\s|$)/.test(command)) {
+      return this.handleDepositCommand(incoming, { replyTo, command, originIp });
+    }
     if (!wallet?.isEnabled?.()) return null;
     const state = this.getConversationState(incoming.phone).state;
     if (FINANCIAL_WALLET_COMMANDS.has(command)) {
@@ -1673,20 +1688,6 @@ export class WhatsAppPaymentBot {
     if (state === 'financial_menu' && command === '3') {
       await this.send(replyTo, ['💠 *ADICIONAR SALDO*', 'Envie: depositar VALOR', 'Exemplo: depositar 20', '', wallet.notice()].join('\n'));
       return { type: 'financial_deposit_help', decision: 'reply_sent', originIp };
-    }
-    const deposit = command.match(/^depositar\s+(\d+(?:[,.]\d{1,2})?)$/);
-    if (deposit) {
-      const amountCents = Math.round(Number(deposit[1].replace(',', '.')) * 100);
-      const order = await wallet.createDeposit(incoming.phone, amountCents, {
-        displayName: incoming.pushName || 'Jogador',
-        idempotencyKey: `whatsapp:${incoming.messageId || Date.now()}:deposit`,
-      });
-      await this.send(replyTo, [
-        '💠 *COBRANÇA PIX SANDBOX*', `Valor: ${centsMoney(order.amount_cents)}`,
-        `Operação: ${order.public_reference}`, '', 'Pix copia e cola:', order.pix_copy_paste,
-        '', 'A confirmação ocorre somente pelo webhook autenticado.', wallet.notice(),
-      ].join('\n'));
-      return { type: 'financial_deposit_created', decision: 'reply_sent', publicReference: order.public_reference, originIp };
     }
     if (state === 'financial_menu' && command === '4') {
       await this.send(replyTo, [
@@ -1736,6 +1737,52 @@ export class WhatsAppPaymentBot {
       return { type: 'financial_history', decision: 'reply_sent', originIp };
     }
     return null;
+  }
+
+  async handleDepositCommand(incoming, { replyTo, command, originIp }) {
+    const wallet = this.financialWalletService;
+    const record = (stage, errorCode = null) => this.logInfo('PIX_DEPOSIT_STAGE', { stage, errorCode });
+    const reply = async (text, type, publicReference = undefined) => {
+      record('WHATSAPP_SEND_REQUESTED');
+      const result = await this.send(replyTo, text, { replyType: 'pix_deposit' });
+      const failed = result?.ok === false;
+      record(failed ? 'WHATSAPP_SEND_FAILED' : 'WHATSAPP_SEND_CONFIRMED');
+      return { type, decision: failed ? 'reply_failed' : 'reply_sent', publicReference, originIp };
+    };
+    record('RECEIVED');
+    if (!wallet?.isEnabled?.() || wallet.config?.pixDepositsEnabled === false) {
+      return reply('Os depósitos estão temporariamente indisponíveis.', 'financial_deposit_unavailable');
+    }
+    const parsed = command.match(/^depositar\s+(\d+)(?:[,.](\d{1,2}))?$/);
+    const amount = parsed ? BigInt(parsed[1]) * 100n + BigInt((parsed[2] || '').padEnd(2, '0')) : 0n;
+    if (amount <= 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return reply('Valor inválido. Envie depositar 1 ou depositar 1,00.', 'financial_deposit_invalid');
+    }
+    record('COMMAND_PARSED');
+    if (!incoming.messageId) {
+      return reply('Não consegui identificar esta mensagem com segurança. Envie novamente o comando.', 'financial_deposit_missing_message_id');
+    }
+    let order;
+    try {
+      record('FINANCIAL_SERVICE_CALLED');
+      order = await wallet.createDeposit(incoming.phone, Number(amount), {
+        displayName: incoming.pushName || 'Jogador',
+        idempotencyKey: `whatsapp:${incoming.messageId}:deposit`,
+      });
+      record('DEPOSIT_CREATED');
+    } catch {
+      this.logWarn('FINANCIAL_DEPOSIT_CREATE_REJECTED', {
+        stage: 'FINANCIAL_SERVICE_CALLED', errorCode: 'DEPOSIT_REQUEST_FAILED',
+      });
+      return reply('Não consegui gerar a cobrança Pix agora. Tente novamente em alguns instantes ou chame o suporte.', 'financial_deposit_failed');
+    }
+    const text = [
+      '💠 *COBRANÇA PIX SANDBOX*', `Valor: ${centsMoney(order.amount_cents)}`,
+      `Operação: ${order.public_reference}`, '', 'Pix copia e cola:', order.pix_copy_paste,
+      '', 'A confirmação ocorre somente pelo webhook autenticado.', wallet.notice(),
+    ].join('\n');
+    record('RESPONSE_BUILT');
+    return reply(text, 'financial_deposit_created', order.public_reference);
   }
 
   async handleCancelCommand(incoming, { replyTo, originIp }) {
@@ -1884,10 +1931,11 @@ export class WhatsAppPaymentBot {
       return { ignored: true, decision: 'ignored_invalid', reason: 'missing_remote_jid' };
     }
 
-    if (this.safeEntryEnabled && incoming.messageId && this.entryService?.store?.hasProcessedMessage(incoming.messageId)) {
+    const isDeposit = /^depositar(?:\s|$)/.test(normalizeCommand(incoming.text));
+    if (!isDeposit && this.safeEntryEnabled && incoming.messageId && this.entryService?.store?.hasProcessedMessage(incoming.messageId)) {
       return { ignored: true, decision: 'ignored_invalid', reason: 'duplicate_message' };
     }
-    if (this.safeEntryEnabled && incoming.messageId) this.entryService?.store?.markMessageProcessed(incoming.messageId);
+    if (!isDeposit && this.safeEntryEnabled && incoming.messageId) this.entryService?.store?.markMessageProcessed(incoming.messageId);
 
     const command = normalizeCommand(incoming.text);
     const replyTo = incoming.replyTo || incoming.phone;
@@ -1914,6 +1962,7 @@ export class WhatsAppPaymentBot {
         || IDENTIFY_COMMANDS.has(command)
         || UPDATES_COMMANDS.has(command)
         || DEMO_CREDITS_COMMANDS.has(command)
+        || isFinancialCommandText(command)
         || (currentState.state === 'demo_credits_menu' && ['1', '2'].includes(command))
         || (currentState.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command))
         || SAFE_TABLES.has(command)
@@ -2530,6 +2579,9 @@ export class WhatsAppPaymentBot {
   }
 
   async handleWebhook(payload, { originIp = null } = {}) {
+    if (isFinancialCommandText(normalizeCommand(parseIncomingMessage(payload).text))) {
+      return this.handleConnectivityWebhook(payload, { originIp });
+    }
     const event = String(payload?.event || '').toUpperCase().replace('.', '_');
     this.webhookDiagnostics.lastWebhookReceivedAt = new Date(this.clock()).toISOString();
     this.webhookDiagnostics.lastWebhookEvent = payload?.event ?? null;

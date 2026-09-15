@@ -4,6 +4,7 @@ import { WhatsAppPaymentBot } from '../server/src/payments/WhatsAppPaymentBot.js
 const sent = [];
 const logs = [];
 const processedMessages = new Set();
+const deposits = [];
 const player = '5511999991001';
 const financialAdmin = '5511999990001';
 const unauthorized = '5511999990002';
@@ -18,7 +19,10 @@ const wallet = {
   getOrCreateAccount: async () => ({ ...account }),
   getAccount: async () => ({ ...account, available_balance_cents: 5500, withdrawal_pending_balance_cents: 2000 }),
   listHistory: async () => [{ public_reference: 'TX-ABC123', transaction_type: 'DEPOSIT_CREDITED', amount_cents: 2000 }],
-  createDeposit: async () => ({ public_reference: 'DEP-ABC123', amount_cents: 2000, pix_copy_paste: '000201-TEST', pix_qr_code: 'QR-TEST' }),
+  createDeposit: async (phone, amountCents, options) => {
+    deposits.push({ phone, amountCents, options });
+    return { public_reference: 'DEP-ABC123', amount_cents: amountCents, pix_copy_paste: '000201-TEST', pix_qr_code: 'QR-TEST' };
+  },
   requestWithdrawal: async () => ({ public_reference: 'WD-ABC123', amount_cents: 2000 }),
   getStatus: async () => ({ mode: 'sandbox', provider: 'mock', accounts: 1, pending_deposits: 0, pending_withdrawals: 1 }),
 };
@@ -48,6 +52,7 @@ assert.match(sent.at(-1).text, /nenhum dinheiro real/);
 await bot.handleFinancialCommand({ ...incoming, text: 'depositar 20' }, { replyTo: player, command: 'depositar 20', originIp: 'test' });
 assert.match(sent.at(-1).text, /000201-TEST/);
 assert.match(sent.at(-1).text, /webhook autenticado/);
+assert.equal(deposits.at(-1).amountCents, 2000);
 
 await bot.handleFinancialCommand(
   { ...incoming, text: 'sacar 20 EMAIL chave-secreta@example.test | Jogador Teste' },
@@ -63,6 +68,32 @@ function webhook(text, id) {
     data: { key: { remoteJid: `${player}@s.whatsapp.net`, fromMe: false, id }, message: { conversation: text } },
   };
 }
+const webhookDeposit = await bot.handleConnectivityWebhook(webhook('depositar 1', 'financial-deposit-one'), { originIp: 'test' });
+assert.equal(webhookDeposit.type, 'financial_deposit_created');
+assert.equal(deposits.at(-1).amountCents, 100);
+assert.equal(deposits.at(-1).options.idempotencyKey, 'whatsapp:financial-deposit-one:deposit');
+assert.match(sent.at(-1).text, /R\$\s*1,00/);
+assert.ok(logs.some((item) => item.event === 'BOT_HANDLER_SELECTED' && item.payload.handler === 'financial_wallet'));
+
+const failedSent = [];
+const failedLogs = [];
+const failedBot = new WhatsAppPaymentBot({
+  paymentService: { store: { hasProcessedMessage: () => false, markMessageProcessed: () => {} } },
+  financialWalletService: {
+    ...wallet,
+    createDeposit: async () => { throw new Error('ASAAS_REQUEST_FAILED:400'); },
+  },
+  logWarn: (event, payload) => failedLogs.push({ event, payload }),
+  evolutionClient: {
+    isConfigured: () => true,
+    sendWhatsAppMessage: async (phone, text) => { failedSent.push({ phone, text }); return { ok: true }; },
+  },
+});
+const failedDeposit = await failedBot.handleConnectivityWebhook(webhook('depositar 1', 'financial-deposit-failed'), { originIp: 'test' });
+assert.equal(failedDeposit.type, 'financial_deposit_failed');
+assert.match(failedSent.at(-1).text, /Não consegui gerar a cobrança Pix agora/);
+assert.ok(failedLogs.some((item) => item.event === 'FINANCIAL_DEPOSIT_CREATE_REJECTED'));
+
 const emailSecret = 'email-pix-privado@example.test';
 const evpSecret = '123e4567-e89b-12d3-a456-426614174000';
 await bot.handleConnectivityWebhook(webhook(`sacar 20 EMAIL ${emailSecret} | Jogador Teste`, 'financial-log-email'), { originIp: 'test' });

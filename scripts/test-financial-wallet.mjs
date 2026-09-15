@@ -285,7 +285,7 @@ const asaasFetch = async (url, options = {}) => {
 };
 const asaasProvider = new AsaasSandboxProvider({ apiKey: '$aact_hmlg_test_only', webhookToken: 'test-webhook-token', fetchImpl: asaasFetch });
 const asaasService = new FinancialWalletService({ repository, provider: asaasProvider, config: { ...config, provider: 'asaas' } });
-await assert.rejects(() => asaasService.createDeposit('5511999991777', 2_000, { idempotencyKey: 'asaas-crash-retry' }), /INJECTED_LOCAL_CRASH/);
+await assert.rejects(() => asaasService.createDeposit('5511999991777', 2_000, { idempotencyKey: 'asaas-crash-retry' }), /ASAAS_NETWORK_ERROR/);
 const recoveredAsaasDeposit = await asaasService.createDeposit('5511999991777', 2_000, { idempotencyKey: 'asaas-crash-retry' });
 assert.equal(recoveredAsaasDeposit.status, 'PENDING');
 assert.equal(customerPosts, 1);

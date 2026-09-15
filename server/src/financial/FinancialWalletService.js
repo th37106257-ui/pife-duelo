@@ -224,8 +224,12 @@ export class FinancialWalletService {
       });
       deposit = { deposit_id: depositId, public_reference: publicRef, amount_cents: amount, status: 'CREATED' };
     }
-    if (deposit.provider_payment_id && deposit.status === 'PENDING') return { ...deposit, duplicate: true };
+    if (deposit.provider_payment_id && ['PENDING', 'CREDITED'].includes(deposit.status)) return { ...deposit, duplicate: true };
+    if (['REFUNDED', 'REVERSED'].includes(deposit.status)) throw new Error('FINANCIAL_DEPOSIT_CLOSED');
+    let stage = 'PROVIDER_CUSTOMER';
     try {
+      this.logInfo('PIX_DEPOSIT_STAGE', { stage: 'PLAYER_RESOLVED', publicReference: deposit.public_reference });
+      this.logInfo('PIX_DEPOSIT_STAGE', { stage });
       const customer = await this.provider.createOrFindCustomer({
         publicId: account.public_id,
         name: account.display_name,
@@ -233,6 +237,8 @@ export class FinancialWalletService {
         existingCustomerId: account.provider_customer_id,
       });
       const dueDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      stage = 'PROVIDER_CHARGE';
+      this.logInfo('PIX_DEPOSIT_STAGE', { stage });
       const charge = await this.provider.createPixCharge({
         customerId: customer.id,
         amountCents: amount,
@@ -240,7 +246,11 @@ export class FinancialWalletService {
         description: `Saldo Pife Duelo ${deposit.public_reference}`,
         externalReference: deposit.public_reference,
       });
+      stage = 'PROVIDER_QR';
+      this.logInfo('PIX_DEPOSIT_STAGE', { stage });
       const qr = await this.provider.getPixQrCode(charge.id);
+      if (!charge?.id || !customer?.id || !qr?.payload) throw new Error('FINANCIAL_PROVIDER_RESPONSE_INVALID');
+      stage = 'DEPOSIT_PERSISTENCE';
       const updated = await this.repository.query(
         `UPDATE financial_deposits SET status='PENDING', provider_payment_id=$1,
           provider_customer_id=$2, pix_copy_paste=$3, pix_qr_code=$4, expires_at=$5, updated_at=now()
@@ -255,7 +265,7 @@ export class FinancialWalletService {
       return { ...updated.rows[0], duplicate };
     } catch (error) {
       await this.repository.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
-      this.logError('DEPOSIT_CREATE_FAILED', { publicReference: deposit.public_reference, reason: error.message });
+      this.logError('DEPOSIT_CREATE_FAILED', { publicReference: deposit.public_reference, stage, errorCode: 'DEPOSIT_CREATE_FAILED' });
       throw error;
     }
   }

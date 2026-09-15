@@ -8,7 +8,7 @@ function secureEquals(left, right) {
 }
 
 export class AsaasSandboxProvider extends PaymentProvider {
-  constructor({ apiKey, webhookToken, baseUrl = 'https://api-sandbox.asaas.com/v3', fetchImpl = fetch } = {}) {
+  constructor({ apiKey, webhookToken, baseUrl = 'https://api-sandbox.asaas.com/v3', fetchImpl = fetch, timeoutMs = 10000 } = {}) {
     super();
     if (!String(apiKey || '').startsWith('$aact_hmlg_')) throw new Error('ASAAS_SANDBOX_KEY_REQUIRED');
     this.apiKey = apiKey;
@@ -16,26 +16,38 @@ export class AsaasSandboxProvider extends PaymentProvider {
     this.baseUrl = String(baseUrl).replace(/\/$/, '');
     if (this.baseUrl !== 'https://api-sandbox.asaas.com/v3') throw new Error('ASAAS_SANDBOX_URL_REQUIRED');
     this.fetchImpl = fetchImpl;
+    this.timeoutMs = timeoutMs;
   }
 
   async request(path, { method = 'GET', body = null } = {}) {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'PifeDuelo/1.0 (Node.js; sandbox)',
-        access_token: this.apiKey,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(`ASAAS_REQUEST_FAILED:${response.status}`);
-      error.status = response.status;
-      error.details = payload?.errors?.map((item) => item.code).filter(Boolean) ?? [];
-      throw error;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'PifeDuelo/1.0 (Node.js; sandbox)',
+          access_token: this.apiKey,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const payload = await response.json().catch(() => { throw new Error('ASAAS_INVALID_JSON'); });
+      if (!response.ok) {
+        const error = new Error(`ASAAS_REQUEST_FAILED:${response.status}`);
+        error.status = response.status;
+        error.details = payload?.errors?.map((item) => item.code).filter(Boolean) ?? [];
+        throw error;
+      }
+      return payload;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('ASAAS_REQUEST_TIMEOUT');
+      if (/^ASAAS_(REQUEST_FAILED:\d{3}|INVALID_JSON)$/.test(error?.message || '')) throw error;
+      throw new Error('ASAAS_NETWORK_ERROR');
+    } finally {
+      clearTimeout(timer);
     }
-    return payload;
   }
 
   async createOrFindCustomer({ publicId, name, phone, existingCustomerId = null }) {
