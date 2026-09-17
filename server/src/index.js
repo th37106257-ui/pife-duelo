@@ -100,6 +100,7 @@ if (financialConfig.ready) {
     : new AsaasSandboxProvider({
         apiKey: financialConfig.asaasApiKey,
         webhookToken: financialConfig.asaasWebhookToken,
+        sandboxTestCpfCnpj: financialConfig.asaasSandboxTestCpfCnpj,
         baseUrl: financialConfig.asaasBaseUrl,
       });
   financialWalletService = new FinancialWalletService({

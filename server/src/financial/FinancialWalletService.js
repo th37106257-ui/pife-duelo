@@ -236,6 +236,14 @@ export class FinancialWalletService {
         phone: account.phone_normalized,
         existingCustomerId: account.provider_customer_id,
       });
+      if (!customer?.id) throw new Error('FINANCIAL_PROVIDER_CUSTOMER_INVALID');
+      const persistedCustomer = await this.repository.query(
+        `UPDATE financial_accounts SET provider_customer_id=$1, updated_at=now()
+         WHERE account_id=$2 AND (provider_customer_id IS NULL OR provider_customer_id=$1)
+         RETURNING provider_customer_id`,
+        [customer.id, account.account_id],
+      );
+      if (!persistedCustomer.rows[0]) throw new Error('FINANCIAL_PROVIDER_CUSTOMER_ID_CONFLICT');
       const dueDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       stage = 'PROVIDER_CHARGE';
       this.logInfo('PIX_DEPOSIT_STAGE', { stage });
@@ -257,15 +265,19 @@ export class FinancialWalletService {
          WHERE deposit_id=$6 RETURNING *`,
         [charge.id, customer.id, qr.payload ?? null, qr.encodedImage ?? null, qr.expirationDate ?? null, deposit.deposit_id],
       );
-      await this.repository.query(
-        'UPDATE financial_accounts SET provider_customer_id=$1, updated_at=now() WHERE account_id=$2 AND provider_customer_id IS NULL',
-        [customer.id, account.account_id],
-      );
       this.logInfo('DEPOSIT_CREATED', { publicReference: deposit.public_reference, amountCents: amount, provider: this.config.provider, recovered: duplicate });
       return { ...updated.rows[0], duplicate };
     } catch (error) {
       await this.repository.query("UPDATE financial_deposits SET status='REVIEW_REQUIRED', updated_at=now() WHERE deposit_id=$1", [deposit.deposit_id]);
-      this.logError('DEPOSIT_CREATE_FAILED', { publicReference: deposit.public_reference, stage, errorCode: 'DEPOSIT_CREATE_FAILED' });
+      const providerDetail = Array.isArray(error?.details) ? error.details[0] : null;
+      this.logError('DEPOSIT_CREATE_FAILED', {
+        publicReference: deposit.public_reference,
+        stage,
+        errorCode: 'DEPOSIT_CREATE_FAILED',
+        providerStatus: Number.isInteger(error?.status) ? error.status : null,
+        providerErrorCode: providerDetail?.code ?? null,
+        providerErrorDescription: providerDetail?.description ?? null,
+      });
       throw error;
     }
   }

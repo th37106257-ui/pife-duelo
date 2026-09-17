@@ -252,6 +252,55 @@ await assert.rejects(() => service.requestWithdrawal(blockedPhone, {
   amountCents: 2_000, pixKeyType: 'EMAIL', pixKey: 'blocked@example.test', holderName: 'Bloqueado', idempotencyKey: 'blocked-withdrawal',
 }), /FINANCIAL_ACCOUNT_BLOCKED/);
 
+const chargeFailureLogs = [];
+const chargeFailureCustomerIds = [];
+let rejectCharge = true;
+const chargeFailureProvider = {
+  createOrFindCustomer: async ({ existingCustomerId }) => {
+    chargeFailureCustomerIds.push(existingCustomerId);
+    return { id: existingCustomerId || 'cus-charge-failure' };
+  },
+  createPixCharge: async () => {
+    if (rejectCharge) {
+      const error = new Error('ASAAS_REQUEST_FAILED:400');
+      error.status = 400;
+      error.details = [{
+        code: 'invalid_object',
+        description: 'Para criar esta cobrança é necessário preencher o CPF ou CNPJ do cliente.',
+      }];
+      throw error;
+    }
+    return { id: 'pay-charge-retry' };
+  },
+  getPixQrCode: async () => ({ payload: 'PIX-SANDBOX-CHARGE-RETRY', encodedImage: 'QR-SANDBOX-CHARGE-RETRY' }),
+};
+const chargeFailureService = new FinancialWalletService({
+  repository,
+  provider: chargeFailureProvider,
+  config: { ...config, provider: 'asaas' },
+  logError: (event, details) => chargeFailureLogs.push({ event, details }),
+});
+const chargeFailurePhone = `55${'4'.repeat(11)}`;
+await assert.rejects(
+  () => chargeFailureService.createDeposit(chargeFailurePhone, 100, { idempotencyKey: 'asaas-charge-failure-retry' }),
+  /ASAAS_REQUEST_FAILED:400/,
+);
+assert.equal((await chargeFailureService.getAccount(chargeFailurePhone)).provider_customer_id, 'cus-charge-failure');
+assert.equal(chargeFailureLogs.at(-1).details.providerStatus, 400);
+assert.equal(chargeFailureLogs.at(-1).details.providerErrorCode, 'invalid_object');
+assert.equal(
+  chargeFailureLogs.at(-1).details.providerErrorDescription,
+  'Para criar esta cobrança é necessário preencher o CPF ou CNPJ do cliente.',
+);
+rejectCharge = false;
+const recoveredChargeFailure = await chargeFailureService.createDeposit(
+  chargeFailurePhone,
+  100,
+  { idempotencyKey: 'asaas-charge-failure-retry' },
+);
+assert.equal(recoveredChargeFailure.status, 'PENDING');
+assert.deepEqual(chargeFailureCustomerIds, [null, 'cus-charge-failure']);
+
 let customerPosts = 0;
 let paymentPosts = 0;
 let qrFailures = 0;
@@ -283,9 +332,19 @@ const asaasFetch = async (url, options = {}) => {
   }
   return { ok: true, status: 200, json: async () => responseBody };
 };
-const asaasProvider = new AsaasSandboxProvider({ apiKey: '$aact_hmlg_test_only', webhookToken: 'test-webhook-token', fetchImpl: asaasFetch });
+const asaasProvider = new AsaasSandboxProvider({
+  apiKey: '$aact_hmlg_test_only',
+  webhookToken: 'test-webhook-token',
+  sandboxTestCpfCnpj: '1'.repeat(11),
+  fetchImpl: asaasFetch,
+});
 const asaasService = new FinancialWalletService({ repository, provider: asaasProvider, config: { ...config, provider: 'asaas' } });
 await assert.rejects(() => asaasService.createDeposit('5511999991777', 2_000, { idempotencyKey: 'asaas-crash-retry' }), /ASAAS_NETWORK_ERROR/);
+const failedAsaasAccount = await asaasService.getAccount('5511999991777');
+assert.equal(failedAsaasAccount.provider_customer_id, 'cus-safe-1');
+assert.equal((await repository.query(
+  "SELECT d.status FROM financial_deposits d JOIN financial_transactions t ON t.public_reference=d.public_reference WHERE t.idempotency_key='asaas-crash-retry'",
+)).rows[0].status, 'REVIEW_REQUIRED');
 const recoveredAsaasDeposit = await asaasService.createDeposit('5511999991777', 2_000, { idempotencyKey: 'asaas-crash-retry' });
 assert.equal(recoveredAsaasDeposit.status, 'PENDING');
 assert.equal(customerPosts, 1);
@@ -322,6 +381,7 @@ assert.match(serverSource, /storeConfigured: Boolean\(financialConfig\.databaseU
 const healthBlock = serverSource.slice(serverSource.indexOf("app.get('/health'"), serverSource.indexOf("app.get('/api/status'"));
 assert.ok(!healthBlock.includes('asaasApiKey'));
 assert.ok(!healthBlock.includes('asaasWebhookToken'));
+assert.ok(!healthBlock.includes('asaasSandboxTestCpfCnpj'));
 assert.ok(!healthBlock.includes('encryptionKey'));
 
 await pool.end();

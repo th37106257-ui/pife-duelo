@@ -31,6 +31,7 @@ export function resolveFinancialConfig(env = process.env) {
     encryptionKey: String(env.FINANCIAL_DATA_ENCRYPTION_KEY || '').trim(),
     asaasApiKey: String(env.ASAAS_API_KEY || '').trim(),
     asaasWebhookToken: String(env.ASAAS_WEBHOOK_TOKEN || '').trim(),
+    asaasSandboxTestCpfCnpj: String(env.ASAAS_SANDBOX_TEST_CPF_CNPJ || '').trim(),
     financialAdminNumbers: list(env.WHATSAPP_FINANCIAL_ADMIN_NUMBERS),
     asaasBaseUrl: mode === 'production' ? 'https://api.asaas.com/v3' : 'https://api-sandbox.asaas.com/v3',
   };
