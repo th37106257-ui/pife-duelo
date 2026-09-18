@@ -54,10 +54,15 @@ const migration = readFileSync(new URL('../server/src/financial/migrations/001_f
   .replace(/CREATE OR REPLACE FUNCTION reject_confirmed_transaction_mutation[\s\S]*?FOR EACH ROW EXECUTE FUNCTION reject_confirmed_transaction_mutation\(\);/m, '')
   .replace(/ CHECK \([^\r\n]+\)/g, '');
 await pool.query(migration);
+await pool.query(readFileSync(new URL('../server/src/financial/migrations/002_payment_confirmation_notification.sql', import.meta.url), 'utf8'));
 const repository = new PostgresFinancialRepository({ pool, manageTransactions: false, serializableTransactions: false });
 const provider = new MockPaymentProvider();
+const paymentConfirmations = [];
+let confirmationFails = false;
 const service = new FinancialWalletService({ repository, provider,
-  config: { ready: true, pixDepositsEnabled: true, mode: 'sandbox', provider: 'mock' } });
+  config: { ready: true, pixDepositsEnabled: true, mode: 'sandbox', provider: 'mock' },
+  paymentConfirmationSender: async (delivery) => { paymentConfirmations.push(delivery); return { ok: !confirmationFails }; },
+});
 let sendFails = true;
 const integration = new WhatsAppPaymentBot({ financialWalletService: service,
   safeEntryEnabled: true, entryService: { store: { hasProcessedMessage: () => true } },
@@ -84,8 +89,28 @@ provider.markPaid(paymentId);
 await service.processPaymentWebhook(event);
 assert.equal((await service.processPaymentWebhook(event)).duplicate, true);
 assert.equal(Number((await service.getAccount(fakePhone)).available_balance_cents), 100);
+assert.equal(paymentConfirmations.length, 1);
+assert.match(paymentConfirmations[0].text, /Pagamento confirmado/);
+assert.match(paymentConfirmations[0].text, /Saldo: R\$ 1,00/);
+assert.match(paymentConfirmations[0].text, /demonstração/);
+assert.equal((await pool.query('SELECT count(*)::int AS total FROM financial_payment_notifications WHERE status=\'SENT\'')).rows[0].total, 1);
+const retryOrder = await service.createDeposit(fakePhone, 200, { idempotencyKey: 'notification-retry' });
+provider.markPaid(retryOrder.provider_payment_id);
+confirmationFails = true;
+await service.processPaymentWebhook({ headers: { 'asaas-access-token': provider.webhookToken }, payload: { id: 'retry-event-1', event: 'PAYMENT_RECEIVED', payment: { id: retryOrder.provider_payment_id } } });
+assert.equal((await pool.query("SELECT status FROM financial_payment_notifications WHERE deposit_id=$1", [retryOrder.deposit_id])).rows[0].status, 'FAILED');
+confirmationFails = false;
+await service.processPaymentWebhook({ headers: { 'asaas-access-token': provider.webhookToken }, payload: { id: 'retry-event-2', event: 'PAYMENT_RECEIVED', payment: { id: retryOrder.provider_payment_id } } });
+assert.equal((await pool.query("SELECT status,attempt_count FROM financial_payment_notifications WHERE deposit_id=$1", [retryOrder.deposit_id])).rows[0].status, 'SENT');
+const restartedDeliveries = [];
+const restartedService = new FinancialWalletService({ repository, provider,
+  config: { ready: true, pixDepositsEnabled: true, mode: 'sandbox', provider: 'mock' },
+  paymentConfirmationSender: async (delivery) => { restartedDeliveries.push(delivery); return { ok: true }; },
+});
+await restartedService.processPaymentWebhook({ headers: { 'asaas-access-token': provider.webhookToken }, payload: { id: 'retry-event-2', event: 'PAYMENT_RECEIVED', payment: { id: retryOrder.provider_payment_id } } });
+assert.equal(restartedDeliveries.length, 0);
 assert.equal((await integration.handleWebhook(payload('integration-one'))).decision, 'reply_sent');
-assert.equal(provider.payments.size, 1);
+assert.equal(provider.payments.size, 2);
 assert.equal((await pool.query('SELECT status FROM financial_deposits')).rows[0].status, 'CREDITED');
 const query = repository.query.bind(repository);
 repository.query = async () => { throw new Error('PRIVATE_DATABASE_DETAIL'); };

@@ -1,10 +1,16 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 const { Pool } = pg;
-const migrationPath = join(dirname(fileURLToPath(import.meta.url)), 'migrations', '001_financial_wallet.sql');
+const migrationsDirectory = join(dirname(fileURLToPath(import.meta.url)), 'migrations');
+
+export function listFinancialMigrations() {
+  return readdirSync(migrationsDirectory)
+    .filter((name) => /^\d+_.+\.sql$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+}
 
 export function resolveFinancialDatabaseSsl({ connectionString, ssl = null, nodeEnv = process.env.NODE_ENV } = {}) {
   if (ssl !== null && ssl !== undefined) return ssl;
@@ -40,7 +46,9 @@ export class PostgresFinancialRepository {
   }
 
   async initialize() {
-    await this.pool.query(readFileSync(migrationPath, 'utf8'));
+    for (const migration of listFinancialMigrations()) {
+      await this.pool.query(readFileSync(join(migrationsDirectory, migration), 'utf8'));
+    }
     return true;
   }
 

@@ -384,6 +384,8 @@ async function sendWhatsAppMessage(to, text, { throwOnFailure = false } = {}) {
   return result;
 }
 
+financialWalletService?.setPaymentConfirmationSender(({ phone, text }) => sendWhatsAppMessage(phone, text));
+
 async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
   if (!evolutionClient.isConfigured()) throw new Error('WHATSAPP_PROVIDER_NOT_CONFIGURED');
   const currentPayment = paymentService.getPayment(paymentId);

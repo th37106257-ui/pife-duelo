@@ -96,7 +96,7 @@ async function insertSystemAudit(client, { action, targetReference = null, reaso
 }
 
 export class FinancialWalletService {
-  constructor({ repository, provider, config, logInfo = () => {}, logWarn = () => {}, logError = () => {}, faultInjector = null } = {}) {
+  constructor({ repository, provider, config, logInfo = () => {}, logWarn = () => {}, logError = () => {}, faultInjector = null, paymentConfirmationSender = null } = {}) {
     if (!repository) throw new Error('FINANCIAL_REPOSITORY_REQUIRED');
     if (!provider) throw new Error('PAYMENT_PROVIDER_REQUIRED');
     this.repository = repository;
@@ -106,7 +106,73 @@ export class FinancialWalletService {
     this.logWarn = logWarn;
     this.logError = logError;
     this.faultInjector = typeof faultInjector === 'function' ? faultInjector : () => {};
+    this.paymentConfirmationSender = typeof paymentConfirmationSender === 'function' ? paymentConfirmationSender : null;
     this.matchOperationLocks = new Map();
+  }
+
+  setPaymentConfirmationSender(sender) {
+    this.paymentConfirmationSender = typeof sender === 'function' ? sender : null;
+  }
+
+  async notifyDepositConfirmation(result) {
+    if (!this.paymentConfirmationSender || !result?.depositId || !result?.phone) return { skipped: true };
+    const key = `deposit_payment_confirmed:${result.depositId}`;
+    const message = [
+      '✅ *Pagamento confirmado*',
+      '',
+      `R$ ${(result.amountCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} adicionados à sua carteira.`,
+      '',
+      `Saldo: R$ ${(result.newBalanceCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+      ...(this.isSandbox() ? ['', SANDBOX_NOTICE] : []),
+    ].join('\n');
+    const claimed = await this.repository.transaction(async (client) => {
+      const inserted = await client.query(
+        `INSERT INTO financial_payment_notifications
+          (notification_id, deposit_id, notification_key, status, phone_normalized, message, attempt_count)
+         VALUES ($1,$2,$3,'PENDING',$4,$5,0) ON CONFLICT (notification_key) DO NOTHING
+         RETURNING notification_id`,
+        [randomUUID(), result.depositId, key, normalizePhone(result.phone), message],
+      );
+      if (!inserted.rows[0]) {
+        const existing = (await client.query(
+          'SELECT notification_id, status FROM financial_payment_notifications WHERE notification_key=$1 FOR UPDATE', [key],
+        )).rows[0];
+        if (!existing || ['SENT', 'PROCESSING'].includes(existing.status)) return { duplicate: true };
+        await client.query(
+          `UPDATE financial_payment_notifications SET status='PROCESSING', attempt_count=attempt_count+1,
+             message=$2, phone_normalized=$3, last_error=NULL, updated_at=now() WHERE notification_id=$1`,
+          [existing.notification_id, message, normalizePhone(result.phone)],
+        );
+        return { notificationId: existing.notification_id, retry: true };
+      }
+      await client.query(
+        `UPDATE financial_payment_notifications SET status='PROCESSING', attempt_count=attempt_count+1, updated_at=now()
+         WHERE notification_id=$1`, [inserted.rows[0].notification_id],
+      );
+      return { notificationId: inserted.rows[0].notification_id };
+    });
+    if (claimed.duplicate) {
+      this.logInfo('PAYMENT_CONFIRMATION_NOTIFICATION_DUPLICATE_SKIPPED', { depositId: result.depositId });
+      return { duplicate: true };
+    }
+    this.logInfo('PAYMENT_CONFIRMATION_NOTIFICATION_REQUESTED', { depositId: result.depositId });
+    try {
+      const delivery = await this.paymentConfirmationSender({ phone: result.phone, text: message });
+      if (delivery?.ok === false) throw new Error(delivery.reason || delivery.error || 'WHATSAPP_SEND_FAILED');
+      await this.repository.query(
+        `UPDATE financial_payment_notifications SET status='SENT', sent_at=now(), updated_at=now() WHERE notification_id=$1`,
+        [claimed.notificationId],
+      );
+      this.logInfo('PAYMENT_CONFIRMATION_NOTIFICATION_SENT', { depositId: result.depositId });
+      return { sent: true };
+    } catch (error) {
+      await this.repository.query(
+        `UPDATE financial_payment_notifications SET status='FAILED', last_error=$2, updated_at=now() WHERE notification_id=$1`,
+        [claimed.notificationId, safeText(error.message, 240)],
+      );
+      this.logWarn('PAYMENT_CONFIRMATION_NOTIFICATION_FAILED', { depositId: result.depositId, reason: safeText(error.message, 120) });
+      return { sent: false, retryable: true };
+    }
   }
 
   isEnabled() { return Boolean(this.config?.ready); }
@@ -291,7 +357,7 @@ export class FinancialWalletService {
     if (!eventId || !eventType || !paymentId) throw new Error('FINANCIAL_WEBHOOK_INVALID');
     const remotePayment = await this.provider.getPayment(paymentId);
     const payloadHash = createHash('sha256').update(json(payload)).digest('hex');
-    return this.repository.transaction(async (client) => {
+    const result = await this.repository.transaction(async (client) => {
       const inserted = await client.query(
         `INSERT INTO financial_processed_webhooks
           (webhook_event_id, provider, event_type, payload_hash, status)
@@ -374,7 +440,15 @@ export class FinancialWalletService {
       if (deposit.status === 'CREDITED') {
         await client.query("UPDATE financial_processed_webhooks SET status='DUPLICATE', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
         this.logInfo('DEPOSIT_DUPLICATE_IGNORED', { webhookEventId: eventId, publicReference: deposit.public_reference });
-        return { duplicate: true, deposit };
+        const duplicateAccount = (await client.query('SELECT * FROM financial_accounts WHERE account_id=$1', [deposit.account_id])).rows[0];
+        return {
+          duplicate: true,
+          deposit,
+          depositId: deposit.deposit_id,
+          phone: duplicateAccount?.phone_normalized,
+          amountCents: databaseInteger(deposit.credited_amount_cents || deposit.amount_cents),
+          newBalanceCents: databaseInteger(duplicateAccount?.available_balance_cents || 0),
+        };
       }
       const remoteAmount = cents(remotePayment.amountCents ?? Math.round(Number(remotePayment.value || 0) * 100));
       if (remoteAmount !== databaseInteger(deposit.amount_cents)) throw new Error('FINANCIAL_DEPOSIT_AMOUNT_MISMATCH');
@@ -424,8 +498,20 @@ export class FinancialWalletService {
       await client.query("UPDATE financial_processed_webhooks SET status='PROCESSED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
       this.logInfo('DEPOSIT_CREDITED', { publicReference: deposit.public_reference, amountCents: remoteAmount });
       const previousBalanceCents = databaseInteger(account.available_balance_cents);
-      return { credited: true, accountId: account.account_id, amountCents: remoteAmount, previousBalanceCents, newBalanceCents: previousBalanceCents + remoteAmount };
-    });
+        return {
+          credited: true,
+          accountId: account.account_id,
+          depositId: deposit.deposit_id,
+          phone: account.phone_normalized,
+          amountCents: remoteAmount,
+          previousBalanceCents,
+          newBalanceCents: previousBalanceCents + remoteAmount,
+        };
+      });
+    if (result?.credited || result?.duplicate) {
+      await this.notifyDepositConfirmation(result);
+    }
+    return result;
   }
 
   async reserveStake(phone, { amountCents, entryId, tableId, gameCode = 'PIFE_DUELO' } = {}) {
