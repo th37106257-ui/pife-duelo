@@ -75,6 +75,15 @@ assert.equal(deposits.at(-1).options.idempotencyKey, 'whatsapp:financial-deposit
 assert.match(sent.at(-1).text, /R\$\s*1,00/);
 assert.ok(logs.some((item) => item.event === 'BOT_HANDLER_SELECTED' && item.payload.handler === 'financial_wallet'));
 
+for (const variant of ['saldo', 'Saldo', 'SALDO', '  saldo  ']) {
+  const balanceResult = await bot.handleConnectivityWebhook(webhook(variant, `balance-${variant.trim()}-${Math.random()}`), { originIp: 'test' });
+  assert.equal(balanceResult.type, 'financial_balance');
+  assert.match(sent.at(-1).text, /SEU SALDO/);
+  assert.match(sent.at(-1).text, /R\$\s*75,00/);
+  assert.match(sent.at(-1).text, /nenhum dinheiro real/);
+  assert.ok(!sent.at(-1).text.includes('account-1'));
+}
+
 const failedSent = [];
 const failedLogs = [];
 const failedBot = new WhatsAppPaymentBot({

@@ -148,6 +148,7 @@ const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
 const UPDATES_COMMANDS = new Set(['5', 'atualizacoes', 'atualizacao', 'novidades', 'roadmap']);
 const DEMO_CREDITS_COMMANDS = new Set(['6', 'creditos', 'credito', 'meus creditos', 'creditos de teste']);
 const FINANCIAL_WALLET_COMMANDS = new Set(['carteira', 'saldo financeiro', 'meu perfil e saldo', 'perfil financeiro']);
+const SALDO_COMMANDS = new Set(['saldo']);
 const UPDATE_SECTION_COMMANDS = new Map([
   ['1', 'available'],
   ['novidades disponiveis', 'available'],
@@ -168,7 +169,8 @@ function isAdminCommandText(command) {
 
 function isFinancialCommandText(command) {
   return (
-    FINANCIAL_WALLET_COMMANDS.has(command)
+    SALDO_COMMANDS.has(command)
+    || FINANCIAL_WALLET_COMMANDS.has(command)
     || command === 'saldo financeiro'
     || command === 'extrato financeiro'
     || /^depositar(?:\s|$)/.test(command)
@@ -189,6 +191,7 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (currentState?.state === 'demo_credits_menu' && ['1', '2'].includes(command)) return 'demo_credits_section';
   if (UPDATES_COMMANDS.has(command) || (currentState?.state === 'updates_menu' && command === 'voltar')) return 'updates';
   if (DEMO_CREDITS_COMMANDS.has(command)) return 'demo_credits';
+  if (SALDO_COMMANDS.has(command)) return 'financial_wallet';
   const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
@@ -1645,6 +1648,13 @@ export class WhatsAppPaymentBot {
     }
     if (!wallet?.isEnabled?.()) return null;
     const state = this.getConversationState(incoming.phone).state;
+    if (SALDO_COMMANDS.has(command)) {
+      const account = await wallet.getOrCreateAccount(incoming.phone, { displayName: incoming.pushName || 'Jogador' });
+      await this.send(replyTo, [
+        '💰 *SEU SALDO*', '', centsMoney(account.available_balance_cents), '', wallet.notice(),
+      ].join('\n'));
+      return { type: 'financial_balance', decision: 'reply_sent', originIp };
+    }
     if (FINANCIAL_WALLET_COMMANDS.has(command)) {
       await this.sendPanel(replyTo, incoming.phone, 'FINANCIAL_MENU', await this.financialMainMenu(incoming));
       return { type: 'financial_menu', decision: 'reply_sent', originIp };
