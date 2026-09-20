@@ -105,4 +105,15 @@ assert.ok(!requestError.details[1].description.includes(testCpfFormatted));
 assert.ok(!requestError.details[1].description.includes(testPhone));
 assert.ok(!requestError.details[1].description.includes('teste@example.com'));
 
+calls = [];
+provider = providerWith(async (url, options = {}) => {
+  calls.push({ url: new URL(url), method: options.method || 'GET', body: options.body });
+  return response({ deleted: true });
+});
+await provider.cancelPayment('pay_test_001');
+assert.equal(calls.length, 1);
+assert.equal(calls[0].method, 'DELETE');
+assert.equal(calls[0].url.pathname, '/v3/payments/pay_test_001');
+assert.equal(calls[0].body, undefined);
+
 console.log('Asaas Sandbox customer document and sanitized error tests passed.');

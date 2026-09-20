@@ -30,6 +30,7 @@ export class PostgresFinancialRepository {
     serializableTransactions = true,
     manageTransactions = true,
     maxSerializableRetries = 3,
+    supportsSkipLocked = true,
   } = {}) {
     if (!pool && !connectionString) throw new Error('FINANCIAL_DATABASE_REQUIRED');
     this.pool = pool ?? new Pool({
@@ -43,6 +44,7 @@ export class PostgresFinancialRepository {
     this.serializableTransactions = serializableTransactions;
     this.manageTransactions = manageTransactions;
     this.maxSerializableRetries = Math.max(0, Math.min(10, Number(maxSerializableRetries) || 0));
+    this.supportsSkipLocked = supportsSkipLocked !== false;
   }
 
   async initialize() {

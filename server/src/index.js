@@ -1607,6 +1607,20 @@ const stuckMatchMonitor = setInterval(() => {
 }, 30000);
 stuckMatchMonitor.unref?.();
 
+let pixExpirationScanInFlight = false;
+const pixExpirationMonitor = financialWalletService ? setInterval(async () => {
+  if (pixExpirationScanInFlight) return;
+  pixExpirationScanInFlight = true;
+  try {
+    await financialWalletService.expirePendingDeposits();
+  } catch (error) {
+    logWarn('PIX_EXPIRATION_RETRY', { reason: error?.message || 'PIX_EXPIRATION_SCAN_FAILED' });
+  } finally {
+    pixExpirationScanInFlight = false;
+  }
+}, 60 * 1000) : null;
+pixExpirationMonitor?.unref?.();
+
 server.listen(config.PORT, () => {
   if (!config.ADMIN_PASSWORD) {
     logWarn('ADMIN_PASSWORD_NOT_CONFIGURED', {

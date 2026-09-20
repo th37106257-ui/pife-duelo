@@ -1780,7 +1780,17 @@ export class WhatsAppPaymentBot {
         idempotencyKey: `whatsapp:${incoming.messageId}:deposit`,
       });
       record('DEPOSIT_CREATED');
-    } catch {
+    } catch (error) {
+      if (error?.message === 'FINANCIAL_DEPOSIT_EXPIRED') {
+        return reply([
+          '⌛ Esta cobrança Pix expirou.',
+          '',
+          'Digite novamente:',
+          `depositar ${centsMoney(Number(amount)).replace(/^R\$\s*/, '')}`,
+          '',
+          'para gerar uma nova cobrança.',
+        ].join('\n'), 'financial_deposit_expired');
+      }
       this.logWarn('FINANCIAL_DEPOSIT_CREATE_REJECTED', {
         stage: 'FINANCIAL_SERVICE_CALLED', errorCode: 'DEPOSIT_REQUEST_FAILED',
       });
@@ -1789,7 +1799,8 @@ export class WhatsAppPaymentBot {
     const text = [
       '💠 *COBRANÇA PIX SANDBOX*', `Valor: ${centsMoney(order.amount_cents)}`,
       `Operação: ${order.public_reference}`, '', 'Pix copia e cola:', order.pix_copy_paste,
-      '', 'A confirmação ocorre somente pelo webhook autenticado.', wallet.notice(),
+      '', `⏱️ Este Pix fica disponível por ${wallet.config?.pixPaymentWindowMinutes || 10} minutos.`,
+      'A confirmação ocorre somente pelo webhook autenticado.', wallet.notice(),
     ].join('\n');
     record('RESPONSE_BUILT');
     return reply(text, 'financial_deposit_created', order.public_reference);

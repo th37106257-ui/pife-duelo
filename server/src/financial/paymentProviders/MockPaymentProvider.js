@@ -52,6 +52,13 @@ export class MockPaymentProvider extends PaymentProvider {
     return payment;
   }
 
+  async cancelPayment(paymentId) {
+    const payment = await this.getPayment(paymentId);
+    if (payment.status === 'RECEIVED') return payment;
+    payment.status = 'CANCELLED';
+    return payment;
+  }
+
   validateWebhook({ headers }) {
     return String(headers?.['asaas-access-token'] || '') === this.webhookToken;
   }

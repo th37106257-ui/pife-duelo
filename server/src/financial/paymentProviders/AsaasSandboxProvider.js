@@ -160,6 +160,10 @@ export class AsaasSandboxProvider extends PaymentProvider {
     });
   }
 
+  cancelPayment(paymentId) {
+    return this.request(`/payments/${encodeURIComponent(paymentId)}`, { method: 'DELETE' });
+  }
+
   validateWebhook({ headers }) {
     return secureEquals(headers?.['asaas-access-token'], this.webhookToken);
   }

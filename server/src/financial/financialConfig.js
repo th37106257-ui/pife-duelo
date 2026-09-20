@@ -34,6 +34,7 @@ export function resolveFinancialConfig(env = process.env) {
     asaasSandboxTestCpfCnpj: String(env.ASAAS_SANDBOX_TEST_CPF_CNPJ || '').trim(),
     financialAdminNumbers: list(env.WHATSAPP_FINANCIAL_ADMIN_NUMBERS),
     asaasBaseUrl: mode === 'production' ? 'https://api.asaas.com/v3' : 'https://api-sandbox.asaas.com/v3',
+    pixPaymentWindowMinutes: positiveInteger(env.PIX_PAYMENT_WINDOW_MINUTES, 10),
   };
   const errors = [];
   if (!['sandbox', 'production'].includes(mode)) errors.push('FINANCIAL_MODE_INVALID');

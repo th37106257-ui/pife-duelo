@@ -5,6 +5,7 @@ export class PaymentProvider {
   async createPixCharge() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
   async getPixQrCode() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
   async getPayment() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
+  async cancelPayment() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
   validateWebhook() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }
   async getProviderBalance() { return null; }
   async requestRefund() { throw new Error('PAYMENT_PROVIDER_NOT_IMPLEMENTED'); }

@@ -3,6 +3,13 @@ import { normalizePhone } from '../payments/PaymentService.js';
 
 const GAME_CODES = new Set(['PIFE_DUELO', 'BOMBERMAN_FUTURE']);
 const SANDBOX_NOTICE = '🧪 Ambiente de demonstração — nenhum dinheiro real está sendo movimentado.';
+// Keep reconciliation and expiry decisions on the same contract. `PAID` is a
+// withdrawal state in this application, not an Asaas payment status.
+const CREDITABLE_PAYMENT_STATUSES = new Set(['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH']);
+
+function isCreditablePaymentStatus(value) {
+  return CREDITABLE_PAYMENT_STATUSES.has(String(value || '').toUpperCase());
+}
 
 function cents(value, { allowZero = false } = {}) {
   const parsed = Number(value);
@@ -96,7 +103,7 @@ async function insertSystemAudit(client, { action, targetReference = null, reaso
 }
 
 export class FinancialWalletService {
-  constructor({ repository, provider, config, logInfo = () => {}, logWarn = () => {}, logError = () => {}, faultInjector = null, paymentConfirmationSender = null } = {}) {
+  constructor({ repository, provider, config, logInfo = () => {}, logWarn = () => {}, logError = () => {}, faultInjector = null, paymentConfirmationSender = null, clock = () => Date.now() } = {}) {
     if (!repository) throw new Error('FINANCIAL_REPOSITORY_REQUIRED');
     if (!provider) throw new Error('PAYMENT_PROVIDER_REQUIRED');
     this.repository = repository;
@@ -107,6 +114,7 @@ export class FinancialWalletService {
     this.logError = logError;
     this.faultInjector = typeof faultInjector === 'function' ? faultInjector : () => {};
     this.paymentConfirmationSender = typeof paymentConfirmationSender === 'function' ? paymentConfirmationSender : null;
+    this.clock = typeof clock === 'function' ? clock : () => Date.now();
     this.matchOperationLocks = new Map();
   }
 
@@ -187,6 +195,11 @@ export class FinancialWalletService {
       await this.retryPendingFinancialOperations();
     } catch (error) {
       this.logError('FINANCIAL_RECOVERY_STARTUP_FAILED', { reason: error.message });
+    }
+    try {
+      await this.expirePendingDeposits();
+    } catch (error) {
+      this.logError('PIX_EXPIRATION_STARTUP_FAILED', { reason: safeText(error.message, 120) });
     }
     return true;
   }
@@ -291,6 +304,7 @@ export class FinancialWalletService {
       deposit = { deposit_id: depositId, public_reference: publicRef, amount_cents: amount, status: 'CREATED' };
     }
     if (deposit.provider_payment_id && ['PENDING', 'CREDITED'].includes(deposit.status)) return { ...deposit, duplicate: true };
+    if (deposit.status === 'EXPIRED') throw new Error('FINANCIAL_DEPOSIT_EXPIRED');
     if (['REFUNDED', 'REVERSED'].includes(deposit.status)) throw new Error('FINANCIAL_DEPOSIT_CLOSED');
     let stage = 'PROVIDER_CUSTOMER';
     try {
@@ -325,11 +339,14 @@ export class FinancialWalletService {
       const qr = await this.provider.getPixQrCode(charge.id);
       if (!charge?.id || !customer?.id || !qr?.payload) throw new Error('FINANCIAL_PROVIDER_RESPONSE_INVALID');
       stage = 'DEPOSIT_PERSISTENCE';
+      const paymentWindowMinutes = Number.isSafeInteger(Number(this.config.pixPaymentWindowMinutes))
+        && Number(this.config.pixPaymentWindowMinutes) > 0 ? Number(this.config.pixPaymentWindowMinutes) : 10;
+      const expiresAt = new Date(this.clock() + paymentWindowMinutes * 60 * 1000);
       const updated = await this.repository.query(
         `UPDATE financial_deposits SET status='PENDING', provider_payment_id=$1,
           provider_customer_id=$2, pix_copy_paste=$3, pix_qr_code=$4, expires_at=$5, updated_at=now()
          WHERE deposit_id=$6 RETURNING *`,
-        [charge.id, customer.id, qr.payload ?? null, qr.encodedImage ?? null, qr.expirationDate ?? null, deposit.deposit_id],
+        [charge.id, customer.id, qr.payload ?? null, qr.encodedImage ?? null, expiresAt, deposit.deposit_id],
       );
       this.logInfo('DEPOSIT_CREATED', { publicReference: deposit.public_reference, amountCents: amount, provider: this.config.provider, recovered: duplicate });
       return { ...updated.rows[0], duplicate };
@@ -348,14 +365,14 @@ export class FinancialWalletService {
     }
   }
 
-  async processPaymentWebhook({ headers, payload }) {
+  async processPaymentWebhook({ headers, payload, trustedProviderPayment = null }) {
     this.assertEnabled();
-    if (!this.provider.validateWebhook({ headers, payload })) throw new Error('FINANCIAL_WEBHOOK_UNAUTHORIZED');
+    if (!trustedProviderPayment && !this.provider.validateWebhook({ headers, payload })) throw new Error('FINANCIAL_WEBHOOK_UNAUTHORIZED');
     const eventId = safeText(payload?.id, 120);
     const eventType = safeText(payload?.event, 80);
     const paymentId = safeText(payload?.payment?.id, 100);
     if (!eventId || !eventType || !paymentId) throw new Error('FINANCIAL_WEBHOOK_INVALID');
-    const remotePayment = await this.provider.getPayment(paymentId);
+    const remotePayment = trustedProviderPayment ?? await this.provider.getPayment(paymentId);
     const payloadHash = createHash('sha256').update(json(payload)).digest('hex');
     const result = await this.repository.transaction(async (client) => {
       const inserted = await client.query(
@@ -432,7 +449,7 @@ export class FinancialWalletService {
         return { reversed: true, creditedBalanceAffected: true, amountCents: amount };
       }
       const paidEvent = ['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED'].includes(eventType);
-      const paidStatus = ['RECEIVED', 'CONFIRMED', 'RECEIVED_IN_CASH'].includes(String(remotePayment.status || '').toUpperCase());
+      const paidStatus = isCreditablePaymentStatus(remotePayment.status);
       if (!paidEvent || !paidStatus) {
         await client.query("UPDATE financial_processed_webhooks SET status='IGNORED', processed_at=now() WHERE webhook_event_id=$1", [eventId]);
         return { ignored: true, eventType };
@@ -479,8 +496,10 @@ export class FinancialWalletService {
           depositId: deposit.deposit_id, providerPaymentId: paymentId, feeKnown, feeAmountCents: feeAmount, netAmountCents: netAmount,
         },
         entries: [
-          { accountId: account.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: -remoteAmount },
-          { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: remoteAmount },
+          ...(deposit.status === 'EXPIRED' ? [] : [
+            { accountId: account.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: -remoteAmount },
+            { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: remoteAmount },
+          ]),
           { ledgerAccount: 'PROVIDER_CLEARING', amountCents: -providerClearing },
           ...(feeKnown && feeAmount > 0 ? [{ ledgerAccount: 'PROVIDER_FEE', amountCents: -feeAmount }] : []),
           { accountId: account.account_id, ledgerAccount: 'PLAYER_AVAILABLE', amountCents: remoteAmount },
@@ -512,6 +531,91 @@ export class FinancialWalletService {
       await this.notifyDepositConfirmation(result);
     }
     return result;
+  }
+
+  async expirePendingDeposits({ limit = 50 } = {}) {
+    this.assertEnabled();
+    const rows = (await this.repository.query(
+      `SELECT * FROM financial_deposits
+       WHERE status='PENDING' AND expires_at IS NOT NULL
+       ORDER BY expires_at ASC LIMIT $1`, [Math.min(100, Math.max(1, Number(limit) || 50))],
+    )).rows.filter((row) => Date.parse(row.expires_at) <= this.clock());
+    const results = [];
+    for (const candidate of rows) {
+      try {
+        this.logInfo('PIX_EXPIRATION_SCAN', { publicReference: candidate.public_reference });
+        const outcome = await this.repository.transaction(async (client) => {
+          const lockClause = this.repository.supportsSkipLocked === false ? 'FOR UPDATE' : 'FOR UPDATE SKIP LOCKED';
+          const locked = (await client.query(
+            `SELECT * FROM financial_deposits
+             WHERE deposit_id=$1 AND status='PENDING'
+             ${lockClause}`, [candidate.deposit_id],
+          )).rows[0];
+          if (!locked || Date.parse(locked.expires_at) > this.clock()) return { status: 'SKIPPED' };
+          this.logInfo('PIX_EXPIRATION_PROVIDER_CHECK', { publicReference: locked.public_reference });
+          let remote;
+          let remoteStatus;
+          try {
+            remote = await this.provider.getPayment(locked.provider_payment_id);
+            remoteStatus = String(remote?.status || '').toUpperCase();
+          } catch (error) {
+            if (error?.status !== 404) throw error;
+            remoteStatus = 'DELETED';
+          }
+          if (isCreditablePaymentStatus(remoteStatus)) {
+            this.logInfo('PIX_EXPIRATION_SKIPPED_PAID', { publicReference: locked.public_reference });
+            return { status: 'PAID_RECONCILE', remotePayment: remote, paymentId: locked.provider_payment_id, depositId: locked.deposit_id };
+          }
+          const alreadyRemoved = ['CANCELLED', 'DELETED', 'EXPIRED'].includes(remoteStatus);
+          if (!alreadyRemoved && !['PENDING', 'AWAITING_RISK_ANALYSIS', 'AWAITING_CUSTOMER_PAYMENT'].includes(remoteStatus)) {
+            return { status: 'RETRY_REQUIRED', reason: 'AMBIGUOUS_PROVIDER_STATE' };
+          }
+          if (!alreadyRemoved) {
+            const cancelled = await this.provider.cancelPayment(locked.provider_payment_id);
+            const cancelledStatus = String(cancelled?.status || 'CANCELLED').toUpperCase();
+            if (isCreditablePaymentStatus(cancelledStatus)) {
+              return { status: 'PAID_RECONCILE', remotePayment: cancelled, paymentId: locked.provider_payment_id, depositId: locked.deposit_id };
+            }
+            if (!['CANCELLED', 'DELETED', 'EXPIRED'].includes(cancelledStatus)) {
+              return { status: 'RETRY_REQUIRED', reason: 'CANCELLATION_NOT_CONFIRMED' };
+            }
+          }
+          const amount = databaseInteger(locked.amount_cents);
+          await insertLedger(client, {
+            type: 'DEPOSIT_EXPIRED', idempotencyKey: `deposit:expire:${locked.deposit_id}`,
+            publicRef: publicReference('TX'), metadata: { depositId: locked.deposit_id }, entries: [
+              { accountId: locked.account_id, ledgerAccount: 'DEPOSIT_PENDING', amountCents: -amount },
+              { ledgerAccount: 'PROVIDER_EXPECTED', amountCents: amount },
+            ],
+          });
+          await client.query(
+            `UPDATE financial_deposits SET status='EXPIRED', pix_copy_paste=NULL, pix_qr_code=NULL, updated_at=now()
+             WHERE deposit_id=$1 AND status='PENDING'`, [locked.deposit_id],
+          );
+          return { status: 'EXPIRED' };
+        });
+        if (outcome.status === 'PAID_RECONCILE') {
+          const reconciliation = await this.processPaymentWebhook({
+            headers: {},
+            payload: {
+              id: `expiration-reconcile:${outcome.paymentId}`,
+              event: 'PAYMENT_RECEIVED',
+              payment: { id: outcome.paymentId },
+            },
+            trustedProviderPayment: outcome.remotePayment,
+          });
+          results.push({ publicReference: candidate.public_reference, status: reconciliation.credited ? 'CREDITED' : 'ALREADY_CREDITED' });
+          continue;
+        }
+        if (outcome.status === 'EXPIRED') this.logInfo('PIX_EXPIRATION_COMPLETED', { publicReference: candidate.public_reference });
+        if (outcome.status === 'RETRY_REQUIRED') this.logWarn('PIX_EXPIRATION_RETRY', { publicReference: candidate.public_reference, reason: outcome.reason });
+        results.push({ publicReference: candidate.public_reference, ...outcome });
+      } catch (error) {
+        this.logWarn('PIX_EXPIRATION_RETRY', { publicReference: candidate.public_reference, reason: safeText(error.message, 120) });
+        results.push({ publicReference: candidate.public_reference, status: 'RETRY_REQUIRED' });
+      }
+    }
+    return results;
   }
 
   async reserveStake(phone, { amountCents, entryId, tableId, gameCode = 'PIFE_DUELO' } = {}) {
