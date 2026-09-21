@@ -202,7 +202,7 @@ assert.equal(queueCredits.getBalance(phones[1]).availableBalance, 100);
 const forbiddenFinancialLanguage = /R\$|\bPix\b|\bsaque\b|pr[eê]mio real/i;
 const demoMenu = mainMenu({ paymentsEnabled: false, demoCreditsEnabled: true });
 const demoTables = tablesMenu({ paymentsEnabled: false, demoCreditsEnabled: true, demoBalance: 100 });
-assert.match(demoMenu, /6 .*Créditos de Teste/i);
+assert.doesNotMatch(demoMenu, /Créditos de Teste/i);
 assert.match(demoTables, /Mesa 1/);
 assert.match(demoTables, /2 Créditos de Teste/);
 assert.doesNotMatch(demoMenu, forbiddenFinancialLanguage);
@@ -217,7 +217,7 @@ const waitingWithoutBalance = waitingForOpponent({
 assert.doesNotMatch(waitingWithoutBalance, /Saldo disponível:/i);
 assert.match(waitingWithoutBalance, /Créditos reservados: 5/i);
 
-// Opção 6, histórico, explicação e proteção administrativa no fluxo do bot.
+// Atalho secundário 6, histórico, explicação e proteção administrativa no fluxo do bot.
 let demoMessageSequence = 0;
 function demoWebhook(phone, text) {
   demoMessageSequence += 1;
@@ -251,7 +251,7 @@ const bot = new WhatsAppPaymentBot({
   },
 });
 assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], 'menu'))).type, 'whatsapp_menu_sent');
-assert.match(sentMessages.at(-1).text, /6 .*Créditos de Teste/i);
+assert.doesNotMatch(sentMessages.at(-1).text, /Créditos de Teste/i);
 assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], '6'))).type, 'demo_credits_balance_sent');
 assert.match(sentMessages.at(-1).text, /MEUS CRÉDITOS DE TESTE/i);
 assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], '1'))).type, 'demo_credits_history_sent');

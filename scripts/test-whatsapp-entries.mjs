@@ -150,7 +150,7 @@ assert.equal(botPendingResult.type, 'whatsapp_entry_pending_admin');
 assert.equal(botPendingResult.entryId, 'E2000');
 assert.equal(botStore.listEntries().length, 1);
 assert.equal(botStore.getEntry('E2000').status, 'pending_admin_validation');
-assert.match(botMessages.at(-1).text, /Entrada de teste.*Aguarde/i);
+assert.match(botMessages.at(-1).text, /entrada foi registrada.*Aguarde/i);
 assert.doesNotMatch(botMessages.at(-1).text, /chave pix|https?:\/\//i);
 
 const pendingMenu = await bot.handleConnectivityWebhook(entryWebhook(botPlayer, 'menu'));

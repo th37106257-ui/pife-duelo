@@ -84,7 +84,7 @@ const flagsOff = {
   const status = publicProjectStatus(flagsOff);
   const fourPlayer = PUBLIC_ROADMAP.find((item) => item.id === 'four-player-mode');
 
-  assert.match(menu, /5 .*Atualiza..es/i);
+  assert.doesNotMatch(menu, /Atualiza..es/i);
   assert.match(updates, /ATUALIZA..ES DO PIFE DUELO/i);
   assert.match(updates, /✅[^\n]*Novidades dispon.ve[íi]s[^\n]*\n\n🔎[^\n]*Pr.ximos recursos/iu);
   assert.doesNotMatch(updates, /Partidas online 1 contra 1/i);
@@ -93,7 +93,7 @@ const flagsOff = {
   assert.match(upcoming, /Em estudo.*Modalidade para 4 jogadores/is);
   assert.match(upcoming, /O modo 1 contra 1 continuar. dispon.vel/i);
   assert.doesNotMatch(upcoming, /em breve|chegando em breve|em desenvolvimento/i);
-  assert.match(status, /beta fechado gratuito/i);
+  assert.match(status, /fase inicial para grupos de jogadores/i);
   assert.match(status, /Pagamentos, Pix e pr.mios reais n.o est.o dispon.veis/i);
   assert.doesNotMatch(`${updates}\n${available}\n${upcoming}`, /mesas pagas ativas|pagamentos liberados|reembolsos autom.ticos|torneios pagos/i);
 
@@ -133,7 +133,7 @@ const flagsOff = {
 
   const status = await runtime.bot.handleConnectivityWebhook(webhook(phone, '3'));
   assert.equal(status.section, 'status');
-  assert.match(runtime.sent.at(-1).text, /beta fechado gratuito/i);
+  assert.match(runtime.sent.at(-1).text, /fase inicial para grupos de jogadores/i);
 
   const invalid = await runtime.bot.handleConnectivityWebhook(webhook(phone, '9'));
   assert.equal(invalid.type, 'whatsapp_invalid_updates_option');

@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { paymentConfirmationMessage } from '../services/walletMessages.js';
 import { normalizePhone } from '../payments/PaymentService.js';
 
 const GAME_CODES = new Set(['PIFE_DUELO', 'BOMBERMAN_FUTURE']);
@@ -125,14 +126,7 @@ export class FinancialWalletService {
   async notifyDepositConfirmation(result) {
     if (!this.paymentConfirmationSender || !result?.depositId || !result?.phone) return { skipped: true };
     const key = `deposit_payment_confirmed:${result.depositId}`;
-    const message = [
-      '✅ *Pagamento confirmado*',
-      '',
-      `R$ ${(result.amountCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} adicionados à sua carteira.`,
-      '',
-      `Saldo: R$ ${(result.newBalanceCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
-      ...(this.isSandbox() ? ['', SANDBOX_NOTICE] : []),
-    ].join('\n');
+    const message = paymentConfirmationMessage(result);
     const claimed = await this.repository.transaction(async (client) => {
       const inserted = await client.query(
         `INSERT INTO financial_payment_notifications

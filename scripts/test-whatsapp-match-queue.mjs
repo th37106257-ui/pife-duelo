@@ -98,14 +98,13 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const menuResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'menu'));
   assert.equal(menuResult.type, 'whatsapp_menu_sent');
   assert.match(sentMessages.at(-1).text, /1 — Jogar/);
-  assert.match(sentMessages.at(-1).text, /2 — Como funciona/);
+  assert.match(sentMessages.at(-1).text, /2 — Carteira/);
 
   const testModeResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'teste'));
   assert.equal(testModeResult.type, 'whatsapp_test_mode_link_sent');
   assert.equal(testModeResult.testModeLink, 'https://pife-duelo.example/?mode=test');
-  assert.match(sentMessages.at(-1).text, /MODO TESTE GRÁTIS/i);
-  assert.match(sentMessages.at(-1).text, /Sem Pix/);
-  assert.match(sentMessages.at(-1).text, /Sem Pix/i);
+  assert.match(sentMessages.at(-1).text, /Treino/i);
+  assert.match(sentMessages.at(-1).text, /não usa sua carteira/i);
   assert.match(sentMessages.at(-1).text, /https:\/\/pife-duelo\.example\/\?mode=test/);
   assert.equal(store.listEntries().length, 0);
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
@@ -193,8 +192,9 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const firstResult = await chooseTable(bot, firstPhone, '1', '1', firstReplyJid);
   assert.equal(firstResult.type, 'whatsapp_queue_joined');
   assert.equal(firstResult.selectedTable, 2);
-  assert.match(sentMessages.at(-1).text, /aguardando na Mesa R\$2,00/i);
-  assert.match(sentMessages.at(-1).text, /\*cancelar\* — pedir cancelamento/);
+  assert.match(sentMessages.at(-1).text, /Aguardando adversário/i);
+  assert.match(sentMessages.at(-1).text, /Mesa: R\$2,00/i);
+  assert.match(sentMessages.at(-1).text, /\*cancelar\* — cancelar a espera/);
   assert.doesNotMatch(sentMessages.at(-1).text, /Pix|chave|https?:\/\//i);
   assert.equal(matchQueue.getQueueStatus(2).waitingPlayers, 1);
 
@@ -227,12 +227,12 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(secondResult.matchId);
   assert.equal(matchQueue.getQueueStatus(2).waitingPlayers, 0);
 
-  const matchMessages = sentMessages.filter((message) => message.text.includes('🎮 Partida encontrada!'));
+  const matchMessages = sentMessages.filter((message) => message.text.includes('Adversário encontrado'));
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondPhone));
   assert.ok(matchMessages.every((message) => message.text.includes('Mesa: R$2')));
-  assert.ok(matchMessages.every((message) => message.text.includes('Entre na sala pelo link abaixo:')));
+  assert.ok(matchMessages.every((message) => message.text.includes('Entrar:')));
   assert.ok(matchMessages.every((message) => message.text.includes('?online=1&entry=')));
   const matchUrls = matchMessages.map((message) => new URL(extractFirstUrl(message.text)));
   assert.ok(matchUrls.every((url) => url.pathname.startsWith('/join/whatsapp_match-')));
@@ -334,7 +334,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 
   const oldEntries = runtime.store.listEntries().filter((entry) => entry.whatsappMatchId === paired.matchId);
   const oldTokens = runtime.sentMessages
-    .filter((message) => message.text.includes('Partida encontrada!'))
+    .filter((message) => message.text.includes('Adversário encontrado'))
     .slice(-2)
     .map((message) => new URL(extractFirstUrl(message.text)).searchParams.get('entry'));
   assert.equal(oldTokens.length, 2);
@@ -402,7 +402,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(secondResult.selectedTable, 5);
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
 
-  const matchMessages = sentMessages.filter((message) => message.text.includes('Partida encontrada!'));
+  const matchMessages = sentMessages.filter((message) => message.text.includes('Adversário encontrado'));
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstReplyJid));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
@@ -448,7 +448,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(secondRuntimeAfterMemoryLoss.matchQueue.getQueueStatus(10).waitingPlayers, 0);
 
   const matchMessages = secondRuntimeAfterMemoryLoss.sentMessages
-    .filter((message) => message.text.includes('🎮 Partida encontrada!'));
+    .filter((message) => message.text.includes('Adversário encontrado'));
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondPhone));
@@ -463,7 +463,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const sentMessages = [];
   const runtime = createBot(new WhatsAppEntryStore(), {
     sendText: async (phone, text) => {
-      if (String(phone).endsWith('@lid') && text.includes('🎮 Partida encontrada!')) {
+      if (String(phone).endsWith('@lid') && text.includes('Adversário encontrado')) {
         throw new Error('SEND_LID_FAILED');
       }
       sentMessages.push({ phone, text });
@@ -478,7 +478,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const fallbackMatch = await chooseTable(runtime.bot, secondPhone, '1', '2', secondReplyJid);
   assert.equal(fallbackMatch.type, 'whatsapp_match_created');
 
-  const matchMessages = sentMessages.filter((message) => message.text.includes('🎮 Partida encontrada!'));
+  const matchMessages = sentMessages.filter((message) => message.text.includes('Adversário encontrado'));
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondPhone));
@@ -525,7 +525,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(retryRuntime.matchQueue.getQueueStatus(10).waitingPlayers, 0);
 
   const matchMessages = retryRuntime.sentMessages
-    .filter((message) => message.text.includes('🎮 Partida encontrada!'));
+    .filter((message) => message.text.includes('Adversário encontrado'));
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
@@ -566,7 +566,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(retryRuntime.matchQueue.getQueueStatus(20).waitingPlayers, 0);
 
   const matchMessages = retryRuntime.sentMessages
-    .filter((message) => message.text.includes('🎮 Partida encontrada!'));
+    .filter((message) => message.text.includes('Adversário encontrado'));
   assert.equal(matchMessages.length, 2);
   assert.ok(matchMessages.some((message) => message.phone === firstPhone));
   assert.ok(matchMessages.some((message) => message.phone === secondReplyJid));
@@ -692,7 +692,8 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const staleJoin = await bot.handleConnectivityWebhook(createWebhook(stalePhone, '3'));
   assert.equal(staleJoin.type, 'whatsapp_queue_joined');
   assert.equal(staleJoin.selectedTable, 10);
-  assert.match(sentMessages.at(-1).text, /aguardando na Mesa R\$10,00/i);
+  assert.match(sentMessages.at(-1).text, /Aguardando adversário/i);
+  assert.match(sentMessages.at(-1).text, /Mesa: R\$10,00/i);
   assert.notEqual(staleJoin.type, 'whatsapp_queue_active_match_blocked');
   assert.equal(store.getEntry(staleEntry.entryId).status, 'approved_for_queue');
   assert.equal(store.listEntries().filter((entry) => entry.phone === stalePhone).length, 1);
@@ -736,7 +737,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(firstPair.type, 'whatsapp_match_created');
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
 
-  const firstMatchMessages = sentMessages.filter((message) => message.text.includes('Partida encontrada!'));
+  const firstMatchMessages = sentMessages.filter((message) => message.text.includes('Adversário encontrado'));
   const secondOldLink = extractFirstUrl(firstMatchMessages.find((message) => message.phone === secondPhone)?.text);
   assert.ok(secondOldLink);
   const secondOldToken = new URL(secondOldLink).searchParams.get('entry');
@@ -771,7 +772,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   const adminPair = await chooseTable(bot, adminPreservedOpponent, '1', '3');
   assert.equal(adminPair.type, 'whatsapp_match_created');
   const adminPairLinks = sentMessages
-    .filter((message) => message.text.includes('Partida encontrada!') && message.text.includes('Mesa: R$10'))
+    .filter((message) => message.text.includes('Adversário encontrado') && message.text.includes('Mesa: R$10'))
     .slice(-2)
     .map((message) => new URL(extractFirstUrl(message.text)).searchParams.get('entry'));
 

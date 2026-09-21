@@ -1,3 +1,4 @@
+import { balanceMessage, walletMenu, depositPrompt, expiredPixMessage, insufficientBalanceMessage, pixMessage, pixFailureMessage, historyMessage, unavailableWalletMessage, unavailableWithdrawalMessage } from '../services/walletMessages.js';
 import { maskPhone, normalizePhone } from './PaymentService.js';
 import { buildPublicMatchReference } from '../services/publicMatchReference.js';
 import { WhatsAppConversationUiService } from '../services/WhatsAppConversationUiService.js';
@@ -125,6 +126,7 @@ function normalizeCommand(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
+    .replace(/\s+/g, ' ')
     .toLowerCase();
 }
 
@@ -139,7 +141,7 @@ const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
 const SUPPORT_COMMANDS = new Set(['4', 'suporte', 'atendimento', 'ajuda']);
 const PLAY_COMMANDS = new Set(['1', 'jogar', 'jogar valendo', 'valendo', 'ver mesas', 'mesas', 'mesa']);
-const HOW_IT_WORKS_COMMANDS = new Set(['2', 'como funciona', 'funcionamento']);
+const HOW_IT_WORKS_COMMANDS = new Set(['como funciona', 'funcionamento']);
 const TEST_MODE_COMMANDS = new Set(['modo teste', 'modo teste gratis', 'teste', 'testar', 'gratis', 'gratuito']);
 const RULES_COMMANDS = new Set(['3', 'regras', 'regra', 'como jogar']);
 const STATUS_COMMANDS = new Set(['status', 'situacao']);
@@ -172,7 +174,7 @@ function isFinancialCommandText(command) {
     SALDO_COMMANDS.has(command)
     || FINANCIAL_WALLET_COMMANDS.has(command)
     || command === 'saldo financeiro'
-    || command === 'extrato financeiro'
+    || ['extrato financeiro', 'extrato', 'sacar', 'recarregar', 'perfil'].includes(command)
     || /^depositar(?:\s|$)/.test(command)
     || /^sacar\s+\d+(?:[,.]\d{1,2})?\s+(CPF|CNPJ|EMAIL|PHONE|EVP)\s+[^|]+\|\s*.+$/i.test(command)
   );
@@ -192,6 +194,7 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (UPDATES_COMMANDS.has(command) || (currentState?.state === 'updates_menu' && command === 'voltar')) return 'updates';
   if (DEMO_CREDITS_COMMANDS.has(command)) return 'demo_credits';
   if (SALDO_COMMANDS.has(command)) return 'financial_wallet';
+  if (currentState?.state === 'idle' && command === '2') return 'financial_wallet';
   const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
@@ -909,32 +912,29 @@ export class WhatsAppPaymentBot {
   safeTableSelectedText(amount, { entryRegistered = false } = {}) {
     if (!this.paymentsEnabled) {
       return [
-        '*MESA SELECIONADA*',
+        '🎮 *Mesa selecionada*',
         '',
         `Mesa: R$${Number(amount).toFixed(2).replace('.', ',')}`,
         entryRegistered
-          ? 'Sua Entrada de teste foi registrada. Aguarde a próxima orientação.'
-          : 'A seleção foi registrada somente para teste da conversa.',
+          ? 'Sua entrada foi registrada. Aguarde a próxima orientação.'
+          : 'Esta mesa não aceita entradas no momento.',
         '',
-        '_Nenhum valor foi cobrado e não há prêmio real nesta fase._',
-        'Digite *status* para consultar ou *menu* para ver opções seguras.',
+        'Digite *status* para consultar ou *menu* para voltar.',
       ].join('\n');
     }
     if (entryRegistered) {
       return [
         `\u2705 Mesa selecionada: R$${Number(amount).toFixed(2).replace('.', ',')}.`,
         '',
-        'Sua entrada foi registrada em modo seguro.',
-        'Aguarde a libera\u00e7\u00e3o do admin para receber o link da partida.',
-        '',
-        '\u26A0\uFE0F Pix e pagamentos ainda est\u00e3o desligados nesta fase de teste.',
+        'Sua entrada foi registrada.',
+        'Aguarde a libera\u00e7\u00e3o para receber o link da partida.',
       ].join('\n');
     }
     return [
       `\u2705 Mesa selecionada: R$${Number(amount).toFixed(2).replace('.', ',')}`,
       '',
-      'O fluxo de pagamento ainda est\u00e1 em modo seguro/desligado.',
-      'Em breve enviaremos as instru\u00e7\u00f5es de Pix por aqui.',
+      'Esta mesa n\u00e3o aceita entradas no momento.',
+      'Digite *menu* para voltar.',
     ].join('\n');
   }
 
@@ -1020,7 +1020,7 @@ export class WhatsAppPaymentBot {
           const details = await this.financialWalletService.getWithdrawalDetails(senderPhone, paidMatch[1]);
           const result = await this.financialWalletService.markWithdrawalPaid(senderPhone, paidMatch[1], paidMatch[2]);
           await this.send(replyTo, `✅ Saque ${result.public_reference} marcado como pago${result.duplicate ? ' (já processado)' : ''}.`);
-          if (!result.duplicate) await this.send(details.phone_normalized, ['✅ *SAQUE PAGO*', `Operação: ${result.public_reference}`, `Valor: ${centsMoney(result.amount_cents)}`, '', this.financialWalletService.notice()].join('\n'));
+          if (!result.duplicate) await this.send(details.phone_normalized, ['✅ *SAQUE PAGO*', `Operação: ${result.public_reference}`, `Valor: ${centsMoney(result.amount_cents)}`].join('\n'));
           return { type: 'financial_admin_withdrawal_paid', decision: 'reply_sent', duplicate: Boolean(result.duplicate) };
         }
         const rejectMatch = rawText.match(/^(?:\/admin|admin)\s+saque\s+rejeitar\s+([A-Z0-9-]+)\s+(.+)$/i);
@@ -1028,7 +1028,7 @@ export class WhatsAppPaymentBot {
           const details = await this.financialWalletService.getWithdrawalDetails(senderPhone, rejectMatch[1]);
           const result = await this.financialWalletService.rejectWithdrawal(senderPhone, rejectMatch[1], rejectMatch[2]);
           await this.send(replyTo, `✅ Saque ${result.public_reference} rejeitado${result.duplicate ? ' (já processado)' : ''}.`);
-          if (!result.duplicate) await this.send(details.phone_normalized, ['❌ *SAQUE REJEITADO*', `Operação: ${result.public_reference}`, `Motivo: ${result.failure_reason}`, 'O valor reservado voltou ao saldo disponível.', '', this.financialWalletService.notice()].join('\n'));
+          if (!result.duplicate) await this.send(details.phone_normalized, ['❌ *SAQUE REJEITADO*', `Operação: ${result.public_reference}`, `Motivo: ${result.failure_reason}`, 'O valor reservado voltou ao saldo disponível.'].join('\n'));
           return { type: 'financial_admin_withdrawal_rejected', decision: 'reply_sent', duplicate: Boolean(result.duplicate) };
         }
         const reviewMatch = rawText.match(/^(?:\/admin|admin)\s+saque\s+revisar\s+([A-Z0-9-]+)\s+(.+)$/i);
@@ -1370,7 +1370,7 @@ export class WhatsAppPaymentBot {
           source: 'whatsapp-admin',
         });
         await this.send(internalEntry.phone, [
-          '\u274C Sua entrada n\u00e3o foi liberada pelo admin.',
+          '\u274C Sua entrada n\u00e3o foi liberada.',
           '',
           `Motivo: ${entry.rejectionReason}`,
           '',
@@ -1596,11 +1596,7 @@ export class WhatsAppPaymentBot {
     const context = this.getPlayerContext(incoming.phone);
     if ([WHATSAPP_PLAYER_STATES.IDLE, WHATSAPP_PLAYER_STATES.MATCH_FINISHED].includes(context.state)) {
       this.setConversationState(incoming.phone, 'idle');
-      if (this.financialWalletService?.isEnabled?.()) {
-        await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', await this.financialMainMenu(incoming));
-      } else {
-        await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
-      }
+      await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
       return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
     }
 
@@ -1620,92 +1616,64 @@ export class WhatsAppPaymentBot {
       displayName: sanitizeText(incoming.pushName || 'Jogador'),
     });
     this.setConversationState(incoming.phone, 'financial_menu');
-    return [
-      '🎴 *PIFE DUELO*',
-      '',
-      `👤 Jogador: ${account.display_name}`,
-      `🆔 ID: ${account.public_id}`,
-      `💰 Saldo disponível: ${centsMoney(account.available_balance_cents)}`,
-      '',
-      '1 — Jogar agora',
-      '2 — Meu perfil e saldo',
-      '3 — Adicionar saldo',
-      '4 — Solicitar saque',
-      '5 — Extrato',
-      '6 — Regras',
-      '7 — Suporte',
-      '',
-      this.financialWalletService.notice(),
-      '🧪 Saldo de demonstração — não possui valor real.',
-    ].join('\n');
+    return walletMenu(account);
   }
 
   async handleFinancialCommand(incoming, { replyTo, command, originIp }) {
     command = normalizeCommand(command);
     const wallet = this.financialWalletService;
-    if (/^depositar(?:\s|$)/.test(command)) {
-      return this.handleDepositCommand(incoming, { replyTo, command, originIp });
-    }
-    if (!wallet?.isEnabled?.()) return null;
     const state = this.getConversationState(incoming.phone).state;
-    if (SALDO_COMMANDS.has(command)) {
+    const walletStates = ['financial_menu', 'financial_deposit_amount', 'financial_history', 'financial_profile', 'financial_pix_expired', 'financial_insufficient'];
+    const atRoot = ['idle', 'how_it_works'].includes(state);
+    if ((command === '0' || command === 'voltar') && state !== 'cancel_confirmation') {
+      if (wallet?.isEnabled?.() && walletStates.includes(state) && state !== 'financial_menu') {
+        await this.sendPanel(replyTo, incoming.phone, 'FINANCIAL_MENU', await this.financialMainMenu(incoming));
+        return { type: 'financial_menu', decision: 'reply_sent', originIp };
+      }
+      return this.handleMenuCommand(incoming, { replyTo, originIp });
+    }
+    const openWallet = FINANCIAL_WALLET_COMMANDS.has(command) || (atRoot && command === '2');
+    if (!wallet?.isEnabled?.()) {
+      if (/^depositar(?:\s|$)/.test(command)) return this.handleDepositCommand(incoming, { replyTo, command, originIp });
+      if (openWallet || SALDO_COMMANDS.has(command) || ['extrato', 'sacar', 'recarregar'].includes(command)) {
+        await this.send(replyTo, unavailableWalletMessage());
+        return { type: 'financial_unavailable', decision: 'reply_sent', originIp };
+      }
+      return null;
+    }
+    if (SALDO_COMMANDS.has(command) || (state === 'financial_menu' && command === '3')) {
       const account = await wallet.getOrCreateAccount(incoming.phone, { displayName: incoming.pushName || 'Jogador' });
-      await this.send(replyTo, [
-        '💰 *SEU SALDO*', '', centsMoney(account.available_balance_cents), '', wallet.notice(),
-      ].join('\n'));
+      await this.send(replyTo, balanceMessage(account));
       return { type: 'financial_balance', decision: 'reply_sent', originIp };
     }
-    if (FINANCIAL_WALLET_COMMANDS.has(command)) {
+    if (openWallet) {
       await this.sendPanel(replyTo, incoming.phone, 'FINANCIAL_MENU', await this.financialMainMenu(incoming));
       return { type: 'financial_menu', decision: 'reply_sent', originIp };
     }
-    if (state === 'financial_menu' && command === '1') {
-      this.setConversationState(incoming.phone, 'financial_play_menu');
-      await this.send(replyTo, [
-        '🎮 *COMO DESEJA JOGAR?*', '',
-        '1 — Jogar com bot',
-        'Partida gratuita para treinamento. Não usa saldo e não gera prêmio.', '',
-        '2 — Jogar com outro jogador',
-        'A entrada será reservada antes da partida.', '', '0 — Voltar', '', wallet.notice(),
-      ].join('\n'));
-      return { type: 'financial_play_menu', decision: 'reply_sent', originIp };
-    }
-    if (state === 'financial_play_menu' && command === '1') {
-      this.setConversationState(incoming.phone, 'idle');
-      await this.send(replyTo, this.safeTestModeText());
-      return { type: 'financial_training_link', decision: 'reply_sent', originIp };
-    }
-    if (state === 'financial_play_menu' && command === '2') {
-      this.setConversationState(incoming.phone, 'choosing_table');
-      const tables = [2, 5, 10, 20].map((value, index) => {
-        const feePercent = value <= 5 ? 10 : (value === 10 ? 15 : 18);
-        const prize = value * 2 * (1 - feePercent / 100);
-        return `${index + 1} — Entrada ${centsMoney(value * 100)} | Prêmio ${centsMoney(Math.round(prize * 100))} | Taxa ${feePercent}%`;
-      });
-      await this.send(replyTo, ['🎴 *MESAS ONLINE*', ...tables, '', 'A entrada é reservada agora e liberada se a partida não iniciar.', this.financialWalletService.notice()].join('\n'));
-      return { type: 'financial_tables', decision: 'reply_sent', originIp };
-    }
-    if ((state === 'financial_menu' && command === '2') || command === 'saldo financeiro') {
-      const account = await wallet.getOrCreateAccount(incoming.phone, { displayName: incoming.pushName || 'Jogador' });
-      await this.send(replyTo, [
-        '👤 *MEU PERFIL E SALDO*', `ID: ${account.public_id}`,
-        `Disponível: ${centsMoney(account.available_balance_cents)}`,
-        `Reservado em partidas: ${centsMoney(account.reserved_balance_cents)}`,
-        `Reservado para saque: ${centsMoney(account.withdrawal_pending_balance_cents)}`, '', wallet.notice(),
-      ].join('\n'));
-      return { type: 'financial_profile', decision: 'reply_sent', originIp };
-    }
-    if (state === 'financial_menu' && command === '3') {
-      await this.send(replyTo, ['💠 *ADICIONAR SALDO*', 'Envie: depositar VALOR', 'Exemplo: depositar 20', '', wallet.notice()].join('\n'));
+    if (command === 'depositar' || command === 'recarregar'
+      || (['financial_menu', 'financial_pix_expired', 'financial_insufficient'].includes(state) && command === '1')) {
+      this.setConversationState(incoming.phone, 'financial_deposit_amount');
+      await this.send(replyTo, depositPrompt());
       return { type: 'financial_deposit_help', decision: 'reply_sent', originIp };
     }
-    if (state === 'financial_menu' && command === '4') {
-      await this.send(replyTo, [
-        '💸 *SOLICITAR SAQUE*', `Mínimo: ${centsMoney(wallet.config.minWithdrawalAmountCents)}`,
-        'Envie: sacar VALOR TIPO CHAVE | NOME DO TITULAR',
-        'Exemplo: sacar 20 EMAIL jogador@exemplo.com | Jogador Silva', '', wallet.notice(),
-      ].join('\n'));
-      return { type: 'financial_withdrawal_help', decision: 'reply_sent', originIp };
+    if (/^depositar\s/.test(command) || (state === 'financial_deposit_amount' && /^\d/.test(command))) {
+      return this.handleDepositCommand(incoming, { replyTo, command: /^depositar\s/.test(command) ? command : 'depositar ' + command, originIp });
+    }
+    if ((state === 'financial_menu' && command === '4') || command === 'perfil') {
+      const account = await wallet.getOrCreateAccount(incoming.phone, { displayName: incoming.pushName || 'Jogador' });
+      this.setConversationState(incoming.phone, 'financial_profile');
+      await this.send(replyTo, ['👤 *Perfil*', '', 'Seu identificador: ' + account.public_id, '', '0 — Voltar'].join('\n'));
+      return { type: 'financial_profile', decision: 'reply_sent', originIp };
+    }
+    if ((state === 'financial_menu' && command === '2') || ['extrato financeiro', 'extrato'].includes(command)) {
+      const history = await wallet.listHistory(incoming.phone);
+      this.setConversationState(incoming.phone, 'financial_history');
+      await this.send(replyTo, historyMessage(history));
+      return { type: 'financial_history', decision: 'reply_sent', originIp };
+    }
+    if (/^sacar(?:\s|$)/.test(command) && wallet.config?.withdrawalsEnabled === false) {
+      await this.send(replyTo, unavailableWithdrawalMessage());
+      return { type: 'financial_withdrawal_unavailable', decision: 'reply_sent', originIp };
     }
     const withdrawal = incoming.text.match(/^sacar\s+(\d+(?:[,.]\d{1,2})?)\s+(CPF|CNPJ|EMAIL|PHONE|EVP)\s+([^|]+)\|\s*(.+)$/i);
     if (withdrawal) {
@@ -1733,18 +1701,9 @@ export class WhatsAppPaymentBot {
       }
       await this.send(replyTo, [
         '✅ Solicitação de saque registrada.', `Operação: ${request.public_reference}`,
-        `Valor reservado: ${centsMoney(request.amount_cents)}`, 'Status: aguardando pagamento manual do administrador.', '', wallet.notice(),
+        `Valor reservado: ${centsMoney(request.amount_cents)}`, 'Status: aguardando pagamento manual do administrador.',
       ].join('\n'));
       return { type: 'financial_withdrawal_requested', decision: 'reply_sent', publicReference: request.public_reference, originIp };
-    }
-    if ((state === 'financial_menu' && command === '5') || command === 'extrato financeiro') {
-      const history = await wallet.listHistory(incoming.phone);
-      await this.send(replyTo, [
-        '📜 *EXTRATO FINANCEIRO*',
-        ...(history.length ? history.map((item) => `${item.public_reference} | ${item.transaction_type} | ${centsMoney(item.amount_cents)}`) : ['Nenhuma movimentação.']),
-        '', wallet.notice(),
-      ].join('\n'));
-      return { type: 'financial_history', decision: 'reply_sent', originIp };
     }
     return null;
   }
@@ -1782,26 +1741,15 @@ export class WhatsAppPaymentBot {
       record('DEPOSIT_CREATED');
     } catch (error) {
       if (error?.message === 'FINANCIAL_DEPOSIT_EXPIRED') {
-        return reply([
-          '⌛ Esta cobrança Pix expirou.',
-          '',
-          'Digite novamente:',
-          `depositar ${centsMoney(Number(amount)).replace(/^R\$\s*/, '')}`,
-          '',
-          'para gerar uma nova cobrança.',
-        ].join('\n'), 'financial_deposit_expired');
+        this.setConversationState(incoming.phone, 'financial_pix_expired');
+        return reply(expiredPixMessage(), 'financial_deposit_expired');
       }
       this.logWarn('FINANCIAL_DEPOSIT_CREATE_REJECTED', {
         stage: 'FINANCIAL_SERVICE_CALLED', errorCode: 'DEPOSIT_REQUEST_FAILED',
       });
-      return reply('Não consegui gerar a cobrança Pix agora. Tente novamente em alguns instantes ou chame o suporte.', 'financial_deposit_failed');
+      return reply(pixFailureMessage(), 'financial_deposit_failed');
     }
-    const text = [
-      '💠 *COBRANÇA PIX SANDBOX*', `Valor: ${centsMoney(order.amount_cents)}`,
-      `Operação: ${order.public_reference}`, '', 'Pix copia e cola:', order.pix_copy_paste,
-      '', `⏱️ Este Pix fica disponível por ${wallet.config?.pixPaymentWindowMinutes || 10} minutos.`,
-      'A confirmação ocorre somente pelo webhook autenticado.', wallet.notice(),
-    ].join('\n');
+    const text = pixMessage(order, wallet.config?.pixPaymentWindowMinutes || 10);
     record('RESPONSE_BUILT');
     return reply(text, 'financial_deposit_created', order.public_reference);
   }
@@ -2047,8 +1995,14 @@ export class WhatsAppPaymentBot {
       };
     }
     if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
-    const financialResult = await this.handleFinancialCommand(incoming, { replyTo, command, originIp });
-    if (financialResult) return financialResult;
+    try {
+      const financialResult = await this.handleFinancialCommand(incoming, { replyTo, command, originIp });
+      if (financialResult) return financialResult;
+    } catch {
+      this.logWarn('FINANCIAL_PLAYER_ACTION_FAILED', { reason: 'ACTION_UNAVAILABLE' });
+      await this.send(replyTo, friendlyActionError());
+      return { type: 'financial_action_failed', decision: 'reply_sent', originIp };
+    }
     if (currentState.state === 'demo_credits_menu' && ['1', '2'].includes(command)) {
       return this.handleDemoCreditsSection(incoming, { replyTo, command, originIp });
     }
@@ -2204,6 +2158,15 @@ export class WhatsAppPaymentBot {
           ? await this.matchQueue.joinFinancialQueue(incoming.phone, selectedTable, { replyTo })
           : await this.matchQueue.joinQueue(incoming.phone, selectedTable, { replyTo });
         if (queueResult.blocked) {
+          if (queueResult.reason === 'FINANCIAL_INSUFFICIENT_BALANCE') {
+            this.setConversationState(incoming.phone, 'financial_insufficient');
+            await this.send(replyTo, insufficientBalanceMessage());
+            return { type: 'financial_insufficient_balance', decision: 'reply_sent', reason: queueResult.reason, originIp };
+          }
+          if (queueResult.reason === 'REAL_MONEY_GAMES_DISABLED') {
+            await this.send(replyTo, 'As mesas estão indisponíveis no momento. Digite *teste* para treinar ou *menu* para voltar.');
+            return { type: 'financial_tables_unavailable', decision: 'reply_sent', reason: queueResult.reason, originIp };
+          }
           if (queueResult.reason === 'DEMO_INSUFFICIENT_CREDITS') {
             await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_INSUFFICIENT', demoCreditsInsufficient({
               availableBalance: queueResult.availableBalance,
@@ -2386,7 +2349,7 @@ export class WhatsAppPaymentBot {
           entry = this.entryService.createEntry({ phone: incoming.phone, selectedTable, source: 'whatsapp' });
         } catch (error) {
           if (error.message === 'ENTRY_TABLE_LOCKED') {
-            await this.send(replyTo, 'Voc\u00ea j\u00e1 possui uma entrada ativa em outra mesa. Aguarde o admin ou digite menu.');
+            await this.send(replyTo, 'Voc\u00ea j\u00e1 possui uma entrada ativa em outra mesa. Aguarde ou digite *menu*.');
             return { type: 'whatsapp_entry_table_locked', decision: 'reply_sent', reason: error.message, state: currentState.state, originIp };
           }
           throw error;
@@ -2500,7 +2463,8 @@ export class WhatsAppPaymentBot {
 
   pixText(payment) {
     return [
-      `Pagamento #${payment.paymentId}`,
+      '💳 *Pagamento da mesa*',
+      '',
       `Mesa: ${money(payment.selectedTable)}`,
       `Valor do Pix: ${money(payment.amount)}`,
       `Prêmio: ${money(payment.prize)}`,
@@ -2586,7 +2550,7 @@ export class WhatsAppPaymentBot {
           reason: sanitizeText(rejectMatch[2]),
           source: 'whatsapp',
         });
-        await this.send(payment.phone, `❌ O pagamento #${payment.paymentId} não foi aprovado. Motivo: ${payment.rejectionReason}`);
+        await this.send(payment.phone, `❌ O pagamento não foi aprovado. Motivo: ${payment.rejectionReason}`);
         await this.send(phone, `Pagamento #${payment.paymentId} rejeitado e jogador avisado.`);
         return { type: 'payment_rejected', paymentId: payment.paymentId };
       } catch (error) {
@@ -2658,8 +2622,8 @@ export class WhatsAppPaymentBot {
           source: 'whatsapp',
         });
         await this.send(incoming.phone, [
-          `Comprovante do pagamento #${payment.paymentId} recebido.`,
-          'Status: pendente de confirmação manual.',
+          '✅ Comprovante recebido.',
+          'A confirmação do pagamento está pendente.',
           'O envio do comprovante não libera a partida automaticamente.',
         ].join('\n'));
         await this.notifyAdmins(payment);

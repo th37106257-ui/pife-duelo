@@ -8,7 +8,7 @@ export const PUBLIC_ROADMAP_STATUS = Object.freeze({
 
 export const PUBLIC_ROADMAP_STATUS_LABELS = Object.freeze({
   [PUBLIC_ROADMAP_STATUS.AVAILABLE]: '✅ Disponível',
-  [PUBLIC_ROADMAP_STATUS.TESTING]: '🧪 Em testes',
+  [PUBLIC_ROADMAP_STATUS.TESTING]: '🔧 Em preparação',
   [PUBLIC_ROADMAP_STATUS.PLANNED]: '🛠️ Planejado',
   [PUBLIC_ROADMAP_STATUS.STUDY]: '🔎 Em estudo',
   [PUBLIC_ROADMAP_STATUS.PAUSED]: '⏸️ Pausado',
@@ -22,11 +22,11 @@ export const PUBLIC_ROADMAP = Object.freeze([
   { id: 'individual-match-links', title: 'Links individuais para as partidas', status: PUBLIC_ROADMAP_STATUS.AVAILABLE, description: 'Cada jogador recebe seu próprio acesso à sala.', publicVisible: true, order: 30 },
   { id: 'player-reconnection', title: 'Reconexão após perda de conexão', status: PUBLIC_ROADMAP_STATUS.AVAILABLE, description: 'Proteção para retornos após uma interrupção temporária.', publicVisible: true, order: 40 },
   { id: 'pre-match-waiting-room', title: 'Sala de espera antes do início', status: PUBLIC_ROADMAP_STATUS.AVAILABLE, description: 'A partida aguarda os dois jogadores antes de começar.', publicVisible: true, order: 50 },
-  { id: 'free-training-mode', title: 'Modo de treinamento gratuito', status: PUBLIC_ROADMAP_STATUS.AVAILABLE, description: 'Treinamento separado das filas reais e sem prêmio.', publicVisible: true, order: 60 },
+  { id: 'free-training-mode', title: 'Modo de treinamento gratuito', status: PUBLIC_ROADMAP_STATUS.AVAILABLE, description: 'Treinamento separado das filas e sem alterar a carteira.', publicVisible: true, order: 60 },
   { id: 'result-and-whatsapp-return', title: 'Resultado e retorno ao WhatsApp', status: PUBLIC_ROADMAP_STATUS.AVAILABLE, description: 'Resultado final claro e retorno seguro ao bot.', publicVisible: true, order: 70 },
-  { id: 'closed-beta', title: 'Beta fechado com jogadores reais', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Validação controlada da experiência completa.', publicVisible: true, order: 110 },
-  { id: 'stability-improvements', title: 'Melhorias de estabilidade', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Ajustes baseados nos testes reais.', publicVisible: true, order: 120 },
-  { id: 'match-monitoring', title: 'Monitoramento de partidas', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Acompanhamento técnico para detectar falhas.', publicVisible: true, order: 130 },
+  { id: 'closed-beta', title: 'Acesso inicial para grupos', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Liberação gradual da experiência completa.', publicVisible: true, order: 110 },
+  { id: 'stability-improvements', title: 'Melhorias de estabilidade', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Ajustes baseados no uso das partidas.', publicVisible: true, order: 120 },
+  { id: 'match-monitoring', title: 'Monitoramento de partidas', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Acompanhamento das partidas para detectar interrupções.', publicVisible: true, order: 130 },
   { id: 'chatbot-experience', title: 'Ajustes na experiência do chatbot', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Conversa mais clara e com menos mensagens acumuladas.', publicVisible: true, order: 140 },
   { id: 'exit-and-reconnection-flows', title: 'Melhorias nos fluxos de desistência e reconexão', status: PUBLIC_ROADMAP_STATUS.TESTING, description: 'Proteção do estado dos jogadores em situações de saída.', publicVisible: true, order: 150 },
   {
@@ -99,7 +99,7 @@ export function upcomingUpdates(options = {}) {
   return [
     '*🔎 PRÓXIMOS RECURSOS*', '',
     ...items.map((item) => itemLine(item, { includeDescription: true })), '',
-    '_Não há datas confirmadas. Cada mudança depende de validação técnica e testes._', '',
+    '_Não há datas confirmadas. Cada mudança será liberada gradualmente._', '',
     'Digite *atualizações* para voltar ou *menu* para o início.',
   ].join('\n');
 }
@@ -110,8 +110,8 @@ export function publicProjectStatus({ featureFlags = {} } = {}) {
     && featureEnabled(featureFlags, 'gateEnabled');
   return [
     '*📊 STATUS DO PROJETO*', '',
-    'O Pife Duelo está atualmente em fase de beta fechado gratuito.',
-    'Estamos validando estabilidade, reconexão, partidas online e experiência dos jogadores antes de liberar novas etapas.', '',
+    'O Pife Duelo está em uma fase inicial para grupos de jogadores.',
+    'Estamos aprimorando estabilidade, reconexão e experiência antes de liberar novas etapas.', '',
     financialEnabled
       ? 'Recursos financeiros só são exibidos quando todas as proteções necessárias estão ativas.'
       : '_Pagamentos, Pix e prêmios reais não estão disponíveis nesta fase._', '',

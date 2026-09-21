@@ -24,9 +24,10 @@ wallet.isEnabled = () => true;
 for (const command of ['depositar 1', 'depositar 1,00', 'depositar 1.00', 'Depositar 1', 'DEPOSITAR 1', ' depositar 1', 'depositar    1']) {
   assert.equal((await run(command)).type, 'financial_deposit_created');
   assert.equal(calls.at(-1).amount, 100);
-  assert.match(sent.at(-1), /disponível por 10 minutos/);
+  assert.match(sent.at(-1), /Válido por 10 minutos/);
 }
-for (const command of ['depositar', 'depositar abc', 'depositar -1', 'depositar 0', 'depositar 1,2,3', 'depositar 9007199254740992']) {
+assert.equal((await run('depositar')).type, 'financial_deposit_help');
+for (const command of ['depositar abc', 'depositar -1', 'depositar 0', 'depositar 1,2,3', 'depositar 9007199254740992']) {
   const before = calls.length;
   assert.equal((await run(command)).type, 'financial_deposit_invalid');
   assert.equal(calls.length, before);
@@ -37,8 +38,8 @@ assert.equal((await run('depositar 1')).type, 'financial_deposit_unavailable');
 wallet.config.pixDepositsEnabled = true;
 wallet.createDeposit = async () => { throw new Error('FINANCIAL_DEPOSIT_EXPIRED'); };
 assert.equal((await run('depositar 1')).type, 'financial_deposit_expired');
-assert.match(sent.at(-1), /cobrança Pix expirou/);
-assert.match(sent.at(-1), /depositar 1,00/);
+assert.match(sent.at(-1), /Pix expirado/);
+assert.match(sent.at(-1), /Gerar novo Pix/);
 wallet.createDeposit = async () => { throw new Error('UNTRUSTED_PRIVATE_DETAILS'); };
 assert.equal((await run('depositar 1')).type, 'financial_deposit_failed');
 assert.ok(!sent.join('').includes('UNTRUSTED_PRIVATE_DETAILS'));
@@ -97,7 +98,7 @@ assert.equal(Number((await service.getAccount(fakePhone)).available_balance_cent
 assert.equal(paymentConfirmations.length, 1);
 assert.match(paymentConfirmations[0].text, /Pagamento confirmado/);
 assert.match(paymentConfirmations[0].text, /Saldo: R\$ 1,00/);
-assert.match(paymentConfirmations[0].text, /demonstração/);
+assert.doesNotMatch(paymentConfirmations[0].text, /sandbox|demonstração|homologação|nenhum dinheiro real/i);
 assert.equal((await pool.query('SELECT count(*)::int AS total FROM financial_payment_notifications WHERE status=\'SENT\'')).rows[0].total, 1);
 const retryOrder = await service.createDeposit(fakePhone, 200, { idempotencyKey: 'notification-retry' });
 provider.markPaid(retryOrder.provider_payment_id);

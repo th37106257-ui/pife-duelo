@@ -83,22 +83,24 @@ assert.equal(connectivityReply.type, 'whatsapp_menu_sent');
 assert.equal(connectivityReply.state, 'idle');
 assert.match(connectivityMessages.at(-1).text, /PIFE DUELO/);
 assert.match(connectivityMessages.at(-1).text, /1 — Jogar/);
-assert.match(connectivityMessages.at(-1).text, /2 — Como funciona/);
-assert.match(connectivityMessages.at(-1).text, /testes gratuitos/);
+assert.match(connectivityMessages.at(-1).text, /2 — Carteira/);
+assert.match(connectivityMessages.at(-1).text, /3 — Regras/);
+assert.match(connectivityMessages.at(-1).text, /4 — Suporte/);
+assert.doesNotMatch(connectivityMessages.at(-1).text, /sandbox|homologação|demo|teste/i);
 
 const safeTables = await sendConnectivity('1');
 assert.equal(safeTables.type, 'whatsapp_tables_sent');
 assert.equal(safeTables.state, 'choosing_table');
-assert.match(connectivityMessages.at(-1).text, /Mesa R\$2,00/);
-assert.match(connectivityMessages.at(-1).text, /Mesa R\$20,00/);
+assert.match(connectivityMessages.at(-1).text, /1 — R\$2,00/);
+assert.match(connectivityMessages.at(-1).text, /4 — R\$20,00/);
 
 const safeTableTwo = await sendConnectivity('1');
 assert.equal(safeTableTwo.type, 'whatsapp_table_selected_safe');
 assert.equal(safeTableTwo.selectedTable, 2);
 assert.equal(connectivityBot.getConversationState(playerPhone).state, 'table_selected');
-assert.match(connectivityMessages.at(-1).text, /MESA SELECIONADA/);
+assert.match(connectivityMessages.at(-1).text, /Mesa selecionada/);
 assert.match(connectivityMessages.at(-1).text, /Mesa: R\$2,00/);
-assert.match(connectivityMessages.at(-1).text, /Nenhum valor foi cobrado/);
+assert.match(connectivityMessages.at(-1).text, /não aceita entradas no momento/);
 
 for (const [option, amount] of [['2', 5], ['3', 10], ['4', 20]]) {
   await sendConnectivity('menu');
@@ -110,14 +112,14 @@ for (const [option, amount] of [['2', 5], ['3', 10], ['4', 20]]) {
 }
 
 await sendConnectivity('ol\u00e1');
-const howItWorks = await sendConnectivity('2');
+const howItWorks = await sendConnectivity('como funciona');
 assert.equal(howItWorks.type, 'whatsapp_how_it_works_sent');
-assert.match(connectivityMessages.at(-1).text, /COMO FUNCIONA/);
+assert.match(connectivityMessages.at(-1).text, /Como funciona/);
 const testModeByOptionTwo = await sendConnectivity('teste');
 assert.equal(testModeByOptionTwo.type, 'whatsapp_test_mode_link_sent');
 assert.equal(testModeByOptionTwo.testModeLink, 'https://pife-duelo.example/?mode=test');
-assert.match(connectivityMessages.at(-1).text, /MODO TESTE GRÁTIS/i);
-assert.match(connectivityMessages.at(-1).text, /Sem Pix/);
+assert.match(connectivityMessages.at(-1).text, /Treino/i);
+assert.match(connectivityMessages.at(-1).text, /não usa sua carteira/i);
 assert.match(connectivityMessages.at(-1).text, /https:\/\/pife-duelo\.example\/\?mode=test/);
 
 await sendConnectivity('come\u00e7ar');

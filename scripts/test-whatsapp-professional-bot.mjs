@@ -35,12 +35,10 @@ function webhook(text) {
   const menu = mainMenu({ paymentsEnabled: false });
   assert.match(menu, /PIFE DUELO/);
   assert.match(menu, /1 .*Jogar/);
-  assert.match(menu, /2 .*Como funciona/);
-  assert.match(menu, /3 .*Regras do Pife/);
+  assert.match(menu, /2 .*Carteira/);
+  assert.match(menu, /3 .*Regras/);
   assert.match(menu, /4 .*Suporte/);
-  assert.match(menu, /🎮[^\n]*Jogar[^\n]*\n\n🧭[^\n]*Como funciona/u);
-  assert.match(menu, /sem cobran.a/i);
-  assert.match(menu, /sem pr.mio real/i);
+  assert.doesNotMatch(menu, /sandbox|homologa..o|demonstra..o|nenhum dinheiro real/i);
   assert.doesNotMatch(menu, /vencedor recebe/i);
 
   const tables = tablesMenu({ paymentsEnabled: false });
@@ -48,21 +46,20 @@ function webhook(text) {
   assert.match(tables, /R\$5,00/);
   assert.match(tables, /R\$10,00/);
   assert.match(tables, /R\$20,00/);
-  assert.match(tables, /1️⃣[^\n]*R\$2,00[^\n]*\n\n2️⃣[^\n]*R\$5,00/u);
-  assert.match(tables, /Nenhum valor ser. cobrado/i);
+  assert.match(tables, /1 .*R\$2,00/);
   assert.doesNotMatch(tables, /Pix/i);
 
-  assert.match(howItWorksMenu({ paymentsEnabled: false }), /testes s.o gratuitos/i);
+  assert.match(howItWorksMenu({ paymentsEnabled: false }), /Escolha uma mesa/i);
   assert.match(rulesMenu(), /Combina..es v.lidas/i);
-  assert.match(rulesMenu(), /🎯[^\n]*Objetivo[^\n]*\n\n🔄[^\n]*turno/iu);
+  assert.match(rulesMenu(), /1 .*Objetivo[^]*2 .*turno/iu);
   assert.match(ruleTopic('1'), /tr.s combina..es v.lidas/i);
   assert.match(ruleTopic('2'), /compre uma carta/i);
   assert.match(ruleTopic('3'), /Sequ.ncia/i);
   assert.match(ruleTopic('4'), /use \*BATER\*/i);
   assert.match(ruleTopic('5'), /Partida come.ou/i);
   assert.match(allRules(), /Uma carta n.o pode ser reutilizada/i);
-  assert.match(supportMenu({ publicReference: 'PD-ABCD1234' }), /PD-ABCD1234/);
-  assert.match(supportMenu(), /🔗[^\n]*Link n.o abre[^\n]*\n\n👥[^\n]*Advers.rio/iu);
+  assert.doesNotMatch(supportMenu({ publicReference: 'PD-ABCD1234' }), /PD-ABCD1234/);
+  assert.match(supportMenu(), /1 .*Link n.o abre[^]*2 .*Advers.rio/iu);
   assert.match(supportTopic('3'), /Atualize a p.gina/i);
 }
 
@@ -90,9 +87,13 @@ function webhook(text) {
   assert.equal(hello.type, 'whatsapp_menu_sent');
   assert.match(sentMessages.at(-1).text, /PIFE DUELO/);
 
-  const how = await bot.handleConnectivityWebhook(webhook('2'));
+  const walletUnavailable = await bot.handleConnectivityWebhook(webhook('2'));
+  assert.equal(walletUnavailable.type, 'financial_unavailable');
+  assert.match(sentMessages.at(-1).text, /carteira est. indispon.vel/i);
+
+  const how = await bot.handleConnectivityWebhook(webhook('como funciona'));
   assert.equal(how.type, 'whatsapp_how_it_works_sent');
-  assert.match(sentMessages.at(-1).text, /COMO FUNCIONA/);
+  assert.match(sentMessages.at(-1).text, /Como funciona/i);
 
   const rules = await bot.handleConnectivityWebhook(webhook('regras'));
   assert.equal(rules.type, 'whatsapp_rules_sent');

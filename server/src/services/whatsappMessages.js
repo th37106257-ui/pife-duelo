@@ -29,50 +29,14 @@ export const WHATSAPP_PLAYER_STATES = Object.freeze({
   REFUND_PENDING: 'REFUND_PENDING',
 });
 
-export function mainMenu({ paymentsEnabled = false, demoCreditsEnabled = false } = {}) {
-  return [
-    '*🎴 PIFE DUELO*',
-    '_Seu lobby pelo WhatsApp_',
-    '',
-    '🎮 *1 — Jogar*',
-    '',
-    '🧭 *2 — Como funciona*',
-    '',
-    '📜 *3 — Regras do Pife*',
-    '',
-    '🛟 *4 — Suporte*',
-    '',
-    '📢 *5 — Atualizações*',
-    '',
-    ...(demoCreditsEnabled ? ['🧪 *6 — Meus Créditos de Teste*', ''] : []),
-    paymentsEnabled
-      ? '👇 _Digite o número da opção._'
-      : demoCreditsEnabled
-        ? '🧪 _Simulação com Créditos de Teste, sem valor em dinheiro._'
-        : '🆓 _Fase de testes gratuitos: sem cobrança e sem prêmio real._',
-  ].join('\n');
+export function mainMenu() {
+  return ['🎮 *PIFE DUELO*', '', '1 — Jogar', '2 — Carteira', '3 — Regras', '4 — Suporte', '', 'Digite o número ou o nome da opção.'].join('\n');
 }
-
-export function howItWorksMenu({ paymentsEnabled = false } = {}) {
-  return [
-    '*COMO FUNCIONA*',
-    '',
-    '1. Escolha uma Mesa pelo WhatsApp.',
-    '2. Aguarde um adversário da mesma Mesa.',
-    '3. Quando a Sala de espera estiver pronta, os dois recebem o acesso.',
-    '4. A Partida começa quando os dois jogadores entram.',
-    '5. Ao terminar, sua Entrada é liberada para jogar novamente.',
-    '',
-    paymentsEnabled
-      ? '_A situação da sua Entrada será informada antes de cada etapa._'
-      : '_Neste momento os testes são gratuitos, sem cobrança e sem prêmio real._',
-    '',
-    'Digite *jogar* para escolher uma Mesa.',
-    'Digite *teste* para conhecer a gameplay grátis.',
-    'Digite *menu* para voltar.',
-  ].join('\n');
+export function howItWorksMenu() {
+  return ['*Como funciona*', '', '1. Escolha uma mesa.', '2. Aguarde um adversário.',
+    '3. Abra seu acesso. A partida começa com os dois jogadores.', '',
+    'Digite *jogar* para começar ou *teste* para treinar.', '0 — Voltar'].join('\n');
 }
-
 export function tablesMenu({ paymentsEnabled = false, demoCreditsEnabled = false, demoBalance = null } = {}) {
   if (demoCreditsEnabled) {
     return [
@@ -97,24 +61,7 @@ export function tablesMenu({ paymentsEnabled = false, demoCreditsEnabled = false
       '↩️ Digite *menu* para voltar.',
     ].join('\n');
   }
-  return [
-    '*🃏 ESCOLHA UMA MESA*',
-    '_Digite o número da categoria:_',
-    '',
-    `1️⃣ *Mesa ${money(2)}*`,
-    '',
-    `2️⃣ *Mesa ${money(5)}*`,
-    '',
-    `3️⃣ *Mesa ${money(10)}*`,
-    '',
-    `4️⃣ *Mesa ${money(20)}*`,
-    '',
-    paymentsEnabled
-      ? '🔐 _A situação da Entrada será confirmada antes de seguir._'
-      : '🆓 _Nenhum valor será cobrado e não há prêmio real nesta fase._',
-    '',
-    '↩️ Digite *menu* para voltar.',
-  ].join('\n');
+  return ['🎮 *Escolha uma mesa*', '', '1 — R$2,00', '2 — R$5,00', '3 — R$10,00', '4 — R$20,00', '', '0 — Voltar'].join('\n');
 }
 
 export function demoCreditsBalanceMenu({ availableBalance, reservedBalance }) {
@@ -207,14 +154,11 @@ export function demoCreditsInsufficient({ availableBalance, requiredAmount }) {
 
 export function testModeMessage(testModeLink) {
   return [
-    '*🎮 MODO TESTE GRÁTIS*',
+    '🎮 *Treino*',
     '',
-    'Conheça a gameplay sem entrar na fila de uma Mesa.',
+    'Pratique contra o bot sem entrar na fila.',
     '',
-    '• Sem Pix',
-    '• Sem aposta',
-    '• Sem prêmio',
-    '• Não cria Entrada paga',
+    'O treino não usa sua carteira nem altera seu saldo.',
     '',
     'Acesse:',
     testModeLink,
@@ -224,25 +168,10 @@ export function testModeMessage(testModeLink) {
 }
 
 export function rulesMenu() {
-  return [
-    '*📜 REGRAS DO PIFE*',
-    '',
-    '🎯 *1 — Objetivo*',
-    '',
-    '🔄 *2 — Como funciona o turno*',
-    '',
-    '🃏 *3 — Combinações válidas*',
-    '',
-    '🏁 *4 — Como bater*',
-    '',
-    '🚪 *5 — Cancelamento e desistência*',
-    '',
-    '📚 *6 — Ver todas as regras*',
-    '',
-    '↩️ Digite *menu* para voltar.',
-  ].join('\n');
+  return ['📖 *REGRAS DO PIFE*', '', 'Forme três combinações usando nove cartas, sem coringas.', '',
+    '1 — Objetivo', '2 — Como funciona o turno', '3 — Combinações válidas',
+    '4 — Como bater', '5 — Cancelamento e desistência', '6 — Todas as regras', '', '0 — Voltar'].join('\n');
 }
-
 const RULE_TOPICS = Object.freeze({
   '1': [
     '*OBJETIVO*',
@@ -305,27 +234,11 @@ export function ruleTopic(topic) {
   return [...lines, '', 'Digite *regras* para ver os tópicos ou *menu* para voltar.'].join('\n');
 }
 
-export function supportMenu({ publicReference = null } = {}) {
-  return [
-    '*🛟 SUPORTE PIFE DUELO*',
-    ...(publicReference ? ['', `Referência: *${publicReference}*`] : []),
-    '',
-    '🔗 *1 — Link não abre*',
-    '',
-    '👥 *2 — Adversário não entrou*',
-    '',
-    '⚠️ *3 — Partida travou*',
-    '',
-    '📶 *4 — Fui desconectado*',
-    '',
-    '🎟️ *5 — Problema com Entrada*',
-    '',
-    '👤 *6 — Falar com o suporte*',
-    '',
-    '↩️ Digite *menu* para voltar.',
-  ].join('\n');
+export function supportMenu() {
+  return ['🛟 *SUPORTE PIFE DUELO*', '', '1 — Link não abre', '2 — Adversário não entrou',
+    '3 — Partida travou', '4 — Fui desconectado', '5 — Problema com entrada',
+    '6 — Contato', '', 'Novidades: digite *atualizações*.', '0 — Voltar'].join('\n');
 }
-
 const SUPPORT_TOPICS = Object.freeze({
   '1': 'Abra o link no navegador padrão do celular. Se ele expirou, digite *link* para verificar se um novo acesso pode ser gerado.',
   '2': 'Permaneça na Sala de espera e digite *status*. Se o tempo de entrada terminar, o sistema protege e libera a situação conforme as regras atuais.',
@@ -355,7 +268,7 @@ export function supportContact({ supportLink = '', publicReference = null, hasAc
     '',
     supportLink
       ? 'Toque no link para falar com o suporte:'
-      : 'O link direto está temporariamente indisponível. Descreva o problema nesta conversa.',
+      : 'O contato de atendimento está indisponível no momento. Digite *suporte* para consultar a ajuda.',
     supportLink,
     '',
     'Informe a Mesa escolhida, o que aconteceu e, se possível, um print do erro.',
@@ -366,30 +279,13 @@ export function supportContact({ supportLink = '', publicReference = null, hasAc
 }
 
 export function waitingForOpponent({ table, demoCreditsEnabled = false, availableBalance = null, reservedAmount = null }) {
-  const hasAvailableBalance = availableBalance !== null
-    && availableBalance !== undefined
-    && Number.isFinite(Number(availableBalance));
-  return [
-    '*⏳ AGUARDANDO ADVERSÁRIO*',
-    '',
-    `Você está aguardando na ${tableInSentence(table, demoCreditsEnabled)}.`,
-    ...(demoCreditsEnabled ? [
-      `Créditos reservados: ${Number(reservedAmount ?? table ?? 0)}`,
-      ...(hasAvailableBalance ? [`Saldo disponível: ${Number(availableBalance)}`] : []),
-      '',
-    ] : []),
-    'Assim que outro jogador escolher a mesma Mesa, a Sala de espera será preparada.',
-    '',
-    '🔎 *status* — consultar a espera',
-    '',
-    '❌ *cancelar* — pedir cancelamento antes do início',
-    '',
-    '🏠 *menu* — ver opções seguras',
-    '',
-    '🛟 *suporte* — pedir ajuda',
-  ].join('\n');
+  const hasBalance = availableBalance !== null && availableBalance !== undefined && Number.isFinite(Number(availableBalance));
+  return ['🔎 *Aguardando adversário*', '', `Mesa: ${tableLabel(table, demoCreditsEnabled)}`,
+    ...(demoCreditsEnabled ? [`Créditos reservados: ${Number(reservedAmount ?? table ?? 0)}`,
+      ...(hasBalance ? [`Saldo disponível: ${Number(availableBalance)}`] : [])] : []),
+    '', 'Avisaremos aqui quando a partida estiver pronta.', '',
+    '*status* — consultar', '*cancelar* — cancelar a espera', '*menu* — opções'].join('\n');
 }
-
 export function queueDuplicate({ table, demoCreditsEnabled = false }) {
   return [
     '*AGUARDANDO ADVERSÁRIO*',
@@ -522,21 +418,11 @@ export function paidEntryActive({ table, demoCreditsEnabled = false }) {
   ].filter(Boolean).join('\n');
 }
 
-export function matchFound({ table, accessLink, publicReference = null, demoCreditsEnabled = false }) {
-  return [
-    '*🎮 Partida encontrada!*',
-    '',
-    `Mesa: ${tableLabel(table, demoCreditsEnabled)}`,
-    publicReference ? `Referência: *${publicReference}*` : '',
-    'Sua Sala de espera está pronta.',
-    'Entre na sala pelo link abaixo:',
-    '',
-    accessLink,
-    '',
-    '_Este link é individual. Não encaminhe para outras pessoas._',
-  ].filter(Boolean).join('\n');
+export function matchFound({ table, accessLink, demoCreditsEnabled = false }) {
+  return ['⚔️ *Adversário encontrado*', '', `Mesa: ${tableLabel(table, demoCreditsEnabled)}`,
+    'Sua sala de espera está pronta.', '', 'Entrar:', accessLink, '',
+    'Seu link é individual. Não compartilhe.'].join('\n');
 }
-
 export function invalidCommand() {
   return [
     '*NÃO ENTENDI ESSA OPÇÃO*',
@@ -583,18 +469,9 @@ export function postMatchPlayerResult(report, won) {
       'Digite *jogar* para escolher uma Mesa ou *menu* para ver as opções.',
     ].filter(Boolean).join('\n');
   }
-  return [
-    won ? '*🏆 VOCÊ VENCEU NO PIFE DUELO*' : '*🎴 PARTIDA ENCERRADA*',
-    '',
-    `Mesa: ${report.tableLabel}`,
-    `Resultado: ${won ? 'Vitória' : 'Derrota'}`,
-    `Duração: ${report.durationLabel}`,
-    report.publicReference ? `Referência: *${report.publicReference}*` : '',
-    '',
-    'Sua Entrada foi liberada e você já pode jogar novamente.',
-    '',
-    'Digite *jogar* para escolher uma Mesa ou *menu* para ver as opções.',
-  ].filter(Boolean).join('\n');
+  return [won ? '🏆 *Vitória*' : '🎴 *Partida encerrada*', '',
+    `Mesa: ${report.tableLabel}`, `Resultado: ${won ? 'Vitória' : 'Derrota'}`, '',
+    'Digite *jogar* para jogar novamente ou *menu* para voltar.'].join('\n');
 }
 
 export function postMatchAdminReport(report, { queueCleaned, entriesReleased, entryStatuses = [] }) {
