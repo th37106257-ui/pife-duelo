@@ -113,6 +113,9 @@ function webhook(text) {
   assert.equal(menuAgain.type, 'whatsapp_menu_sent');
   const idleCancel = await bot.handleConnectivityWebhook(webhook('cancelar'));
   assert.equal(idleCancel.type, 'whatsapp_cancel_empty');
+  assert.match(sentMessages.at(-1).text, /não está aguardando uma partida/i);
+  assert.match(sentMessages.at(-1).text, /\*jogar\* — escolher uma mesa/i);
+  assert.doesNotMatch(sentMessages.at(-1).text, /indisponível/i);
   const missingLink = await bot.handleConnectivityWebhook(webhook('link'));
   assert.equal(missingLink.type, 'whatsapp_match_link_unavailable');
 

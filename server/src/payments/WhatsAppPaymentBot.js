@@ -26,6 +26,7 @@ import {
   matchFinished as matchFinishedMessage,
   matchFound as matchFoundMessage,
   matchLinkReady as matchLinkReadyMessage,
+  noActiveQueue as noActiveQueueMessage,
   otherQueue as otherQueueMessage,
   paidEntryActive as paidEntryActiveMessage,
   preMatchWaiting as preMatchWaitingMessage,
@@ -137,12 +138,21 @@ const SAFE_TABLES = new Map([
   ['4', 20],
 ]);
 
+function tableOptionFromCommand(command) {
+  if (SAFE_TABLES.has(command)) return command;
+  return command.match(/^mesa ([1-4])$/)?.[1] ?? null;
+}
+
+function isNamedTableOption(command) {
+  return /^mesa [1-4]$/.test(command);
+}
+
 const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
 const SUPPORT_COMMANDS = new Set(['4', 'suporte', 'atendimento', 'ajuda']);
 const PLAY_COMMANDS = new Set(['1', 'jogar', 'jogar valendo', 'valendo', 'ver mesas', 'mesas', 'mesa']);
 const HOW_IT_WORKS_COMMANDS = new Set(['como funciona', 'funcionamento']);
-const TEST_MODE_COMMANDS = new Set(['modo teste', 'modo teste gratis', 'teste', 'testar', 'gratis', 'gratuito']);
+const TEST_MODE_COMMANDS = new Set(['modo teste', 'modo teste gratis', 'teste', 'treino', 'testar', 'gratis', 'gratuito']);
 const RULES_COMMANDS = new Set(['3', 'regras', 'regra', 'como jogar']);
 const STATUS_COMMANDS = new Set(['status', 'situacao']);
 const LINK_COMMANDS = new Set(['link', 'acesso', 'meu link']);
@@ -195,12 +205,12 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (DEMO_CREDITS_COMMANDS.has(command)) return 'demo_credits';
   if (SALDO_COMMANDS.has(command)) return 'financial_wallet';
   if (currentState?.state === 'idle' && command === '2') return 'financial_wallet';
-  const isTableSelectionInProgress = currentState?.state === 'choosing_table' && SAFE_TABLES.has(command);
+  const isTableSelectionInProgress = currentState?.state === 'choosing_table' && tableOptionFromCommand(command) !== null;
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
   if (CANCEL_QUEUE_COMMANDS.has(command)) return 'cancel_queue';
   if (isTableSelectionInProgress) return 'table_selection';
-  if (PLAY_COMMANDS.has(command)) return 'play_or_tables';
+  if (PLAY_COMMANDS.has(command) || isNamedTableOption(command)) return 'play_or_tables';
   if (HOW_IT_WORKS_COMMANDS.has(command)) return 'how_it_works';
   if (TEST_MODE_COMMANDS.has(command)) return 'test_mode';
   if (RULES_COMMANDS.has(command)) return 'rules';
@@ -1780,7 +1790,7 @@ export class WhatsAppPaymentBot {
       return { type: 'whatsapp_cancel_blocked_preserved_entry', decision: 'reply_sent', reason: 'entry_preserved', state: context.state, originIp };
     }
     if (!context.canCancel) {
-      await this.sendPanel(replyTo, incoming.phone, context.state, this.messageForContext(context));
+      await this.sendPanel(replyTo, incoming.phone, 'NO_ACTIVE_QUEUE', noActiveQueueMessage());
       return { type: 'whatsapp_cancel_empty', decision: 'reply_sent', reason: 'no_cancelable_wait', state: context.state, originIp };
     }
 
@@ -1949,7 +1959,7 @@ export class WhatsAppPaymentBot {
         || isFinancialCommandText(command)
         || (currentState.state === 'demo_credits_menu' && ['1', '2'].includes(command))
         || (currentState.state === 'updates_menu' && UPDATE_SECTION_COMMANDS.has(command))
-        || SAFE_TABLES.has(command)
+        || tableOptionFromCommand(command) !== null
         || isAdminCommandText(command)
       ),
     });
@@ -2043,7 +2053,8 @@ export class WhatsAppPaymentBot {
     if (LINK_COMMANDS.has(command)) return this.handleLinkCommand(incoming, { replyTo, originIp });
     if (MENU_COMMANDS.has(command)) return this.handleMenuCommand(incoming, { replyTo, originIp });
     if (CANCEL_QUEUE_COMMANDS.has(command)) return this.handleCancelCommand(incoming, { replyTo, originIp });
-    const isTableSelectionInProgress = currentState.state === 'choosing_table' && SAFE_TABLES.has(command);
+    const tableOption = tableOptionFromCommand(command);
+    const isTableSelectionInProgress = currentState.state === 'choosing_table' && tableOption !== null;
     if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) {
       return this.handleSupportRequest(incoming, { replyTo, originIp });
     }
@@ -2159,15 +2170,11 @@ export class WhatsAppPaymentBot {
         await this.send(replyTo, this.safeMenuText());
         return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
       }
-      await this.send(replyTo, [
-        'Você não está aguardando em nenhuma fila.',
-        '',
-        this.safeMenuText(),
-      ].join('\n'));
+      await this.send(replyTo, noActiveQueueMessage());
       return { type: 'whatsapp_queue_cancel_empty', decision: 'reply_sent', reason: 'player_not_in_queue', state: 'idle', originIp };
     }
-    if (currentState.state === 'choosing_table' && SAFE_TABLES.has(command)) {
-      const selectedTable = SAFE_TABLES.get(command);
+    if (currentState.state === 'choosing_table' && tableOption !== null) {
+      const selectedTable = SAFE_TABLES.get(tableOption);
       if (this.safeEntryEnabled && this.matchQueue?.isConfigured?.()) {
         const queueResult = this.financialWalletService?.isEnabled?.()
           ? await this.matchQueue.joinFinancialQueue(incoming.phone, selectedTable, { replyTo })
@@ -2383,7 +2390,7 @@ export class WhatsAppPaymentBot {
       };
     }
 
-    if (PLAY_COMMANDS.has(command)) {
+    if (PLAY_COMMANDS.has(command) || isNamedTableOption(command)) {
       const context = this.getPlayerContext(incoming.phone);
       if (![WHATSAPP_PLAYER_STATES.IDLE, WHATSAPP_PLAYER_STATES.MATCH_FINISHED].includes(context.state)) {
         await this.sendPanel(replyTo, incoming.phone, context.state, this.messageForContext(context));

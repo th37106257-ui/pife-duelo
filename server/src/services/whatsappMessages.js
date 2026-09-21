@@ -398,6 +398,15 @@ export function cancelConfirmation({ table, demoCreditsEnabled = false }) {
   ].join('\n');
 }
 
+export function noActiveQueue() {
+  return [
+    'Você não está aguardando uma partida.',
+    '',
+    '*jogar* — escolher uma mesa',
+    '*menu* — voltar',
+  ].join('\n');
+}
+
 export function cancellationProtocol({ publicReference = null } = {}) {
   return [
     '*✅ ENTRADA CANCELADA*',

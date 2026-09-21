@@ -111,6 +111,11 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.ok(logs.some((log) => log.event === 'WHATSAPP_TEST_MODE_REQUEST'));
   assert.ok(logs.some((log) => log.event === 'WHATSAPP_TEST_MODE_LINK_SENT'));
 
+  const trainingAliasResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'treino'));
+  assert.equal(trainingAliasResult.type, 'whatsapp_test_mode_link_sent');
+  assert.equal(trainingAliasResult.testModeLink, testModeResult.testModeLink);
+  assert.equal(store.listEntries().length, 0);
+
   const paidTables = await bot.handleConnectivityWebhook(createWebhook(testPhone, '1'));
   assert.equal(paidTables.type, 'whatsapp_tables_sent');
   const paidQueue = await bot.handleConnectivityWebhook(createWebhook(testPhone, '2'));
@@ -118,6 +123,79 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(paidQueue.selectedTable, 5);
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 1);
   assert.equal(store.listEntries().length, 1);
+}
+
+{
+  const tableMappings = [['1', 2], ['2', 5], ['3', 10], ['4', 20]];
+  for (const [option, expectedTable] of tableMappings) {
+    const { bot, store } = createBot();
+    const phone = `55118888110${option}`;
+    await bot.handleConnectivityWebhook(createWebhook(phone, 'jogar'));
+    const result = await bot.handleConnectivityWebhook(createWebhook(phone, option));
+    assert.equal(result.type, 'whatsapp_queue_joined');
+    assert.equal(result.selectedTable, expectedTable);
+    assert.equal(store.listEntries().at(-1).selectedTable, expectedTable);
+  }
+}
+
+{
+  const tableMappings = [['mesa 1', 2], ['mesa 2', 5], ['mesa 3', 10], ['mesa 4', 20]];
+  for (const [command, expectedTable] of tableMappings) {
+    const { bot, store } = createBot();
+    const phone = `55118888220${expectedTable}`;
+    await bot.handleConnectivityWebhook(createWebhook(phone, 'jogar'));
+    const result = await bot.handleConnectivityWebhook(createWebhook(phone, command));
+    assert.equal(result.type, 'whatsapp_queue_joined');
+    assert.equal(result.selectedTable, expectedTable);
+    assert.equal(store.listEntries().at(-1).selectedTable, expectedTable);
+  }
+}
+
+{
+  const { bot, store, matchQueue } = createBot();
+  const phone = '551188883333';
+  const outsideSelection = await bot.handleConnectivityWebhook(createWebhook(phone, 'mesa 2'));
+  assert.equal(outsideSelection.type, 'whatsapp_tables_sent');
+  assert.equal(store.listEntries().length, 0);
+  assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
+  const confirmedSelection = await bot.handleConnectivityWebhook(createWebhook(phone, 'mesa 2'));
+  assert.equal(confirmedSelection.type, 'whatsapp_queue_joined');
+  assert.equal(confirmedSelection.selectedTable, 5);
+}
+
+{
+  const sentMessages = [];
+  const financialActions = [];
+  const bot = new WhatsAppPaymentBot({
+    safeEntryEnabled: true,
+    financialWalletService: {
+      isEnabled: () => true,
+      config: { pixDepositsEnabled: true },
+      createDeposit: async () => { financialActions.push('deposit'); },
+    },
+    matchQueue: {
+      isConfigured: () => true,
+      findPlayerQueue: () => null,
+      findActiveMatch: () => null,
+      joinFinancialQueue: async (_phone, selectedTable) => {
+        financialActions.push(`queue:${selectedTable}`);
+        return { blocked: true, reason: 'REAL_MONEY_GAMES_DISABLED' };
+      },
+    },
+    evolutionClient: {
+      isConfigured: () => true,
+      sendText: async (phone, text) => sentMessages.push({ phone, text }),
+    },
+    publicGameUrl: 'https://pife-duelo.example',
+  });
+  const phone = '551188884444';
+  await bot.handleConnectivityWebhook(createWebhook(phone, 'jogar'));
+  const blocked = await bot.handleConnectivityWebhook(createWebhook(phone, 'mesa 2'));
+  assert.equal(blocked.type, 'financial_tables_unavailable');
+  assert.deepEqual(financialActions, ['queue:5']);
+  assert.match(sentMessages.at(-1).text, /mesas estão indisponíveis/i);
+  assert.match(sentMessages.at(-1).text, /\*teste\*/i);
+  assert.match(sentMessages.at(-1).text, /\*menu\*/i);
 }
 
 {
@@ -605,7 +683,9 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 
   const emptyCancel = await bot.handleConnectivityWebhook(createWebhook('551188880011', 'cancelar'));
   assert.equal(emptyCancel.type, 'whatsapp_cancel_empty');
-  assert.match(sentMessages.at(-1).text, /PIFE DUELO/);
+  assert.match(sentMessages.at(-1).text, /não está aguardando uma partida/i);
+  assert.match(sentMessages.at(-1).text, /\*jogar\* — escolher uma mesa/i);
+  assert.doesNotMatch(sentMessages.at(-1).text, /mesa.*indisponível/i);
 }
 
 {
