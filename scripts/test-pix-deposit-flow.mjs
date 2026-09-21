@@ -22,9 +22,17 @@ const run = (command, messageId = 'same-message') => bot.handleFinancialCommand(
 assert.equal((await run('depositar 1'))?.type, 'financial_deposit_unavailable');
 wallet.isEnabled = () => true;
 for (const command of ['depositar 1', 'depositar 1,00', 'depositar 1.00', 'Depositar 1', 'DEPOSITAR 1', ' depositar 1', 'depositar    1']) {
+  const sentBefore = sent.length;
   assert.equal((await run(command)).type, 'financial_deposit_created');
   assert.equal(calls.at(-1).amount, 100);
-  assert.match(sent.at(-1), /Válido por 10 minutos/);
+  assert.equal(sent.length, sentBefore + 2);
+  const [informationMessage, codeMessage] = sent.slice(-2);
+  assert.match(informationMessage, /Pix gerado/);
+  assert.match(informationMessage, /R\$ 1,00/);
+  assert.match(informationMessage, /Válido por 10 minutos/);
+  assert.match(informationMessage, /Copie o código da próxima mensagem/);
+  assert.doesNotMatch(informationMessage, /MOCK/);
+  assert.equal(codeMessage, 'MOCK');
 }
 assert.equal((await run('depositar')).type, 'financial_deposit_help');
 for (const command of ['depositar abc', 'depositar -1', 'depositar 0', 'depositar 1,2,3', 'depositar 9007199254740992']) {
@@ -69,11 +77,18 @@ const service = new FinancialWalletService({ repository, provider,
   config: { ready: true, pixDepositsEnabled: true, pixPaymentWindowMinutes: 10, mode: 'sandbox', provider: 'mock' },
   paymentConfirmationSender: async (delivery) => { paymentConfirmations.push(delivery); return { ok: !confirmationFails }; },
 });
-let sendFails = true;
+const integrationMessages = [];
+let failSecondMessageOnce = true;
+let integrationSendCount = 0;
 const integration = new WhatsAppPaymentBot({ financialWalletService: service,
   safeEntryEnabled: true, entryService: { store: { hasProcessedMessage: () => true } },
   logInfo: () => {}, logWarn: () => {}, logError: () => {},
-  evolutionClient: { sendWhatsAppMessage: async () => ({ ok: !sendFails }) },
+  evolutionClient: { sendWhatsAppMessage: async (_phone, text) => {
+    integrationSendCount += 1;
+    integrationMessages.push(text);
+    if (failSecondMessageOnce && integrationSendCount === 2) return { ok: false };
+    return { ok: true };
+  } },
 });
 const fakePhone = '5511' + '99991001';
 const payload = (id, text = 'depositar 1') => ({ event: 'MESSAGES_UPSERT', data: {
@@ -82,9 +97,15 @@ const payload = (id, text = 'depositar 1') => ({ event: 'MESSAGES_UPSERT', data:
 const failedSend = await integration.handleWebhook(payload('integration-one'));
 assert.equal(failedSend.type, 'financial_deposit_created');
 assert.equal(failedSend.decision, 'reply_failed');
-sendFails = false;
+assert.match(integrationMessages[0], /Pix gerado/);
+const createdPaymentId = [...provider.payments.keys()][0];
+const expectedCopyPaste = `000201-MOCK-${createdPaymentId}`;
+assert.equal(integrationMessages[1], expectedCopyPaste);
+failSecondMessageOnce = false;
 assert.equal((await integration.handleWebhook(payload('integration-one'))).decision, 'reply_sent');
 assert.equal(provider.payments.size, 1);
+assert.match(integrationMessages[2], /Pix gerado/);
+assert.equal(integrationMessages[3], expectedCopyPaste);
 assert.equal((await pool.query('SELECT * FROM financial_deposits')).rows.length, 1);
 assert.equal(Number((await service.getAccount(fakePhone)).available_balance_cents), 0);
 const paymentId = [...provider.payments.keys()][0];

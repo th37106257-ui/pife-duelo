@@ -1751,7 +1751,22 @@ export class WhatsAppPaymentBot {
     }
     const text = pixMessage(order, wallet.config?.pixPaymentWindowMinutes || 10);
     record('RESPONSE_BUILT');
-    return reply(text, 'financial_deposit_created', order.public_reference);
+    record('WHATSAPP_SEND_REQUESTED');
+    const informationResult = await this.send(replyTo, text, { replyType: 'pix_deposit' });
+    if (informationResult?.ok === false) {
+      record('WHATSAPP_SEND_FAILED');
+      return { type: 'financial_deposit_created', decision: 'reply_failed', publicReference: order.public_reference, originIp };
+    }
+    record('PIX_CODE_SEND_REQUESTED');
+    const codeResult = await this.send(replyTo, order.pix_copy_paste, { replyType: 'pix_deposit_code' });
+    if (codeResult?.ok === false) {
+      record('PIX_CODE_SEND_FAILED');
+      record('WHATSAPP_SEND_FAILED');
+      return { type: 'financial_deposit_created', decision: 'reply_failed', publicReference: order.public_reference, originIp };
+    }
+    record('PIX_CODE_SEND_CONFIRMED');
+    record('WHATSAPP_SEND_CONFIRMED');
+    return { type: 'financial_deposit_created', decision: 'reply_sent', publicReference: order.public_reference, originIp };
   }
 
   async handleCancelCommand(incoming, { replyTo, originIp }) {

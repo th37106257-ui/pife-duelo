@@ -23,9 +23,9 @@ export const unavailableWalletMessage = () => 'A carteira está indisponível no
 export const unavailableWithdrawalMessage = () => 'Saque indisponível no momento.';
 
 export function pixMessage(order, minutes) {
-  return ['💠 *Pix gerado*', '', `Valor: ${currency(order.amount_cents)}`, '',
-    'Copie o código Pix completo abaixo e cole no aplicativo do banco.', '',
-    `⏱️ Válido por ${minutes} minutos.`, '', order.pix_copy_paste].join('\n');
+  return ['💠 *Pix gerado*', '', `Valor: ${currency(order.amount_cents)}`,
+    `⏱️ Válido por ${minutes} minutos.`, '',
+    '👇 Copie o código da próxima mensagem.'].join('\n');
 }
 
 export function paymentConfirmationMessage({ amountCents, newBalanceCents }) {

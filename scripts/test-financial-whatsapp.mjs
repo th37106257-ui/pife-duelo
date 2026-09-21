@@ -67,6 +67,9 @@ assert.match(sent.at(-1).text, /Qual valor deseja adicionar/);
 const guidedDeposit = await bot.handleConnectivityWebhook(webhook('5,00', 'wallet-deposit-value'), { originIp: 'test' });
 assert.equal(guidedDeposit.type, 'financial_deposit_created');
 assert.equal(deposits.at(-1).amountCents, 500);
+assert.match(sent.at(-2).text, /Pix gerado[^]*R\$\s*5,00[^]*V.lido por 10 minutos[^]*pr.xima mensagem/i);
+assert.doesNotMatch(sent.at(-2).text, /000201-TEST/);
+assert.equal(sent.at(-1).text, '000201-TEST');
 
 assert.equal((await bot.handleConnectivityWebhook(webhook('voltar', 'wallet-back'), { originIp: 'test' })).type, 'financial_menu');
 assert.equal((await bot.handleConnectivityWebhook(webhook('2', 'wallet-history'), { originIp: 'test' })).type, 'financial_history');
@@ -75,9 +78,9 @@ assert.doesNotMatch(sent.at(-1).text, /DEPOSIT_CREDITED|ledger|transaction|TX-AB
 assert.equal((await bot.handleConnectivityWebhook(webhook('0', 'history-back'), { originIp: 'test' })).type, 'financial_menu');
 
 await bot.handleFinancialCommand({ ...incoming, text: 'depositar 20' }, { replyTo: player, command: 'depositar 20', originIp: 'test' });
-assert.match(sent.at(-1).text, /000201-TEST/);
-assert.match(sent.at(-1).text, /V.lido por 10 minutos/);
-assert.doesNotMatch(sent.at(-1).text, /Opera..o|webhook|sandbox|Asaas|provider/i);
+assert.match(sent.at(-2).text, /V.lido por 10 minutos/);
+assert.doesNotMatch(sent.at(-2).text, /000201-TEST|Opera..o|webhook|sandbox|Asaas|provider/i);
+assert.equal(sent.at(-1).text, '000201-TEST');
 assert.equal(deposits.at(-1).amountCents, 2000);
 
 await bot.handleFinancialCommand(
@@ -92,7 +95,8 @@ const webhookDeposit = await bot.handleConnectivityWebhook(webhook('depositar 1'
 assert.equal(webhookDeposit.type, 'financial_deposit_created');
 assert.equal(deposits.at(-1).amountCents, 100);
 assert.equal(deposits.at(-1).options.idempotencyKey, 'whatsapp:financial-deposit-one:deposit');
-assert.match(sent.at(-1).text, /R\$\s*1,00/);
+assert.match(sent.at(-2).text, /R\$\s*1,00/);
+assert.equal(sent.at(-1).text, '000201-TEST');
 assert.ok(logs.some((item) => item.event === 'BOT_HANDLER_SELECTED' && item.payload.handler === 'financial_wallet'));
 
 for (const variant of ['saldo', 'Saldo', 'SALDO', '  saldo  ']) {
