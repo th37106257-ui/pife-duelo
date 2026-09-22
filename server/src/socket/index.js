@@ -156,6 +156,40 @@ export function setupSocketServer(httpServer, {
     currentPlayerId: gameState.currentTurnPlayerId,
   });
 
+  const actionReplayCache = new Map();
+  const ACTION_REPLAY_TTL_MS = 5 * 60 * 1000;
+  const ACTION_REPLAY_MAX_ENTRIES = 10_000;
+  const ACTION_REPLAY_EVENTS = new Set([
+    'playerDrawFromDeck',
+    'playerDrawFromDiscard',
+    'playerDiscardCard',
+    'player:reorderHand',
+    'playerKnock',
+    'player:knock',
+    'playerSurrender',
+  ]);
+
+  const pruneExpiredActionReplayCache = (now = Date.now()) => {
+    for (const [key, entry] of actionReplayCache) {
+      if (entry.expiresAt <= now) actionReplayCache.delete(key);
+    }
+  };
+
+  const makeActionReplayCacheRoom = (now = Date.now()) => {
+    pruneExpiredActionReplayCache(now);
+    while (actionReplayCache.size >= ACTION_REPLAY_MAX_ENTRIES) {
+      const oldestKey = actionReplayCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      actionReplayCache.delete(oldestKey);
+    }
+  };
+
+  const clearMatchActionReplayCache = (matchId) => {
+    for (const [key, entry] of actionReplayCache) {
+      if (entry.matchId === matchId) actionReplayCache.delete(key);
+    }
+  };
+
   const sendTimeSync = (gameState) => {
     const payload = buildTimeSync(gameState);
     gameState.players.forEach((player) => {
@@ -164,6 +198,9 @@ export function setupSocketServer(httpServer, {
   };
 
   const sendClientGameState = (gameState, eventName = 'gameStateUpdated') => {
+    if (eventName === 'matchFinished' || gameState.status === 'finished') {
+      clearMatchActionReplayCache(gameState.matchId);
+    }
     gameState.players.forEach((player) => {
       const targetSocket = socketManager.getSocket(player.socketId);
       if (!targetSocket) return;
@@ -240,7 +277,10 @@ export function setupSocketServer(httpServer, {
   const finishMatchAndNotify = (gameState, reason = 'match_finished') => postMatchFlow.finishMatchAndNotify(
     gameState,
     reason,
-    { emitResult: sendClientGameState },
+    { emitResult: (finishedGameState, eventName) => {
+      if (finishedGameState?.matchId) clearMatchActionReplayCache(finishedGameState.matchId);
+      sendClientGameState(finishedGameState, eventName);
+    } },
   );
 
   const broadcastServerStatus = () => {
@@ -611,7 +651,61 @@ export function setupSocketServer(httpServer, {
     };
     const onSafe = (eventName, handler) => {
       socket.on(eventName, (payload = {}, acknowledgement) => {
-        const ack = typeof acknowledgement === 'function' ? acknowledgement : null;
+        const receivedAck = typeof acknowledgement === 'function' ? acknowledgement : null;
+        const actionId = typeof payload?.actionId === 'string' ? payload.actionId.trim() : '';
+        const matchId = typeof payload?.matchId === 'string' ? payload.matchId : '';
+        const activePlayerId = ACTION_REPLAY_EVENTS.has(eventName) ? getActivePlayerId(matchId) : null;
+        const cacheEligible = Boolean(
+          ACTION_REPLAY_EVENTS.has(eventName)
+          && activePlayerId
+          && matchId
+          && actionId
+          && actionId.length <= 128,
+        );
+        const cacheKey = cacheEligible ? JSON.stringify([matchId, activePlayerId, actionId]) : null;
+        if (cacheEligible) {
+          pruneExpiredActionReplayCache();
+          const cached = actionReplayCache.get(cacheKey);
+          if (cached) {
+            receivedAck?.({ ...cached.response, duplicate: true });
+            return;
+          }
+        }
+        let actionAckCalled = false;
+        const ack = cacheEligible
+          ? (response = {}) => {
+              if (!actionAckCalled) {
+                actionAckCalled = true;
+                makeActionReplayCacheRoom();
+                actionReplayCache.set(cacheKey, {
+                  matchId,
+                  response: { ...response },
+                  expiresAt: Date.now() + ACTION_REPLAY_TTL_MS,
+                });
+              }
+              receivedAck?.(response);
+            }
+          : receivedAck;
+        if (ACTION_REPLAY_EVENTS.has(eventName) && matchId) {
+          const currentMatch = matchManager.getOnlineMatch(matchId);
+          if (
+            currentMatch
+            && (!Number.isSafeInteger(payload?.turnNumber) || payload.turnNumber !== currentMatch.turnNumber)
+          ) {
+            ack?.({
+              ok: false,
+              actionId: payload?.actionId ?? null,
+              reason: 'STALE_TURN',
+              serverNow: Date.now(),
+            });
+            rejectAction(socket, {
+              reason: 'STALE_TURN',
+              message: 'O estado da partida mudou. Atualize a mesa antes de tentar novamente.',
+              action: eventName,
+            });
+            return;
+          }
+        }
         try {
           const result = handler(payload, ack);
           Promise.resolve(result).catch((error) => {
@@ -1018,6 +1112,15 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
+      if (socket.supersededMatchIds?.has(savedMatchId)) {
+        rejectAction(socket, {
+          reason: 'RESUME_NOT_AUTHORIZED',
+          message: 'Esta sessão foi substituída por outra conexão ativa.',
+          action: 'resumeOnlineMatch',
+        });
+        return;
+      }
+
       const match = matchManager.reconnectOnlinePlayer(savedMatchId, authorizedPlayerId, socket.id);
       if (!match) {
         rejectAction(socket, {
@@ -1026,6 +1129,15 @@ export function setupSocketServer(httpServer, {
           action: 'resumeOnlineMatch',
         });
         return;
+      }
+
+      const previousSocketId = currentMatch.players.find((candidate) => candidate.id === authorizedPlayerId)?.socketId;
+      const previousSocket = previousSocketId && previousSocketId !== socket.id
+        ? socketManager.getSocket(previousSocketId)
+        : null;
+      if (previousSocket) {
+        previousSocket.supersededMatchIds ??= new Set();
+        previousSocket.supersededMatchIds.add(savedMatchId);
       }
 
       socketManager.setPlayerForSocket(socket.id, authorizedPlayerId);
@@ -1054,6 +1166,14 @@ export function setupSocketServer(httpServer, {
 
     socket.on('requestGameState', (payload = {}) => {
       const currentMatch = matchManager.getOnlineMatch(payload.matchId);
+      if (currentMatch && socket.supersededMatchIds?.has(currentMatch.matchId)) {
+        rejectAction(socket, {
+          reason: 'MATCH_SESSION_MISMATCH',
+          message: 'Esta sessão não está autorizada para consultar a partida.',
+          action: 'requestGameState',
+        });
+        return;
+      }
       const viewerPlayerId = resolveAuthorizedMatchPlayer({
         socket,
         match: currentMatch,

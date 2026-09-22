@@ -68,24 +68,24 @@ export function stopOnlineListeners() {
   EVENTS.forEach((event) => socket.off(event));
 }
 
-export function drawFromDeckOnline({ roomId, matchId, playerId }) {
-  return emitOnlineAction('playerDrawFromDeck', { roomId, matchId, playerId });
+export function drawFromDeckOnline({ roomId, matchId, playerId, turnNumber }) {
+  return emitOnlineAction('playerDrawFromDeck', { roomId, matchId, playerId, turnNumber });
 }
 
-export function drawFromDiscardOnline({ roomId, matchId, playerId }) {
-  return emitOnlineAction('playerDrawFromDiscard', { roomId, matchId, playerId });
+export function drawFromDiscardOnline({ roomId, matchId, playerId, turnNumber }) {
+  return emitOnlineAction('playerDrawFromDiscard', { roomId, matchId, playerId, turnNumber });
 }
 
-export function discardCardOnline({ roomId, matchId, playerId, cardId }) {
-  return emitOnlineAction('playerDiscardCard', { roomId, matchId, playerId, cardId });
+export function discardCardOnline({ roomId, matchId, playerId, turnNumber, cardId }) {
+  return emitOnlineAction('playerDiscardCard', { roomId, matchId, playerId, turnNumber, cardId });
 }
 
-export function knockOnline({ roomId, matchId, playerId, clientHandOrder = [] }) {
-  return emitOnlineAction('player:knock', { roomId, matchId, playerId, clientHandOrder });
+export function knockOnline({ roomId, matchId, playerId, turnNumber, clientHandOrder = [] }) {
+  return emitOnlineAction('player:knock', { roomId, matchId, playerId, turnNumber, clientHandOrder });
 }
 
-export function reorderHandOnline({ roomId, matchId, playerId, handOrder = [] }) {
-  return emitOnlineAction('player:reorderHand', { roomId, matchId, playerId, handOrder });
+export function reorderHandOnline({ roomId, matchId, playerId, turnNumber, handOrder = [] }) {
+  return emitOnlineAction('player:reorderHand', { roomId, matchId, playerId, turnNumber, handOrder });
 }
 
 export function requestGameState({ roomId, matchId, playerId }) {
@@ -96,6 +96,6 @@ export function resumeOnlineMatch({ roomId, matchId, playerId }) {
   getSocket()?.emit('resumeOnlineMatch', { roomId, matchId, playerId });
 }
 
-export function surrenderOnlineMatch({ roomId, matchId, playerId }) {
-  return emitOnlineAction('playerSurrender', { roomId, matchId, playerId });
+export function surrenderOnlineMatch({ roomId, matchId, playerId, turnNumber }) {
+  return emitOnlineAction('playerSurrender', { roomId, matchId, playerId, turnNumber });
 }

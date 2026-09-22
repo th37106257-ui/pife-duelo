@@ -119,7 +119,10 @@ try {
   const actorState = firstState.isYourTurn ? firstState : secondState;
   const drawFirstUpdate = once(first.socket, 'gameStateUpdated');
   const drawSecondUpdate = once(second.socket, 'gameStateUpdated');
-  const drawResult = await emitAction(actor.socket, 'playerDrawFromDeck', { matchId: actorState.matchId });
+  const drawResult = await emitAction(actor.socket, 'playerDrawFromDeck', {
+    matchId: actorState.matchId,
+    turnNumber: actorState.turnNumber,
+  });
   assert.equal(drawResult.ack.ok, true);
   assert.equal(drawResult.ack.actionId.startsWith('playerDrawFromDeck-'), true);
   assert.ok(drawResult.latencyMs < 2000);
@@ -134,6 +137,7 @@ try {
   const discardSecondSync = onceWhere(second.socket, 'time_sync', (payload) => payload.currentPlayerId !== actorState.you.playerId);
   const discardResult = await emitAction(actor.socket, 'playerDiscardCard', {
     matchId: actorState.matchId,
+    turnNumber: actorAfterDraw.turnNumber,
     cardId: discardCard.id,
   });
   assert.equal(discardResult.ack.ok, true);

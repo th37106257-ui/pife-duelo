@@ -243,7 +243,8 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     roomId: onlineGameState.roomId,
     matchId: onlineGameState.matchId,
     playerId: onlineGameState.playerId,
-  }), [onlineGameState.matchId, onlineGameState.playerId, onlineGameState.roomId]);
+    turnNumber: onlineGameState.turnNumber,
+  }), [onlineGameState.matchId, onlineGameState.playerId, onlineGameState.roomId, onlineGameState.turnNumber]);
 
   const submitAction = useCallback(async (action) => {
     if (pendingActionRef.current) return false;
