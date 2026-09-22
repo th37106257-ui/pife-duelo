@@ -8,13 +8,14 @@ function normalizeTableValue(value) {
 }
 
 export class QueueManager {
-  constructor({ timeoutSeconds = config.QUEUE_TIMEOUT_SECONDS, onTimeout } = {}) {
+  constructor({ timeoutSeconds = config.QUEUE_TIMEOUT_SECONDS, onTimeout, maxEntriesPerTable = 1000 } = {}) {
     this.queues = new Map(VALID_TABLE_VALUES.map((value) => [value, []]));
     this.playerEntries = new Map();
     this.socketEntries = new Map();
     this.timeouts = new Map();
     this.timeoutSeconds = timeoutSeconds;
     this.onTimeout = onTimeout;
+    this.maxEntriesPerTable = Math.max(1, Math.floor(Number(maxEntriesPerTable) || 1000));
   }
 
   joinQueue(player) {
@@ -44,6 +45,9 @@ export class QueueManager {
       preMatchDeadline: player.preMatchDeadline || null,
     };
     const queue = this.queues.get(tableValue);
+    if (queue.length >= this.maxEntriesPerTable) {
+      return { blocked: true, reason: 'queue-full' };
+    }
     queue.push(entry);
     this.playerEntries.set(entry.playerId, entry);
     this.socketEntries.set(entry.socketId, entry);

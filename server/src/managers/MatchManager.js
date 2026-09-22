@@ -4,7 +4,13 @@ import { createDeck, dealCards, finishMatch as finishMatchState, shuffleDeck, va
 import { config } from '../config.js';
 import { createId } from '../utils/createId.js';
 import { calculatePrize } from '../../../src/shared/economy.js';
-import { createMatchHistory, getMatchAudit, listMatchHistory } from '../matchHistory.js';
+import {
+  createMatchHistory,
+  getMatchAudit,
+  getPublicMatchAudit,
+  listMatchHistory,
+  listPublicMatchHistory,
+} from '../matchHistory.js';
 import { logError } from '../utils/logger.js';
 
 const REJECTION = {
@@ -254,9 +260,10 @@ function chooseAutoDiscard(playerHand = []) {
 }
 
 export class MatchManager {
-  constructor() {
+  constructor({ maxRetainedFinishedMatches = 1000 } = {}) {
     this.matches = new Map();
     this.matchResults = new Map();
+    this.maxRetainedFinishedMatches = Math.max(1, Math.floor(Number(maxRetainedFinishedMatches) || 1000));
     this.turnTimers = new Map();
     this.disconnectTimers = new Map();
     this.actionLocks = new Set();
@@ -888,11 +895,37 @@ export class MatchManager {
   }
 
   createMatchHistory(match) {
-    return createMatchHistory(match);
+    const record = createMatchHistory(match);
+    if (match?.status === 'finished') this.pruneFinishedMatchRecords();
+    return record;
+  }
+
+  pruneFinishedMatchRecords() {
+    const finishedIds = [...this.matches.entries()]
+      .filter(([, match]) => match?.status === 'finished')
+      .map(([matchId]) => matchId);
+    while (finishedIds.length > this.maxRetainedFinishedMatches) {
+      const oldestMatchId = finishedIds.shift();
+      this.matches.delete(oldestMatchId);
+      this.matchResults.delete(oldestMatchId);
+    }
+    while (this.matchResults.size > this.maxRetainedFinishedMatches) {
+      const oldestResultId = this.matchResults.keys().next().value;
+      if (!oldestResultId) break;
+      this.matchResults.delete(oldestResultId);
+    }
   }
 
   listMatchHistory(options) {
     return listMatchHistory(options);
+  }
+
+  listPublicMatchHistory(options) {
+    return listPublicMatchHistory(options);
+  }
+
+  getPublicMatchAudit(publicId) {
+    return getPublicMatchAudit(publicId);
   }
 
   getMatchAudit(matchId) {
@@ -1037,6 +1070,7 @@ export class MatchManager {
         };
     this.matches.set(matchId, nextMatch);
     this.clearTurnTimer(matchId);
+    if (nextMatch.status === 'finished') this.pruneFinishedMatchRecords();
 
     return nextMatch;
   }
@@ -1422,7 +1456,7 @@ export class MatchManager {
 
     const game = cloneOnlineGame(gameState);
     const player = game.players.find((item) => item.id === playerId);
-    if (!player || !Array.isArray(handOrder)) {
+    if (!player || !Array.isArray(handOrder) || handOrder.length !== player.hand.length) {
       return this.rejectAndLog(matchId, playerId, 'playerReorderHand', REJECTION.INVALID_CARD, 'Ordem de cartas invalida.');
     }
 

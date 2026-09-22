@@ -132,10 +132,9 @@ export default function MatchHistoryScreen({ onBack }) {
           <article className="history-detail">
             <h2>Detalhe da partida</h2>
             <dl>
-              <div><dt>Match ID</dt><dd>{detail.matchId}</dd></div>
-              <div><dt>Room ID</dt><dd>{detail.roomId}</dd></div>
-              <div><dt>Jogador 1</dt><dd>{detail.player1Name} ({detail.player1Id})</dd></div>
-              <div><dt>Jogador 2</dt><dd>{detail.player2Name} ({detail.player2Id})</dd></div>
+              <div><dt>Referência</dt><dd>#{getShortId(detail.matchId)}</dd></div>
+              <div><dt>Jogador 1</dt><dd>{detail.player1Name}</dd></div>
+              <div><dt>Jogador 2</dt><dd>{detail.player2Name}</dd></div>
               <div><dt>Vencedor</dt><dd>{detail.winnerName}</dd></div>
               <div><dt>Perdedor</dt><dd>{detail.loserName}</dd></div>
               <div><dt>Mesa</dt><dd>{formatMoney(detail.tableValue)}</dd></div>

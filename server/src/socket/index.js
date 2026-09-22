@@ -5,6 +5,7 @@ import { logError, logInfo, logWarn } from '../utils/logger.js';
 import { recordClientError } from '../observabilityStore.js';
 import { createPostMatchFlow } from '../services/postMatchFlow.js';
 import { createRateLimiter } from '../security/rateLimiter.js';
+import { getSocketClientIp } from './clientIp.js';
 import { resolveAuthorizedMatchPlayer } from './authorization.js';
 
 export function setupSocketServer(httpServer, {
@@ -32,16 +33,30 @@ export function setupSocketServer(httpServer, {
       credentials: true,
     },
     transports: ['websocket', 'polling'],
+    maxHttpBufferSize: 64 * 1024,
     allowUpgrades: true,
     pingInterval: 25000,
     pingTimeout: 20000,
+  });
+  io.use((socket, next) => {
+    const connectionRate = actionRateLimiter.consume(
+      `connect:${getSocketClientIp(socket)}`,
+      { limit: 120, windowMs: 60_000 },
+    );
+    if (!connectionRate.allowed) {
+      const error = new Error('SOCKET_CONNECTION_RATE_LIMITED');
+      error.data = { code: 'RATE_LIMITED' };
+      next(error);
+      return;
+    }
+    next();
   });
   if (paymentGateEnabled || safeEntryEnabled) {
     io.use((socket, next) => {
       const entryToken = String(socket.handshake.auth?.entryToken || '').trim();
       if (safeEntryEnabled && entryToken) {
         const linkRate = actionRateLimiter.consume(
-          `link:${socket.handshake.address || 'unknown'}`,
+          `link:${getSocketClientIp(socket)}`,
           { limit: 30, windowMs: 60_000 },
         );
         if (!linkRate.allowed) {
@@ -230,14 +245,6 @@ export function setupSocketServer(httpServer, {
 
   const buildServerStatus = () => ({
     onlinePlayers: socketManager.onlineCount(),
-    activeRooms: roomManager.listRooms().length,
-    activeMatches: matchManager.listMatches().filter((match) => match.status !== 'finished').length,
-    queuedPlayers: queueManager.getQueueSize(),
-    paymentGateEnabled,
-    safeEntryEnabled,
-    whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
-    matchJoinTimeoutSeconds: config.MATCH_JOIN_TIMEOUT_SECONDS,
-    uptime: Math.round(process.uptime()),
   });
 
   const buildMatchFinishedLog = (gameState, reason = null) => {
@@ -280,6 +287,7 @@ export function setupSocketServer(httpServer, {
     { emitResult: (finishedGameState, eventName) => {
       if (finishedGameState?.matchId) clearMatchActionReplayCache(finishedGameState.matchId);
       sendClientGameState(finishedGameState, eventName);
+      if (finishedGameState?.roomId) roomManager.deleteRoom(finishedGameState.roomId);
     } },
   );
 
@@ -428,7 +436,7 @@ export function setupSocketServer(httpServer, {
         );
       } catch (error) {
         matchManager.adminEndMatch?.(onlineMatch.matchId, 'financial_reservation_commit_failed');
-        roomManager.updateRoom(room.roomId, { status: 'cancelled', matchId: onlineMatch.matchId });
+        roomManager.deleteRoom(room.roomId);
         logError('MATCH_FINANCIAL_START_FAILED', { matchId: onlineMatch.matchId, roomId: room.roomId, reason: error.message });
         let recovery;
         try {
@@ -461,7 +469,7 @@ export function setupSocketServer(httpServer, {
         });
       } catch (error) {
         matchManager.adminEndMatch?.(onlineMatch.matchId, 'demo_credit_consume_failed');
-        roomManager.updateRoom(room.roomId, { status: 'cancelled', matchId: onlineMatch.matchId });
+        roomManager.deleteRoom(room.roomId);
         logError('DEMO_BALANCE_INCONSISTENCY', {
           matchId: onlineMatch.matchId,
           roomId: room.roomId,
@@ -649,9 +657,24 @@ export function setupSocketServer(httpServer, {
       const matchPlayer = match?.players.find((candidate) => candidate.id === playerId);
       return matchPlayer?.socketId === socket.id ? playerId : null;
     };
+    const consumeSocketRate = (operation, { limit, windowMs = 60_000 } = {}) => actionRateLimiter.consume(
+      `${operation}:${socket.entryAccess?.entryId || socket.paymentAccess?.paymentId || socketManager.getPlayerBySocket(socket.id)?.id || socket.id}`,
+      { limit, windowMs },
+    );
     const onSafe = (eventName, handler) => {
       socket.on(eventName, (payload = {}, acknowledgement) => {
         const receivedAck = typeof acknowledgement === 'function' ? acknowledgement : null;
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+          receivedAck?.({ ok: false, reason: 'INVALID_PAYLOAD', serverNow: Date.now() });
+          return;
+        }
+        const invalidIdentifier = ['matchId', 'roomId', 'playerId', 'actionId'].some((key) => (
+          payload[key] != null && (typeof payload[key] !== 'string' || payload[key].length > 128)
+        ));
+        if (invalidIdentifier) {
+          receivedAck?.({ ok: false, reason: 'INVALID_PAYLOAD', serverNow: Date.now() });
+          return;
+        }
         const actionId = typeof payload?.actionId === 'string' ? payload.actionId.trim() : '';
         const matchId = typeof payload?.matchId === 'string' ? payload.matchId : '';
         const activePlayerId = ACTION_REPLAY_EVENTS.has(eventName) ? getActivePlayerId(matchId) : null;
@@ -668,6 +691,21 @@ export function setupSocketServer(httpServer, {
           const cached = actionReplayCache.get(cacheKey);
           if (cached) {
             receivedAck?.({ ...cached.response, duplicate: true });
+            return;
+          }
+        }
+        if (ACTION_REPLAY_EVENTS.has(eventName)) {
+          const actionRate = actionRateLimiter.consume(
+            `game-action:${activePlayerId || socket.entryAccess?.entryId || socket.id}`,
+            { limit: 120, windowMs: 60_000 },
+          );
+          if (!actionRate.allowed) {
+            receivedAck?.({ ok: false, actionId: payload?.actionId ?? null, reason: 'RATE_LIMITED', serverNow: Date.now() });
+            socket.emit('actionRejected', {
+              reason: 'RATE_LIMITED',
+              action: eventName,
+              message: 'Muitas ações seguidas. Aguarde um instante e tente novamente.',
+            });
             return;
           }
         }
@@ -747,24 +785,32 @@ export function setupSocketServer(httpServer, {
     };
 
     socket.on('ping', (payload = {}) => {
+      if (!consumeSocketRate('ping', { limit: 30 }).allowed) return;
       logInfo('PING_RECEIVED', { socketId: socket.id, playerId: player.id });
       socket.emit('pong', {
         ok: true,
         receivedAt: new Date().toISOString(),
-        payload,
       });
       logInfo('PONG_SENT', { socketId: socket.id, playerId: player.id });
     });
 
     socket.on('ping_game', (payload = {}, ack) => {
+      if (!consumeSocketRate('ping-game', { limit: 60 }).allowed) {
+        ack?.({ ok: false, reason: 'RATE_LIMITED', serverNow: Date.now() });
+        return;
+      }
+      const clientSentAt = payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload.clientSentAt
+        : null;
       ack?.({
-        clientSentAt: Number(payload.clientSentAt) || null,
+        clientSentAt: Number(clientSentAt) || null,
         serverNow: Date.now(),
         transport: socket.conn.transport.name,
       });
     });
 
     socket.on('client_error_report', (payload = {}) => {
+      if (!consumeSocketRate('client-error', { limit: 10 }).allowed) return;
       recordClientError({
         ...payload,
         playerId: payload.playerId ?? getActivePlayerId(),
@@ -806,7 +852,11 @@ export function setupSocketServer(httpServer, {
         limit: 8,
         windowMs: 60_000,
       });
-      if (!queueRate.allowed) {
+      const queueIpRate = actionRateLimiter.consume(`queue-ip:${getSocketClientIp(socket)}`, {
+        limit: 30,
+        windowMs: 60_000,
+      });
+      if (!queueRate.allowed || !queueIpRate.allowed) {
         const message = 'Muitas tentativas seguidas. Aguarde um instante e tente novamente.';
         socket.emit('matchmakingError', { reason: 'RATE_LIMITED', message });
         ack?.({ ok: false, reason: 'RATE_LIMITED', message, serverNow: Date.now() });
@@ -943,12 +993,16 @@ export function setupSocketServer(httpServer, {
         }
         socket.emit('matchmakingError', {
           reason: queueResult.reason,
-          message: 'Voce ja esta na fila ou a entrada nao e valida.',
+          message: queueResult.reason === 'queue-full'
+            ? 'A fila está temporariamente lotada. Tente novamente em instantes.'
+            : 'Voce ja esta na fila ou a entrada nao e valida.',
         });
         ack?.({
           ok: false,
           reason: queueResult.reason,
-          message: 'Voce ja esta na fila ou a entrada nao e valida.',
+          message: queueResult.reason === 'queue-full'
+            ? 'A fila está temporariamente lotada. Tente novamente em instantes.'
+            : 'Voce ja esta na fila ou a entrada nao e valida.',
           serverNow: Date.now(),
         });
         return;
@@ -1039,24 +1093,35 @@ export function setupSocketServer(httpServer, {
     });
 
     socket.on('requestQueueStatus', (payload = {}) => {
-      socket.emit('queueStatus', queueManager.getQueueStatus(payload.tableValue));
+      if (!consumeSocketRate('queue-status', { limit: 30 }).allowed) return;
+      const tableValue = payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload.tableValue
+        : null;
+      socket.emit('queueStatus', queueManager.getQueueStatus(tableValue));
     });
 
     socket.on('requestServerStatus', () => {
+      if (!consumeSocketRate('server-status', { limit: 60 }).allowed) return;
       socket.emit('serverStatus', buildServerStatus());
     });
 
     socket.on('getMatchHistory', () => {
+      if (!consumeSocketRate('match-history', { limit: 10 }).allowed) return;
       socket.emit('matchHistory', {
-        history: matchManager.listMatchHistory(),
+        history: matchManager.listPublicMatchHistory(),
       });
     });
 
     socket.on('getMatchAudit', (payload = {}) => {
-      const audit = matchManager.getMatchAudit(payload.matchId);
+      if (!consumeSocketRate('match-audit', { limit: 20 }).allowed) return;
+      const publicId = payload && typeof payload === 'object' && !Array.isArray(payload)
+        && typeof payload.matchId === 'string' && payload.matchId.length <= 128
+        ? payload.matchId
+        : '';
+      const audit = matchManager.getPublicMatchAudit(publicId);
       if (!audit) {
         socket.emit('matchAudit', {
-          matchId: payload.matchId,
+          matchId: publicId || null,
           error: 'match-history-not-found',
         });
         return;
@@ -1072,7 +1137,11 @@ export function setupSocketServer(httpServer, {
         limit: 20,
         windowMs: 60_000,
       });
-      if (!resumeRate.allowed) {
+      const resumeIpRate = actionRateLimiter.consume(`recover-ip:${getSocketClientIp(socket)}`, {
+        limit: 30,
+        windowMs: 60_000,
+      });
+      if (!resumeRate.allowed || !resumeIpRate.allowed) {
         rejectAction(socket, {
           reason: 'RATE_LIMITED',
           message: 'Muitas tentativas de recuperação. Aguarde um instante.',
@@ -1165,7 +1234,12 @@ export function setupSocketServer(httpServer, {
     });
 
     socket.on('requestGameState', (payload = {}) => {
-      const currentMatch = matchManager.getOnlineMatch(payload.matchId);
+      if (!consumeSocketRate('game-state', { limit: 60 }).allowed) return;
+      const matchId = payload && typeof payload === 'object' && !Array.isArray(payload)
+        && typeof payload.matchId === 'string' && payload.matchId.length <= 128
+        ? payload.matchId
+        : '';
+      const currentMatch = matchManager.getOnlineMatch(matchId);
       if (currentMatch && socket.supersededMatchIds?.has(currentMatch.matchId)) {
         rejectAction(socket, {
           reason: 'MATCH_SESSION_MISMATCH',
@@ -1191,7 +1265,7 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
-      if (payload.playerId && payload.playerId !== viewerPlayerId) {
+      if (payload?.playerId && payload.playerId !== viewerPlayerId) {
         logWarn('REQUEST_GAME_STATE_IDENTITY_MISMATCH', {
           socketId: socket.id,
           matchId: currentMatch.matchId,
@@ -1199,7 +1273,7 @@ export function setupSocketServer(httpServer, {
         });
       }
 
-      const match = matchManager.expireTurnIfNeeded(payload.matchId) ?? currentMatch;
+      const match = matchManager.expireTurnIfNeeded(matchId) ?? currentMatch;
 
       socket.emit('gameStateUpdated', buildClientGameState(match, viewerPlayerId));
       socket.emit('time_sync', buildTimeSync(match));
@@ -1363,6 +1437,7 @@ export function setupSocketServer(httpServer, {
       }
       playerManager.setPlayerConnected(activePlayerId, false);
       const disconnectedMatch = matchManager.handleOnlineDisconnect(activePlayerId);
+      if (activePlayerId && !disconnectedMatch) playerManager.removePlayer(activePlayerId);
       socketManager.removeSocket(socket.id);
       broadcastServerStatus();
 

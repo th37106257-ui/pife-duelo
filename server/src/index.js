@@ -38,9 +38,10 @@ import {
   listObservabilityLogs,
   recordClientError,
 } from './observabilityStore.js';
+import { createRateLimiter } from './security/rateLimiter.js';
 
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', config.TRUST_PROXY_HOPS);
 const here = dirname(fileURLToPath(import.meta.url));
 const distPath = resolve(here, '../../dist');
 const indexPath = resolve(distPath, 'index.html');
@@ -50,7 +51,8 @@ const playerManager = new PlayerManager();
 const socketManager = new SocketManager({ playerManager });
 const queueManager = new QueueManager();
 const reportedStuckMatches = new Set();
-const financialWebhookRate = new Map();
+const publicHttpRateLimiter = createRateLimiter({ maxBuckets: 5000 });
+const adminAuthRateLimiter = createRateLimiter({ maxBuckets: 5000 });
 const paymentStore = new PaymentStore({ filePath: config.PAYMENT_STORE_PATH || null });
 const paymentService = new PaymentService({
   store: paymentStore,
@@ -316,28 +318,23 @@ function requirePaymentsReady(response) {
   return true;
 }
 
-function isAllowedRailwayOrigin(origin) {
-  try {
-    return new URL(origin).hostname.endsWith('.up.railway.app');
-  } catch {
-    return false;
-  }
-}
-
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || config.ALLOWED_CLIENT_URLS.includes(origin) || isAllowedRailwayOrigin(origin)) {
+    if (!origin || config.ALLOWED_CLIENT_URLS.includes(origin)) {
       callback(null, true);
       return;
     }
 
-    callback(new Error('cors-origin-not-allowed'));
+    const error = new Error('cors-origin-not-allowed');
+    error.status = 403;
+    callback(error);
   },
   credentials: true,
 };
 
 app.use(cors(corsOptions));
 app.use(express.json({
+  limit: '100kb',
   verify: (request, response, buffer) => {
     request.rawBody = buffer;
   },
@@ -348,12 +345,22 @@ app.use((request, response, next) => {
 });
 
 function isAdminRequest(request) {
-  const password = request.get('x-admin-password') ?? request.body?.password ?? request.query?.password;
-  return Boolean(config.ADMIN_PASSWORD && password === config.ADMIN_PASSWORD);
+  const password = request.get('x-admin-password') || '';
+  return Boolean(config.ADMIN_PASSWORD && secureEquals(password, config.ADMIN_PASSWORD));
 }
 
 function requireAdmin(request, response) {
   if (isAdminRequest(request)) return true;
+
+  const authRate = adminAuthRateLimiter.consume(`admin-auth:${request.ip || 'unknown'}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (!authRate.allowed) {
+    response.set('Retry-After', String(Math.ceil(authRate.retryAfterMs / 1000)));
+    response.status(429).json({ error: 'admin-rate-limited' });
+    return false;
+  }
 
   recordAdminLog({
     adminAction: 'admin_auth_failed',
@@ -366,6 +373,15 @@ function requireAdmin(request, response) {
     message: 'Tentativa de acesso admin rejeitada.',
   });
   response.status(401).json({ error: 'admin-unauthorized' });
+  return false;
+}
+
+function applyPublicRateLimit(request, response, { scope, limit = 120, windowMs = 60_000 }) {
+  const result = publicHttpRateLimiter.consume(`${scope}:${request.ip || 'unknown'}`, { limit, windowMs });
+  if (result.allowed) return true;
+
+  response.set('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)));
+  response.status(429).json({ error: 'rate-limited' });
   return false;
 }
 
@@ -607,14 +623,7 @@ app.post('/api/financial/webhooks/asaas', async (request, response) => {
     response.status(503).json({ error: 'financial-wallet-disabled' });
     return;
   }
-  const origin = request.ip || 'unknown';
-  const now = Date.now();
-  const bucket = financialWebhookRate.get(origin);
-  if (!bucket || now - bucket.startedAt >= 60_000) financialWebhookRate.set(origin, { startedAt: now, count: 1 });
-  else if (++bucket.count > 120) {
-    response.status(429).json({ error: 'financial-webhook-rate-limited' });
-    return;
-  }
+  if (!applyPublicRateLimit(request, response, { scope: 'webhook-asaas', limit: 120 })) return;
   try {
     logInfo('DEPOSIT_WEBHOOK_RECEIVED', {
       eventId: String(request.body?.id || '').slice(0, 120),
@@ -626,111 +635,30 @@ app.post('/api/financial/webhooks/asaas', async (request, response) => {
     const unauthorized = error.message === 'FINANCIAL_WEBHOOK_UNAUTHORIZED';
     const invalid = ['FINANCIAL_WEBHOOK_INVALID', 'FINANCIAL_DEPOSIT_NOT_FOUND', 'FINANCIAL_DEPOSIT_AMOUNT_MISMATCH'].includes(error.message);
     logWarn('DEPOSIT_WEBHOOK_REJECTED', { reason: error.message });
-    response.status(unauthorized ? 401 : (invalid ? 422 : 500)).json({ error: error.message });
+    response.status(unauthorized ? 401 : (invalid ? 422 : 500)).json({
+      error: unauthorized ? 'financial-webhook-unauthorized' : (invalid ? error.message : 'financial-webhook-processing-failed'),
+    });
   }
 });
 
 app.get('/health', (request, response) => {
-  const metrics = getProductionMetrics();
-  const memory = process.memoryUsage();
-  const whatsappDiagnostics = evolutionClient.getDiagnostics?.() ?? {};
-  const normalizedInstanceState = String(whatsappDiagnostics.lastStatus || '').trim().toLowerCase();
-  const instanceOpen = ['open', 'connected'].includes(normalizedInstanceState)
-    ? true
-    : (normalizedInstanceState && normalizedInstanceState !== 'unknown' ? false : null);
   response.json({
     ok: true,
     status: 'ok',
     time: new Date().toISOString(),
     uptime: process.uptime(),
-    onlinePlayers: metrics.onlinePlayers,
-    activeMatches: metrics.activeMatches,
-    waitingPlayers: queueManager.getQueueSize(),
-    payments: {
-      enabled: paymentSystemEnabled,
-      configured: getPaymentConfigurationErrors().length === 0,
-      whatsappPaymentsEnabled: config.WHATSAPP_PAYMENTS_ENABLED,
-      gateEnabled: config.PAYMENT_GATE_ENABLED,
-      postMatchWhatsappEnabled: config.POST_MATCH_WHATSAPP_ENABLED,
-      adminMatchSummaryEnabled: config.ADMIN_MATCH_SUMMARY_ENABLED,
-    },
-    demoCreditsEnabled: config.DEMO_CREDITS_ENABLED,
-    demoCreditsStartingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
-    demoCreditsHistoryLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
-    demoCreditsPersistenceConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
-    demoCredits: {
-      startingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
-      historyLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
-      storeConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
-    },
-    financialWallet: {
-      enabled: financialConfig.enabled,
-      ready: financialConfig.ready,
-      mode: financialConfig.mode,
-      provider: financialConfig.provider,
-      pixDepositsEnabled: financialConfig.pixDepositsEnabled,
-      realMoneyGamesEnabled: financialConfig.realMoneyGamesEnabled,
-      withdrawalsEnabled: financialConfig.withdrawalsEnabled,
-      autoWithdrawalsEnabled: financialConfig.autoWithdrawalsEnabled,
-      storeConfigured: Boolean(financialConfig.databaseUrl),
-      configurationErrors: financialConfig.errors,
-    },
-    whatsapp: {
-      provider: config.WHATSAPP_PROVIDER,
-      activeProvider: whatsappProviderContext.client.getActiveProviderName?.() ?? whatsappProviderContext.activeProviderName,
-      fallbackProvider: whatsappProviderContext.fallbackProviderName,
-      connectivityTestEnabled: whatsappConnectivityTestEnabled,
-      configured: whatsappConnectivityConfigured,
-      safeEntryEnabled: whatsappSafeEntryEnabled,
-      whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
-      cleanConversationEnabled: config.WHATSAPP_CLEAN_CONVERSATION_ENABLED,
-      safeEntryConfigured: getWhatsAppEntryConfigurationErrors().length === 0,
-      entryStorePersisted: Boolean(config.WHATSAPP_ENTRY_STORE_PATH),
-      publicGameUrlConfigured: Boolean(config.PUBLIC_GAME_URL),
-      instanceName: config.EVOLUTION_INSTANCE_NAME || null,
-      evolutionConfigured: whatsappProviderContext.evolutionClient.isConfigured(),
-      metaCloudConfigured: whatsappProviderContext.metaCloudClient.isConfigured(),
-      metaTokenConfigured: Boolean(config.META_WHATSAPP_TOKEN),
-      metaPhoneNumberIdConfigured: Boolean(config.META_PHONE_NUMBER_ID),
-      metaVerifyTokenConfigured: Boolean(config.META_VERIFY_TOKEN),
-      metaAppSecretConfigured: Boolean(config.META_APP_SECRET),
-      metaGraphApiVersionConfigured: Boolean(config.META_GRAPH_API_VERSION),
-      botNumberConfigured: Boolean(config.WHATSAPP_BOT_NUMBER),
-      botNumberMasked: config.WHATSAPP_BOT_NUMBER ? maskPhone(config.WHATSAPP_BOT_NUMBER) : null,
-      adminNumbersConfigured: config.ADMIN_WHATSAPP_NUMBERS.length,
-      adminNumbersMasked: config.ADMIN_WHATSAPP_NUMBERS.map(maskPhone),
-      instanceState: whatsappDiagnostics.lastStatus ?? null,
-      instanceOpen,
-      reconnectNeeded: Boolean(whatsappDiagnostics.reconnectNeeded),
-      lastStatusCheckAt: whatsappDiagnostics.lastStatusCheckAt ?? null,
-      lastWebhookReceivedAt: whatsappDiagnostics.lastWebhookReceivedAt ?? null,
-      lastMessageProcessedAt: whatsappDiagnostics.lastMessageProcessedAt ?? null,
-      lastSendAttemptAt: whatsappDiagnostics.lastSendAttemptAt ?? null,
-      lastSendSuccessAt: whatsappDiagnostics.lastSendSuccessAt ?? null,
-      lastSendErrorAt: whatsappDiagnostics.lastSendErrorAt ?? null,
-      panelDeliveryMode: 'send_only',
-      livePanelStateEnabled: config.WHATSAPP_CLEAN_CONVERSATION_ENABLED,
-      visualMessageReplacementEnabled: false,
-    },
-    queuedPlayers: queueManager.getQueueSize(),
-    finishedMatchesToday: metrics.finishedMatchesToday,
-    errorCountLastHour: getErrorCountSince(Date.now() - 60 * 60 * 1000),
-    memoryUsage: {
-      rssMb: Math.round(memory.rss / 1024 / 1024),
-      heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
-      heapTotalMb: Math.round(memory.heapTotal / 1024 / 1024),
-    },
     service: 'pife-duelo-server',
-    phase: '4.15',
   });
 });
 
 app.post('/api/client-errors', (request, response) => {
+  if (!applyPublicRateLimit(request, response, { scope: 'client-errors', limit: 60 })) return;
   recordClientError(request.body ?? {});
   response.status(202).json({ accepted: true });
 });
 
 app.get('/api/status', (request, response) => {
+  if (!requireAdmin(request, response)) return;
   response.json({
     ok: true,
     service: 'pife-duelo-server',
@@ -755,10 +683,22 @@ app.get('/api/status', (request, response) => {
     rooms: roomManager.listRooms().length,
     matches: matchManager.listMatches().length,
     queuedPlayers: queueManager.getQueueSize(),
+    financialWallet: {
+      enabled: financialConfig.enabled,
+      ready: financialConfig.ready,
+      mode: financialConfig.mode,
+      provider: financialConfig.provider,
+      pixDepositsEnabled: financialConfig.pixDepositsEnabled,
+      realMoneyGamesEnabled: financialConfig.realMoneyGamesEnabled,
+      withdrawalsEnabled: financialConfig.withdrawalsEnabled,
+      autoWithdrawalsEnabled: financialConfig.autoWithdrawalsEnabled,
+      storeConfigured: Boolean(financialConfig.databaseUrl),
+    },
   });
 });
 
 app.get('/api/webhooks/meta-whatsapp', (request, response) => {
+  if (!applyPublicRateLimit(request, response, { scope: 'webhook-meta-verify', limit: 30 })) return;
   const originIp = request.ip || request.get('x-forwarded-for') || null;
   const verification = metaCloudClient.verifyMetaWebhook(request.query ?? {});
   logInfo('META_WEBHOOK_VERIFY_ATTEMPT', {
@@ -792,6 +732,7 @@ app.get('/api/webhooks/meta-whatsapp', (request, response) => {
 });
 
 app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
+  if (!applyPublicRateLimit(request, response, { scope: 'webhook-meta', limit: 120 })) return;
   const originIp = request.ip || request.get('x-forwarded-for') || null;
   logInfo('META_WEBHOOK_RECEIVED', {
     originIp,
@@ -929,6 +870,7 @@ app.post('/api/webhooks/meta-whatsapp', async (request, response) => {
 });
 
 app.post('/api/webhooks/evolution', async (request, response) => {
+  if (!applyPublicRateLimit(request, response, { scope: 'webhook-evolution', limit: 120 })) return;
   const originIp = request.ip || request.get('x-forwarded-for') || null;
   logInfo('WHATSAPP_WEBHOOK_RECEIVED', {
     originIp,
@@ -945,7 +887,7 @@ app.post('/api/webhooks/evolution', async (request, response) => {
     response.status(503).json({ error: 'whatsapp-disabled' });
     return;
   }
-  if (!secureEquals(getWebhookSecret(request), config.EVOLUTION_WEBHOOK_SECRET)) {
+  if (!config.EVOLUTION_WEBHOOK_SECRET || !secureEquals(getWebhookSecret(request), config.EVOLUTION_WEBHOOK_SECRET)) {
     logWarn('EVOLUTION_WEBHOOK_UNAUTHORIZED', { originIp });
     response.status(401).json({ error: 'webhook-unauthorized' });
     return;
@@ -1023,6 +965,7 @@ app.post('/api/webhooks/evolution', async (request, response) => {
 });
 
 app.get('/api/payment-access/validate', (request, response) => {
+  if (!applyPublicRateLimit(request, response, { scope: 'payment-access-validation', limit: 60 })) return;
   if (!paymentSystemEnabled) {
     response.json({ ok: true, paymentGateEnabled: false });
     return;
@@ -1041,6 +984,7 @@ app.get('/api/payment-access/validate', (request, response) => {
 });
 
 app.get('/api/entry-access/validate', (request, response) => {
+  if (!applyPublicRateLimit(request, response, { scope: 'entry-access-validation', limit: 60 })) return;
   if (!whatsappSafeEntryEnabled) {
     response.status(503).json({ ok: false, error: 'whatsapp-safe-entries-disabled' });
     return;
@@ -1248,15 +1192,18 @@ app.get('/api/economy/tables/:tableValue', (request, response) => {
 });
 
 app.get('/api/economy/results', (request, response) => {
+  if (!requireAdmin(request, response)) return;
   response.json({ results: matchManager.listEconomicResults() });
 });
 
 app.get('/api/match-history', (request, response) => {
-  response.json({ history: matchManager.listMatchHistory() });
+  if (!applyPublicRateLimit(request, response, { scope: 'public-match-history', limit: 30 })) return;
+  response.json({ history: matchManager.listPublicMatchHistory() });
 });
 
 app.get('/api/match-history/:matchId/audit', (request, response) => {
-  const audit = matchManager.getMatchAudit(request.params.matchId);
+  if (!applyPublicRateLimit(request, response, { scope: 'public-match-audit', limit: 30 })) return;
+  const audit = matchManager.getPublicMatchAudit(request.params.matchId);
   if (!audit) {
     response.status(404).json({ error: 'match-history-not-found' });
     return;
@@ -1379,7 +1326,10 @@ app.post('/api/admin/matches/:matchId/end', (request, response) => {
     reason,
   });
   logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, reason));
-  void postMatchFlow.finishMatchAndNotify(result.gameState, reason, { emitResult: emitMatchToPlayers });
+  void postMatchFlow.finishMatchAndNotify(result.gameState, reason, { emitResult: (gameState, eventName) => {
+    emitMatchToPlayers(gameState, eventName);
+    if (gameState?.roomId) roomManager.deleteRoom(gameState.roomId);
+  } });
   response.json({ match: result.gameState });
 });
 
@@ -1408,7 +1358,10 @@ app.post('/api/admin/matches/:matchId/force-winner', (request, response) => {
     reason,
   });
   logInfo('MATCH_FINISHED', buildMatchFinishedLog(result.gameState, 'admin_decision'));
-  void postMatchFlow.finishMatchAndNotify(result.gameState, 'admin_decision', { emitResult: emitMatchToPlayers });
+  void postMatchFlow.finishMatchAndNotify(result.gameState, 'admin_decision', { emitResult: (gameState, eventName) => {
+    emitMatchToPlayers(gameState, eventName);
+    if (gameState?.roomId) roomManager.deleteRoom(gameState.roomId);
+  } });
   response.json({ match: result.gameState });
 });
 
@@ -1447,33 +1400,8 @@ app.delete('/api/admin/rooms/:roomId', (request, response) => {
   response.json({ room: removedRoom });
 });
 
-app.get('/api/rooms', (request, response) => {
-  response.json({ rooms: roomManager.listRooms() });
-});
-
-app.post('/api/rooms', (request, response) => {
-  const playerNames = Array.isArray(request.body?.players) ? request.body.players : [];
-  const players = playerNames.slice(0, config.MAX_PLAYERS_PER_ROOM).map((player, index) =>
-    playerManager.createPlayer({
-      name: player.name ?? `Jogador ${index + 1}`,
-      socketId: player.socketId ?? null,
-      position: index === 0 ? 'bottom' : 'top',
-    }),
-  );
-  const room = roomManager.createRoom({ players });
-
-  logInfo('ROOM_CREATED', { roomId: room.roomId, playerCount: players.length });
-  response.status(201).json({ room });
-});
-
-app.get('/api/rooms/:roomId', (request, response) => {
-  const room = roomManager.getRoom(request.params.roomId);
-  if (!room) {
-    response.status(404).json({ error: 'room-not-found' });
-    return;
-  }
-
-  response.json({ room });
+app.all(['/api/rooms', '/api/rooms/:roomId'], (request, response) => {
+  response.status(404).json({ error: 'not-found' });
 });
 
 app.get('/api/matches', (request, response) => {
@@ -1532,13 +1460,33 @@ app.use((request, response) => {
 });
 
 app.use((error, request, response, next) => {
-  logError('SERVER_ERROR', {
-    message: error.message,
-    stack: error.stack,
-    method: request.method,
-    path: request.path,
-  });
-  response.status(500).json({ error: 'server-error' });
+  if (response.headersSent) {
+    next(error);
+    return;
+  }
+
+  const status = error.type === 'entity.too.large'
+    ? 413
+    : (error.type === 'entity.parse.failed' ? 400 : (error.status === 403 ? 403 : 500));
+  const publicError = status === 413
+    ? 'request-too-large'
+    : (status === 400 ? 'invalid-request' : (status === 403 ? 'origin-not-allowed' : 'server-error'));
+  if (status >= 500) {
+    logError('SERVER_ERROR', {
+      message: error.message,
+      stack: error.stack,
+      method: request.method,
+      path: request.path,
+    });
+  } else {
+    logWarn('REQUEST_REJECTED', {
+      method: request.method,
+      path: request.path,
+      status,
+      reason: error.type || error.message,
+    });
+  }
+  response.status(status).json({ error: publicError });
 });
 
 const server = http.createServer(app);

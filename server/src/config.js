@@ -6,19 +6,20 @@ try {
 }
 
 import { resolveFinancialConfig } from './financial/financialConfig.js';
+import { buildAllowedClientOrigins } from './security/clientOrigins.js';
 
 const productionFrontendUrl = 'https://pife-duelo-production-4f73.up.railway.app';
 const defaultClientUrl = process.env.NODE_ENV === 'production' ? productionFrontendUrl : 'http://localhost:5173';
 const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || defaultClientUrl;
 const defaultWhatsappEntryStorePath = process.env.NODE_ENV === 'production' ? '/data/whatsapp-entries.json' : '';
 const defaultDemoCreditsStorePath = process.env.NODE_ENV === 'production' ? '/data/demo-credits/state.json' : '';
-const allowedClientUrls = [
-  frontendUrl,
-  process.env.CLIENT_URL,
-  ...(process.env.ALLOWED_CLIENT_URLS || '').split(','),
-]
-  .map((origin) => String(origin || '').trim())
-  .filter(Boolean);
+const publicGameUrl = process.env.PUBLIC_GAME_URL || frontendUrl;
+const allowedClientOrigins = buildAllowedClientOrigins({
+  frontendUrl: process.env.FRONTEND_URL || '',
+  clientUrl: process.env.CLIENT_URL || frontendUrl,
+  allowedClientUrls: process.env.ALLOWED_CLIENT_URLS || '',
+  publicGameUrl,
+});
 const parseList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const parseBoolean = (value) => String(value || '').toLowerCase() === 'true';
 const parseBooleanDefault = (value, defaultValue) => {
@@ -45,10 +46,11 @@ const normalizeWhatsappProvider = (value) => {
 
 export const config = {
   PORT: Number(process.env.PORT || 3000),
+  TRUST_PROXY_HOPS: 1,
   NODE_ENV: process.env.NODE_ENV || 'development',
   FRONTEND_URL: frontendUrl,
   CLIENT_URL: process.env.CLIENT_URL || frontendUrl,
-  ALLOWED_CLIENT_URLS: [...new Set(allowedClientUrls)],
+  ALLOWED_CLIENT_URLS: allowedClientOrigins,
   MAX_PLAYERS_PER_ROOM: 2,
   TURN_DURATION_SECONDS: 60,
   MATCH_JOIN_TIMEOUT_SECONDS: parsePositiveInteger(process.env.MATCH_JOIN_TIMEOUT_SECONDS, 60),
@@ -83,7 +85,7 @@ export const config = {
   PAYMENT_ACCESS_SECRET: process.env.PAYMENT_ACCESS_SECRET || '',
   PAYMENT_EXPIRY_MINUTES: Number(process.env.PAYMENT_EXPIRY_MINUTES || 60),
   PAYMENT_ACCESS_TTL_MINUTES: Number(process.env.PAYMENT_ACCESS_TTL_MINUTES || 180),
-  PUBLIC_GAME_URL: process.env.PUBLIC_GAME_URL || frontendUrl,
+  PUBLIC_GAME_URL: publicGameUrl,
   EVOLUTION_API_URL: process.env.EVOLUTION_API_URL || '',
   EVOLUTION_API_KEY: process.env.EVOLUTION_API_KEY || '',
   EVOLUTION_INSTANCE_NAME: process.env.EVOLUTION_INSTANCE_NAME || process.env.EVOLUTION_INSTANCE || '',
