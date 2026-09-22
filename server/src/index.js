@@ -1477,39 +1477,15 @@ app.get('/api/rooms/:roomId', (request, response) => {
 });
 
 app.get('/api/matches', (request, response) => {
-  response.json({ matches: matchManager.listMatches() });
+  response.status(404).json({ error: 'not-found' });
 });
 
 app.post('/api/matches', (request, response) => {
-  const roomId = request.body?.roomId;
-  const room = roomId ? roomManager.getRoom(roomId) : roomManager.createRoom();
-  if (!room) {
-    response.status(404).json({ error: 'room-not-found' });
-    return;
-  }
-
-  const players = room.players.length > 0
-    ? room.players
-    : [
-        playerManager.createPlayer({ name: 'Jogador 1', position: 'bottom' }),
-        playerManager.createPlayer({ name: 'Jogador 2', position: 'top' }),
-      ];
-  const match = matchManager.createMatch(room.roomId, players);
-  const startedMatch = request.body?.autoStart === false ? match : matchManager.startMatch(match.matchId);
-  roomManager.setRoomMatch(room.roomId, startedMatch.matchId);
-
-  logInfo('MATCH_CREATED', { roomId: room.roomId, matchId: startedMatch.matchId });
-  response.status(201).json({ match: startedMatch });
+  response.status(404).json({ error: 'not-found' });
 });
 
 app.get('/api/matches/:matchId', (request, response) => {
-  const match = matchManager.getMatch(request.params.matchId);
-  if (!match) {
-    response.status(404).json({ error: 'match-not-found' });
-    return;
-  }
-
-  response.json({ match });
+  response.status(404).json({ error: 'not-found' });
 });
 
 if (existsSync(distPath)) {

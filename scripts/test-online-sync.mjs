@@ -154,18 +154,18 @@ try {
   first.socket.disconnect();
   const resumed = await connectClient();
   clients.push(resumed.socket);
-  const resumedStatePromise = once(resumed.socket, 'gameStateUpdated');
-  const resumedSyncPromise = once(resumed.socket, 'time_sync');
+  const resumeRejected = once(resumed.socket, 'actionRejected');
   resumed.socket.emit('resumeOnlineMatch', {
     matchId: firstAfterDiscard.matchId,
     roomId: reconnectRoomId,
     playerId: reconnectPlayerId,
   });
-  const [resumedState, resumedSync] = await Promise.all([resumedStatePromise, resumedSyncPromise]);
-  assert.equal(resumedState.matchId, firstAfterDiscard.matchId);
-  assert.equal(resumedSync.turnStartedAt, syncAfterA.turnStartedAt);
+  const resumeRejection = await resumeRejected;
+  assert.equal(resumeRejection.reason, 'RESUME_NOT_AUTHORIZED');
+  const unauthorizedAction = await emitAction(resumed.socket, 'playerDrawFromDeck', { matchId: firstAfterDiscard.matchId });
+  assert.equal(unauthorizedAction.ack.ok, false);
 
-  console.log('PASS timer sincronizado, payload leve, WebSocket, ACK e reconexao');
+  console.log('PASS timer sincronizado, payload leve, WebSocket, ACK e bloqueio de reconexao sem credencial');
 } finally {
   clients.forEach((socket) => socket.connected && socket.disconnect());
   server.kill();

@@ -5,6 +5,7 @@ import { logError, logInfo, logWarn } from '../utils/logger.js';
 import { recordClientError } from '../observabilityStore.js';
 import { createPostMatchFlow } from '../services/postMatchFlow.js';
 import { createRateLimiter } from '../security/rateLimiter.js';
+import { resolveAuthorizedMatchPlayer } from './authorization.js';
 
 export function setupSocketServer(httpServer, {
   roomManager,
@@ -595,7 +596,19 @@ export function setupSocketServer(httpServer, {
     });
     broadcastServerStatus();
 
-    const getActivePlayerId = () => socketManager.getPlayerBySocket(socket.id)?.id ?? player.id;
+    const getActivePlayerId = (matchId = null) => {
+      const playerId = socketManager.getPlayerBySocket(socket.id)?.id ?? null;
+      if (!playerId) return null;
+
+      const match = matchId
+        ? matchManager.getOnlineMatch(matchId)
+        : matchManager.listMatches().find((candidate) => (
+            candidate.mode === 'online_1v1' && candidate.players.some((item) => item.id === playerId)
+          ));
+      if (!match) return playerId;
+      const matchPlayer = match?.players.find((candidate) => candidate.id === playerId);
+      return matchPlayer?.socketId === socket.id ? playerId : null;
+    };
     const onSafe = (eventName, handler) => {
       socket.on(eventName, (payload = {}, acknowledgement) => {
         const ack = typeof acknowledgement === 'function' ? acknowledgement : null;
@@ -961,7 +974,7 @@ export function setupSocketServer(httpServer, {
     onSafe('resumeOnlineMatch', (payload = {}) => {
       const savedPlayerId = String(payload.playerId || '');
       const savedMatchId = String(payload.matchId || '');
-      const resumeRate = actionRateLimiter.consume(`recover:${socket.entryAccess?.entryId || savedPlayerId || socket.id}`, {
+      const resumeRate = actionRateLimiter.consume(`recover:${socket.entryAccess?.entryId || socket.id}`, {
         limit: 20,
         windowMs: 60_000,
       });
@@ -973,24 +986,8 @@ export function setupSocketServer(httpServer, {
         });
         return;
       }
-      if (socket.entryAccess?.entryId) {
-        const authorizedEntry = entryService?.getEntry?.(socket.entryAccess.entryId, { includeSecrets: true });
-        if (
-          !authorizedEntry
-          || authorizedEntry.playerId !== savedPlayerId
-          || authorizedEntry.linkedMatchId !== savedMatchId
-        ) {
-          rejectAction(socket, {
-            reason: 'ENTRY_SESSION_MISMATCH',
-            message: 'Esta sessão não pertence à partida solicitada.',
-            action: 'resumeOnlineMatch',
-          });
-          return;
-        }
-      }
-      const match = matchManager.reconnectOnlinePlayer(savedMatchId, savedPlayerId, socket.id);
-
-      if (!match || (payload.roomId && match.roomId !== payload.roomId)) {
+      const currentMatch = matchManager.getOnlineMatch(savedMatchId);
+      if (!currentMatch || (payload.roomId && currentMatch.roomId !== payload.roomId)) {
         rejectAction(socket, {
           reason: 'MATCH_NOT_FOUND',
           message: 'Partida ativa nao encontrada.',
@@ -999,17 +996,50 @@ export function setupSocketServer(httpServer, {
         return;
       }
 
-      socketManager.setPlayerForSocket(socket.id, savedPlayerId);
-      playerManager.updatePlayer(savedPlayerId, {
+      const authorizedPlayerId = resolveAuthorizedMatchPlayer({
+        socket,
+        match: currentMatch,
+        socketManager,
+        entryService,
+        paymentService,
+        requestedPlayerId: savedPlayerId,
+      });
+      if (!authorizedPlayerId) {
+        logWarn('ONLINE_MATCH_RESUME_DENIED', {
+          socketId: socket.id,
+          matchId: savedMatchId || null,
+          reason: 'MATCH_SESSION_MISMATCH',
+        });
+        rejectAction(socket, {
+          reason: 'RESUME_NOT_AUTHORIZED',
+          message: 'Esta sessão não está autorizada para recuperar essa partida.',
+          action: 'resumeOnlineMatch',
+        });
+        return;
+      }
+
+      const match = matchManager.reconnectOnlinePlayer(savedMatchId, authorizedPlayerId, socket.id);
+      if (!match) {
+        rejectAction(socket, {
+          reason: 'MATCH_NOT_FOUND',
+          message: 'Partida ativa nao encontrada.',
+          action: 'resumeOnlineMatch',
+        });
+        return;
+      }
+
+      socketManager.setPlayerForSocket(socket.id, authorizedPlayerId);
+      playerManager.updatePlayer(authorizedPlayerId, {
         socketId: socket.id,
         isConnected: true,
       });
-      matchManager.setOnlinePlayerConnection(savedPlayerId, true, socket.id);
-      socket.emit('gameStateUpdated', buildClientGameState(match, savedPlayerId));
+      matchManager.setOnlinePlayerConnection(authorizedPlayerId, true, socket.id);
+      const reconnectedMatch = matchManager.getOnlineMatch(savedMatchId) ?? match;
+      socket.emit('gameStateUpdated', buildClientGameState(reconnectedMatch, authorizedPlayerId));
       socket.emit('time_sync', buildTimeSync(match));
       logInfo('PLAYER_RECONNECTED', {
         socketId: socket.id,
-        playerId: savedPlayerId,
+        playerId: authorizedPlayerId,
         matchId: match.matchId,
         roomId: match.roomId,
         table: match.tableValue ?? match.economy?.tableValue ?? null,
@@ -1018,24 +1048,38 @@ export function setupSocketServer(httpServer, {
         eventName: 'resumeOnlineMatch',
         matchId: match.matchId,
         roomId: match.roomId,
-        playerId: savedPlayerId,
+        playerId: authorizedPlayerId,
       });
     });
 
     socket.on('requestGameState', (payload = {}) => {
-      const match = matchManager.expireTurnIfNeeded(payload.matchId) ?? matchManager.getOnlineMatch(payload.matchId);
-      const viewerPlayerId = match?.players.some((item) => item.id === payload.playerId)
-        ? payload.playerId
-        : player.id;
+      const currentMatch = matchManager.getOnlineMatch(payload.matchId);
+      const viewerPlayerId = resolveAuthorizedMatchPlayer({
+        socket,
+        match: currentMatch,
+        socketManager,
+        entryService,
+        paymentService,
+      });
 
-      if (!match || !match.players.some((item) => item.id === viewerPlayerId)) {
+      if (!currentMatch || !viewerPlayerId) {
         rejectAction(socket, {
-          reason: 'MATCH_NOT_FOUND',
-          message: 'Partida nao encontrada.',
+          reason: currentMatch ? 'MATCH_SESSION_MISMATCH' : 'MATCH_NOT_FOUND',
+          message: currentMatch ? 'Esta sessão não está autorizada para consultar a partida.' : 'Partida nao encontrada.',
           action: 'requestGameState',
         });
         return;
       }
+
+      if (payload.playerId && payload.playerId !== viewerPlayerId) {
+        logWarn('REQUEST_GAME_STATE_IDENTITY_MISMATCH', {
+          socketId: socket.id,
+          matchId: currentMatch.matchId,
+          reason: 'CLIENT_IDENTITY_IGNORED',
+        });
+      }
+
+      const match = matchManager.expireTurnIfNeeded(payload.matchId) ?? currentMatch;
 
       socket.emit('gameStateUpdated', buildClientGameState(match, viewerPlayerId));
       socket.emit('time_sync', buildTimeSync(match));
@@ -1048,7 +1092,7 @@ export function setupSocketServer(httpServer, {
     });
 
     onSafe('playerDrawFromDeck', (payload = {}, ack) => {
-      const activePlayerId = getActivePlayerId();
+      const activePlayerId = getActivePlayerId(payload.matchId);
       const result = matchManager.drawFromDeck(payload.matchId, activePlayerId);
       if (result.blocked) {
         acknowledgeAction(ack, payload, result);
@@ -1068,7 +1112,7 @@ export function setupSocketServer(httpServer, {
     });
 
     onSafe('playerDrawFromDiscard', (payload = {}, ack) => {
-      const activePlayerId = getActivePlayerId();
+      const activePlayerId = getActivePlayerId(payload.matchId);
       const result = matchManager.drawFromDiscard(payload.matchId, activePlayerId);
       if (result.blocked) {
         acknowledgeAction(ack, payload, result);
@@ -1087,7 +1131,7 @@ export function setupSocketServer(httpServer, {
     });
 
     onSafe('playerDiscardCard', (payload = {}, ack) => {
-      const activePlayerId = getActivePlayerId();
+      const activePlayerId = getActivePlayerId(payload.matchId);
       const result = matchManager.discardOnlineCard(payload.matchId, activePlayerId, payload.cardId);
       if (result.blocked) {
         acknowledgeAction(ack, payload, result);
@@ -1112,7 +1156,7 @@ export function setupSocketServer(httpServer, {
     });
 
     onSafe('player:reorderHand', (payload = {}, ack) => {
-      const result = matchManager.reorderOnlineHand(payload.matchId, getActivePlayerId(), payload.handOrder);
+      const result = matchManager.reorderOnlineHand(payload.matchId, getActivePlayerId(payload.matchId), payload.handOrder);
       if (result.blocked) {
         acknowledgeAction(ack, payload, result);
         rejectAction(socket, result);
@@ -1122,7 +1166,7 @@ export function setupSocketServer(httpServer, {
     });
 
     const handlePlayerKnock = (payload = {}, ack) => {
-      const activePlayerId = getActivePlayerId();
+      const activePlayerId = getActivePlayerId(payload.matchId);
       const result = matchManager.knockOnline(payload.matchId, activePlayerId);
       if (result.blocked) {
         acknowledgeAction(ack, payload, result);
@@ -1144,7 +1188,7 @@ export function setupSocketServer(httpServer, {
     onSafe('player:knock', handlePlayerKnock);
 
     onSafe('playerSurrender', (payload = {}, ack) => {
-      const activePlayerId = getActivePlayerId();
+      const activePlayerId = getActivePlayerId(payload.matchId);
       const surrenderRate = actionRateLimiter.consume(`forfeit:${activePlayerId}`, {
         limit: 3,
         windowMs: 60_000,
