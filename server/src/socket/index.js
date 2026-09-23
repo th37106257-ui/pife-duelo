@@ -54,73 +54,66 @@ export function setupSocketServer(httpServer, {
   if (paymentGateEnabled || safeEntryEnabled) {
     io.use((socket, next) => {
       const entryToken = String(socket.handshake.auth?.entryToken || '').trim();
-      if (safeEntryEnabled && entryToken) {
-        const linkRate = actionRateLimiter.consume(
-          `link:${getSocketClientIp(socket)}`,
+      const entrySessionKey = String(socket.handshake.auth?.entrySessionKey || '').trim();
+      const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim();
+      const hasEntryRecoveryCredentials = Boolean(entrySessionKey || requestedMatchId);
+      if (safeEntryEnabled && (entryToken || hasEntryRecoveryCredentials)) {
+        const isRecovery = !entryToken;
+        const rate = actionRateLimiter.consume(
+          `${isRecovery ? 'entry-recovery' : 'link'}:${getSocketClientIp(socket)}`,
           { limit: 30, windowMs: 60_000 },
         );
-        if (!linkRate.allowed) {
-          const error = new Error('ENTRY_LINK_RATE_LIMITED');
+        if (!rate.allowed) {
+          const error = new Error('ENTRY_ACCESS_DENIED');
           error.data = { code: 'ENTRY_ACCESS_DENIED' };
           next(error);
           return;
         }
-        const entry = entryService?.validateAccessToken(entryToken);
-        if (!entry) {
-          const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim() || null;
-          logWarn('WHATSAPP_ENTRY_LINK_OPENED', {
+
+        let accessSession;
+        let expectedMatchId = null;
+        try {
+          if (isRecovery) {
+            if (!entrySessionKey || !requestedMatchId) throw new Error('ENTRY_ACCESS_DENIED');
+            accessSession = entryService?.recoverAccessSession({
+              matchId: requestedMatchId,
+              sessionKey: entrySessionKey,
+            });
+            if (!accessSession?.entry) throw new Error('ENTRY_ACCESS_DENIED');
+          } else {
+            const entry = entryService?.validateAccessToken(entryToken);
+            if (!entry) throw new Error('ENTRY_ACCESS_DENIED');
+            expectedMatchId = entry.whatsappMatchId || entry.linkedMatchId || null;
+            if (requestedMatchId && expectedMatchId && requestedMatchId !== expectedMatchId) {
+              throw new Error('ENTRY_ACCESS_DENIED');
+            }
+            accessSession = { entry, sessionKey: null, recovered: false };
+            if (config.WHATSAPP_FIRST_LOBBY_ENABLED) {
+              accessSession = entryService.claimAccessSession({
+                entryId: entry.entryId,
+                sessionKey: entrySessionKey || null,
+              });
+            }
+          }
+        } catch (sessionError) {
+          const entryId = accessSession?.entry?.entryId ?? null;
+          logWarn(isRecovery ? 'WHATSAPP_ENTRY_SESSION_RECOVERY_DENIED' : 'WHATSAPP_ENTRY_DUPLICATE_SESSION_BLOCKED', {
             socketId: socket.id,
-            requestedMatchId,
-            matchFound: false,
-            reason: 'ENTRY_ACCESS_DENIED',
-          });
-          logWarn('STALE_MATCH_LINK_OPENED', {
-            socketId: socket.id,
-            requestedMatchId,
-            reason: 'ENTRY_ACCESS_DENIED',
+            requestedMatchId: requestedMatchId || null,
+            entryId,
+            reason: ['ENTRY_ACCESS_DENIED', 'ENTRY_ACCESS_EXPIRED', 'ENTRY_DUPLICATE_SESSION'].includes(sessionError.message)
+              ? sessionError.message
+              : 'ENTRY_ACCESS_DENIED',
           });
           const error = new Error('ENTRY_ACCESS_DENIED');
           error.data = { code: 'ENTRY_ACCESS_DENIED' };
           next(error);
           return;
         }
-        const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim();
-        const expectedMatchId = entry.whatsappMatchId || entry.linkedMatchId || null;
-        if (requestedMatchId && expectedMatchId && requestedMatchId !== expectedMatchId) {
-          logWarn('WHATSAPP_ENTRY_LINK_OPENED', {
-            socketId: socket.id,
-            requestedMatchId,
-            expectedMatchId,
-            entryId: entry.entryId,
-            matchFound: false,
-            reason: 'ENTRY_MATCH_MISMATCH',
-          });
-          const error = new Error('ENTRY_MATCH_MISMATCH');
-          error.data = { code: 'ENTRY_ACCESS_DENIED' };
-          next(error);
-          return;
-        }
-        let accessSession = { entry, sessionKey: null, recovered: false };
-        if (config.WHATSAPP_FIRST_LOBBY_ENABLED) {
-          try {
-            accessSession = entryService.claimAccessSession({
-              entryId: entry.entryId,
-              sessionKey: String(socket.handshake.auth?.entrySessionKey || '').trim() || null,
-            });
-          } catch (sessionError) {
-            logWarn('WHATSAPP_ENTRY_DUPLICATE_SESSION_BLOCKED', {
-              entryId: entry.entryId,
-              requestedMatchId: requestedMatchId || null,
-              reason: sessionError.message,
-            });
-            const error = new Error(sessionError.message);
-            error.data = { code: 'ENTRY_ACCESS_DENIED', reason: sessionError.message };
-            next(error);
-            return;
-          }
-        }
+
         const authorizedEntry = accessSession.entry;
-        logInfo('WHATSAPP_ENTRY_LINK_OPENED', {
+        expectedMatchId ||= authorizedEntry.whatsappMatchId || authorizedEntry.linkedMatchId || null;
+        logInfo(isRecovery ? 'WHATSAPP_ENTRY_SESSION_RECOVERED' : 'WHATSAPP_ENTRY_LINK_OPENED', {
           socketId: socket.id,
           requestedMatchId: requestedMatchId || null,
           expectedMatchId,

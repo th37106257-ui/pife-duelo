@@ -51,6 +51,48 @@ const recovered = entries.claimAccessSession({
 });
 assert.equal(recovered.recovered, true);
 
+const recoveryMatchId = 'whatsapp_match_recovery_test';
+const recoveryEntries = ['5511888883333', '5511777774444'].map((phone) => {
+  const created = entries.createEntry({ phone, selectedTable: 5, source: 'session-recovery-test' });
+  entries.approveEntry({ entryId: created.entryId, actor: 'session-recovery-test' });
+  entries.refreshQueueAccessLink(created.entryId, { matchId: recoveryMatchId });
+  return { entry: entries.store.getEntry(created.entryId) };
+});
+const recoverySessions = recoveryEntries.map(({ entry }) => entries.claimAccessSession({ entryId: entry.entryId }));
+const recoveredFirst = entries.recoverAccessSession({
+  matchId: recoveryMatchId,
+  sessionKey: recoverySessions[0].sessionKey,
+});
+assert.equal(recoveredFirst.recovered, true);
+assert.equal(recoveredFirst.entry.entryId, recoveryEntries[0].entry.entryId);
+assert.equal(recoveredFirst.sessionKey, null);
+assert.equal('accessSessionTokenHash' in recoveredFirst.entry, false);
+assert.equal('accessTokenHash' in recoveredFirst.entry, false);
+assert.equal(entries.recoverAccessSession({
+  matchId: recoveryMatchId,
+  sessionKey: recoverySessions[1].sessionKey,
+}).entry.entryId, recoveryEntries[1].entry.entryId, 'Duas entradas no mesmo match devem resolver pela sessionKey correta.');
+assert.throws(() => entries.recoverAccessSession({ matchId: recoveryMatchId, sessionKey: 'wrong-session' }), /ENTRY_ACCESS_DENIED/);
+assert.throws(() => entries.recoverAccessSession({ matchId: 'another-match', sessionKey: recoverySessions[0].sessionKey }), /ENTRY_ACCESS_DENIED/);
+assert.throws(() => entries.recoverAccessSession({ matchId: recoveryMatchId }), /ENTRY_ACCESS_DENIED/);
+assert.throws(() => entries.recoverAccessSession({ sessionKey: recoverySessions[0].sessionKey }), /ENTRY_ACCESS_DENIED/);
+
+const expiredRecoveryEntry = recoveryEntries[0].entry;
+store.updateEntry(expiredRecoveryEntry.entryId, (current) => ({
+  ...current,
+  accessExpiresAt: new Date(now - 1).toISOString(),
+}));
+assert.throws(() => entries.recoverAccessSession({
+  matchId: recoveryMatchId,
+  sessionKey: recoverySessions[0].sessionKey,
+}), /ENTRY_ACCESS_DENIED/);
+const terminalRecoveryEntry = recoveryEntries[1].entry;
+store.updateEntry(terminalRecoveryEntry.entryId, (current) => ({ ...current, status: 'finished' }));
+assert.throws(() => entries.recoverAccessSession({
+  matchId: recoveryMatchId,
+  sessionKey: recoverySessions[1].sessionKey,
+}), /ENTRY_ACCESS_DENIED/);
+
 const abort = await queue.abortMatchAndReleaseParticipants({
   matchId: second.match.matchId,
   reason: 'player_left_before_start',
@@ -98,4 +140,4 @@ assert.match(fallbackSource, /buildOfficialWhatsAppLink\(\{ message: whatsappMes
 assert.match(socketSource, /WHATSAPP_FIRST_DIRECT_QUEUE_BLOCKED/);
 assert.match(socketSource, /ENTRY_DUPLICATE_SESSION/);
 
-console.log('WhatsApp-first: links individuais, sessão única, timeout de 60s, aborto idempotente e preservação paga validados.');
+console.log('WhatsApp-first: sessão única, recuperação matchId + sessionKey, isolamento multi-jogador, validade/status, timeout, aborto idempotente e preservação paga validados.');

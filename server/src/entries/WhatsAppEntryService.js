@@ -915,6 +915,37 @@ export class WhatsAppEntryService {
     return { entry: sanitizeWhatsAppEntry(updated), sessionKey: nextSessionKey, recovered: false };
   }
 
+  recoverAccessSession({ matchId, sessionKey } = {}) {
+    const normalizedMatchId = String(matchId || '').trim();
+    const normalizedSessionKey = String(sessionKey || '').trim();
+    if (!normalizedMatchId || !normalizedSessionKey || !this.accessSecret) {
+      throw new Error('ENTRY_ACCESS_DENIED');
+    }
+
+    const sessionHash = this.hashToken(normalizedSessionKey);
+    const matches = this.store.listEntries().filter((entry) => {
+      if (!entry || !TOKEN_VALID_STATUSES.has(entry.status)) return false;
+      if (!entry.accessSessionTokenHash || entry.accessSessionTokenHash !== sessionHash) return false;
+      if (entry.accessExpiresAt) {
+        const expiresAt = Date.parse(entry.accessExpiresAt);
+        if (!Number.isFinite(expiresAt) || expiresAt <= this.clock()) return false;
+      }
+      if (entry.status === 'requeued_after_opponent_cancel' && !entry.whatsappMatchId) return false;
+
+      return [entry.whatsappMatchId, entry.linkedMatchId]
+        .filter(Boolean)
+        .some((candidate) => String(candidate) === normalizedMatchId);
+    });
+
+    if (matches.length !== 1) throw new Error('ENTRY_ACCESS_DENIED');
+
+    return {
+      entry: sanitizeWhatsAppEntry(matches[0]),
+      sessionKey: null,
+      recovered: true,
+    };
+  }
+
   reserveQueueAccess({ entryId, socketId, selectedTable }) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
       if (!['approved_for_queue', 'queued', 'requeued_after_opponent_cancel'].includes(current.status)) throw new Error('ENTRY_NOT_APPROVED');

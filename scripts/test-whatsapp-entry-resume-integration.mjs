@@ -27,6 +27,10 @@ const playerAEntry = createApprovedEntry('5511888881212');
 const playerBEntry = createApprovedEntry('5511777773434');
 const playerAToken = new URL(playerAEntry.accessLink).searchParams.get('entry');
 const playerBToken = new URL(playerBEntry.accessLink).searchParams.get('entry');
+const unrelatedEntry = createApprovedEntry('5511666665656');
+const unrelatedMatchId = 'whatsapp_match_unrelated_recovery';
+const unrelatedAccess = seedService.refreshQueueAccessLink(unrelatedEntry.entry.entryId, { matchId: unrelatedMatchId });
+const unrelatedToken = new URL(unrelatedAccess.accessLink).searchParams.get('entry');
 
 const server = spawn(process.execPath, ['server/src/index.js'], {
   cwd: process.cwd(),
@@ -77,7 +81,7 @@ async function waitForHealth() {
   throw new Error('Servidor de teste nao iniciou.');
 }
 
-async function connectClient({ entryToken = '', sessionKey = null } = {}) {
+async function connectClient({ entryToken = '', sessionKey = null, matchId = '' } = {}) {
   const socket = io(baseUrl, {
     autoConnect: false,
     transports: ['websocket'],
@@ -85,6 +89,7 @@ async function connectClient({ entryToken = '', sessionKey = null } = {}) {
     auth: {
       ...(entryToken ? { entryToken } : {}),
       ...(sessionKey ? { entrySessionKey: sessionKey } : {}),
+      ...(matchId ? { joinMatchId: matchId } : {}),
     },
   });
   sockets.push(socket);
@@ -93,6 +98,26 @@ async function connectClient({ entryToken = '', sessionKey = null } = {}) {
   socket.connect();
   await connected;
   return { socket, connection: await identity };
+}
+
+async function expectHandshakeDenied({ entryToken = '', sessionKey = null, matchId = '' } = {}) {
+  const socket = io(baseUrl, {
+    autoConnect: false,
+    transports: ['websocket'],
+    reconnection: false,
+    auth: {
+      ...(entryToken ? { entryToken } : {}),
+      ...(sessionKey ? { entrySessionKey: sessionKey } : {}),
+      ...(matchId ? { joinMatchId: matchId } : {}),
+    },
+  });
+  sockets.push(socket);
+  const denied = once(socket, 'connect_error');
+  socket.connect();
+  const error = await denied;
+  assert.equal(error.message, 'ENTRY_ACCESS_DENIED');
+  assert.equal(error.data?.code, 'ENTRY_ACCESS_DENIED');
+  socket.close();
 }
 
 function joinQueue(socket, playerName) {
@@ -172,8 +197,14 @@ try {
   const playerA = await connectClient({ entryToken: playerAToken });
   const playerB = await connectClient({ entryToken: playerBToken });
   const sessionKeyA = playerA.connection.entryAccess.sessionKey;
+  const sessionKeyB = playerB.connection.entryAccess.sessionKey;
   assert.ok(sessionKeyA, 'O handshake inicial deve emitir a entrySessionKey do jogador A.');
+  assert.ok(sessionKeyB, 'O handshake inicial deve emitir a entrySessionKey do jogador B.');
   assert.equal(playerA.connection.entryAccess.entryId, playerAEntry.entry.entryId);
+  const unrelatedBootstrap = await connectClient({ entryToken: unrelatedToken, matchId: unrelatedMatchId });
+  const unrelatedSessionKey = unrelatedBootstrap.connection.entryAccess.sessionKey;
+  assert.ok(unrelatedSessionKey);
+  unrelatedBootstrap.socket.disconnect();
 
   assert.equal((await joinQueue(playerA.socket, 'Sessao A')).ok, true);
   const startedA = once(playerA.socket, 'matchStarted');
@@ -185,18 +216,32 @@ try {
   const playerAId = initialA.you.playerId;
   const playerBId = initialB.you.playerId;
   assert.equal(initialA.currentTurnPlayerId, playerAId, 'A deve iniciar, permitindo testar ação autenticada e tentativa do socket antigo no mesmo turno.');
+  assert.equal(JSON.stringify(initialA).includes(sessionKeyA), false, 'Estado privado de jogo não deve redistribuir a credencial de sessão.');
+  assert.equal(JSON.stringify(initialB).includes(sessionKeyA), false, 'A sessão de A não pode aparecer na visão de B.');
+  assert.equal(JSON.stringify(initialA).includes(playerAToken), false, 'O ticket inicial não deve aparecer no estado de jogo.');
   assertPrivateView(initialA, { matchId, playerId: playerAId, opponentPlayerId: playerBId });
 
   // Primeiro substitui A mantendo o socket antigo aberto: ele deve perder autorização para agir.
-  const staleReplacement = await connectClient({ entryToken: playerAToken, sessionKey: sessionKeyA });
+  const staleReplacement = await connectClient({ matchId, sessionKey: sessionKeyA });
   assert.equal(staleReplacement.connection.entryAccess.entryId, playerAEntry.entry.entryId);
   const replacementViewPromise = once(staleReplacement.socket, 'gameStateUpdated');
   resume(staleReplacement.socket, { matchId, playerId: playerAId });
   const replacementView = await replacementViewPromise;
   assertPrivateView(replacementView, { matchId, playerId: playerAId, opponentPlayerId: playerBId });
 
+  await expectHandshakeDenied({ matchId, sessionKey: 'invalid-session-key' });
+  await expectHandshakeDenied({ matchId });
+  await expectHandshakeDenied({ sessionKey: sessionKeyA });
+  await expectHandshakeDenied({ matchId, sessionKey: unrelatedSessionKey });
+  await expectHandshakeDenied({ entryToken: playerAToken });
+
+  const recoveredB = await connectClient({ matchId, sessionKey: sessionKeyB });
+  assert.equal(recoveredB.connection.entryAccess.entryId, playerBEntry.entry.entryId,
+    'Mesmo matchId, sessionKey de B deve recuperar somente a entrada de B.');
+  recoveredB.socket.disconnect();
+
   // Dois clientes autenticados depois do vínculo usam a mesma sessão; o mais novo assume.
-  const secondReplacement = await connectClient({ entryToken: playerAToken, sessionKey: sessionKeyA });
+  const secondReplacement = await connectClient({ matchId, sessionKey: sessionKeyA });
   assert.equal(secondReplacement.connection.entryAccess.linkedMatchId, matchId);
   const secondReplacementViewPromise = once(secondReplacement.socket, 'gameStateUpdated');
   resume(secondReplacement.socket, { matchId, playerId: playerAId });
@@ -296,7 +341,7 @@ try {
   staleReplacement.socket.disconnect();
   secondReplacement.socket.disconnect();
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const resumedA = await connectClient({ entryToken: playerAToken, sessionKey: sessionKeyA });
+  const resumedA = await connectClient({ matchId, sessionKey: sessionKeyA });
   assert.equal(resumedA.connection.entryAccess.entryId, playerAEntry.entry.entryId);
   const resumedViewPromise = once(resumedA.socket, 'gameStateUpdated');
   resume(resumedA.socket, { matchId, playerId: playerAId });
@@ -419,7 +464,7 @@ try {
   assert.equal(finishedB.matchId, matchId);
   assert.equal(staleEventsAfterFinish.events.length, 0, 'Socket substituído não pode receber o evento de fim da partida.');
 
-  console.log('PASS handshake entryToken + entrySessionKey, exclusividade multi-socket, visão privada, replay idempotente, concorrência e bloqueio de impersonação/socket substituído');
+  console.log('PASS bootstrap entryToken, recuperação Socket.IO sem ticket por matchId + sessionKey, isolamento entre jogadores, rejeições inválidas, exclusividade multi-socket, visão privada, replay idempotente, concorrência e bloqueio de impersonação/socket substituído');
 } finally {
   sockets.forEach((socket) => socket.connected && socket.disconnect());
   server.kill();

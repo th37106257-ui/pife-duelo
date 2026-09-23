@@ -95,22 +95,57 @@ function getStoredEntrySessionKey() {
   }
 }
 
-function storeEntrySessionKey(sessionKey) {
-  if (typeof window === 'undefined' || !sessionKey) return;
+function storeEntrySessionKey(sessionKey, matchId = getWhatsAppJoinMatchId()) {
+  if (typeof window === 'undefined' || !sessionKey || !matchId) return false;
   try {
-    window.localStorage.setItem(getEntrySessionStorageKey(), sessionKey);
+    window.localStorage.setItem(getEntrySessionStorageKey(matchId), sessionKey);
+    return true;
   } catch {
     // A sessão ativa continua válida no servidor; o navegador apenas perde a recuperação local.
+    return false;
   }
 }
 
-function clearEntrySessionKey(matchId = getWhatsAppJoinMatchId()) {
-  if (typeof window === 'undefined') return;
+export function hasStoredEntrySession(matchId = getWhatsAppJoinMatchId()) {
+  if (typeof window === 'undefined' || !matchId) return false;
+  try {
+    return Boolean(window.localStorage.getItem(getEntrySessionStorageKey(matchId)));
+  } catch {
+    return false;
+  }
+}
+
+export function clearEntrySessionKey(matchId = getWhatsAppJoinMatchId()) {
+  if (typeof window === 'undefined' || !matchId) return;
   try {
     window.localStorage.removeItem(getEntrySessionStorageKey(matchId));
   } catch {
     // Sem efeito fora de navegadores com armazenamento disponível.
   }
+}
+
+export function finalizeWhatsAppEntryBootstrap(nextSocket, sessionKey = null) {
+  if (typeof window === 'undefined' || !nextSocket?.auth) return false;
+  const matchId = getWhatsAppJoinMatchId();
+  if (!matchId) return false;
+
+  const normalizedSessionKey = String(sessionKey || '').trim();
+  const storedSessionKey = normalizedSessionKey ? '' : getStoredEntrySessionKey();
+  const activeSessionKey = normalizedSessionKey || storedSessionKey;
+  if (!activeSessionKey) return false;
+
+  if (normalizedSessionKey && !storeEntrySessionKey(normalizedSessionKey, matchId)) return false;
+
+  const safeAuth = { ...nextSocket.auth };
+  delete safeAuth.entryToken;
+  nextSocket.auth = { ...safeAuth, joinMatchId: matchId, entrySessionKey: activeSessionKey };
+
+  const url = new URL(window.location.href);
+  if (url.searchParams.has('entry')) {
+    url.searchParams.delete('entry');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }
+  return true;
 }
 
 export function clearStaleMatchAccessFromUrl() {
@@ -185,10 +220,7 @@ function createSocket() {
   nextSocket.on('connection:success', (payload) => {
     nextSocket.connectionSuccess = payload;
     const claimedSessionKey = payload?.entryAccess?.sessionKey;
-    if (claimedSessionKey) {
-      storeEntrySessionKey(claimedSessionKey);
-      nextSocket.auth = { ...nextSocket.auth, entrySessionKey: claimedSessionKey };
-    }
+    if (payload?.entryAccess?.entryId) finalizeWhatsAppEntryBootstrap(nextSocket, claimedSessionKey);
     publishConnectionState({
       status: 'connected',
       connected: true,

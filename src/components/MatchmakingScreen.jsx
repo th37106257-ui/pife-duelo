@@ -4,10 +4,12 @@ import MatchHistoryScreen from './MatchHistoryScreen.jsx';
 import WhatsAppLobbyFallback from './WhatsAppLobbyFallback.jsx';
 import {
   clearStaleMatchAccessFromUrl,
+  clearEntrySessionKey,
   connectSocket,
   disconnectSocket,
   getSocket,
   getSocketConnectionState,
+  hasStoredEntrySession,
   subscribeSocketConnection,
 } from '../services/socket.js';
 import { resumeOnlineMatch, startOnlineListeners, stopOnlineListeners } from '../services/onlineGameSocket.js';
@@ -117,6 +119,11 @@ export default function MatchmakingScreen() {
   const terminalFlowRef = useRef(null);
   const directJoinMatchId = useMemo(() => readJoinMatchIdFromUrl(), []);
   const hasDirectEntryLink = useMemo(() => Boolean(readEntryTokenFromUrl()), []);
+  const hasDirectEntrySession = useMemo(
+    () => Boolean(directJoinMatchId && hasStoredEntrySession(directJoinMatchId)),
+    [],
+  );
+  const shouldAutoJoinEntry = hasDirectEntryLink || hasDirectEntrySession;
   const whatsappFirstLobbyEnabled = useMemo(() => isWhatsAppFirstLobbyEnabled(), []);
   const hasStoredSession = useMemo(() => Boolean(readStoredMatchSession()), []);
 
@@ -399,6 +406,7 @@ export default function MatchmakingScreen() {
       onMatchFinished: (payload) => {
         setActionError('');
         applyOnlineState(payload, 'finished');
+        clearEntrySessionKey(payload?.matchId || activeSessionRef.current?.matchId);
       },
       onActionRejected: (payload) => {
         setActionError(payload.message || payload.reason || 'Acao rejeitada.');
@@ -409,6 +417,7 @@ export default function MatchmakingScreen() {
           });
         }
         if (payload.reason === 'MATCH_NOT_FOUND') {
+          clearEntrySessionKey(payload?.matchId || activeSessionRef.current?.matchId);
           if (recoveryInProgressRef.current) {
             console.warn('CLIENT_RECOVERY_FAILED', {
               reason: payload.reason,
@@ -586,7 +595,7 @@ export default function MatchmakingScreen() {
         if (cancelled) return;
         attachListeners(socket);
         socket.emit('requestServerStatus');
-        if (hasDirectEntryLink && !directJoinAttemptedRef.current) {
+        if (shouldAutoJoinEntry && !directJoinAttemptedRef.current) {
           directJoinAttemptedRef.current = true;
           console.info('[whatsapp-link] abrindo entrada direta:', { matchId: directJoinMatchId || null });
           await enterOnlineQueue({ automatic: true });

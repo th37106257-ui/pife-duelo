@@ -3,6 +3,18 @@ import { getServerUrl } from './serverUrl.js';
 const ACTIVE_MATCH_STORAGE_KEY = 'pifeDuelo.activeOnlineMatch';
 const recentReports = new Map();
 
+export function getSanitizedClientUrl(href = typeof window === 'undefined' ? '' : window.location?.href) {
+  try {
+    const url = new URL(href);
+    ['entry', 'access', 'entryToken', 'entrySessionKey', 'sessionKey', 'paymentToken'].forEach((key) => {
+      url.searchParams.delete(key);
+    });
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function readSession() {
   try {
     return JSON.parse(window.localStorage.getItem(ACTIVE_MATCH_STORAGE_KEY) || '{}');
@@ -24,7 +36,7 @@ export function reportClientError(error, source = 'frontend', extra = {}) {
     playerId: extra.playerId ?? session.playerId ?? null,
     matchId: extra.matchId ?? session.matchId ?? null,
     roomId: extra.roomId ?? session.roomId ?? null,
-    url: window.location.href,
+    url: getSanitizedClientUrl(),
     userAgent: window.navigator.userAgent,
   };
   const fingerprint = `${source}:${payload.message}:${payload.matchId ?? ''}`;
