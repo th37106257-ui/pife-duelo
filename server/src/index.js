@@ -39,6 +39,7 @@ import {
   recordClientError,
 } from './observabilityStore.js';
 import { createRateLimiter } from './security/rateLimiter.js';
+import { getHttpClientIp } from './socket/clientIp.js';
 
 const app = express();
 app.set('trust proxy', config.TRUST_PROXY_HOPS);
@@ -352,7 +353,7 @@ function isAdminRequest(request) {
 function requireAdmin(request, response) {
   if (isAdminRequest(request)) return true;
 
-  const authRate = adminAuthRateLimiter.consume(`admin-auth:${request.ip || 'unknown'}`, {
+  const authRate = adminAuthRateLimiter.consume(`admin-auth:${getHttpClientIp(request)}`, {
     limit: 10,
     windowMs: 60_000,
   });
@@ -377,7 +378,7 @@ function requireAdmin(request, response) {
 }
 
 function applyPublicRateLimit(request, response, { scope, limit = 120, windowMs = 60_000 }) {
-  const result = publicHttpRateLimiter.consume(`${scope}:${request.ip || 'unknown'}`, { limit, windowMs });
+  const result = publicHttpRateLimiter.consume(`${scope}:${getHttpClientIp(request)}`, { limit, windowMs });
   if (result.allowed) return true;
 
   response.set('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)));

@@ -8,7 +8,7 @@ import { QueueManager } from '../server/src/managers/QueueManager.js';
 import * as matchHistory from '../server/src/matchHistory.js';
 import { readFileSync } from 'node:fs';
 import { buildAllowedClientOrigins } from '../server/src/security/clientOrigins.js';
-import { getSocketClientIp } from '../server/src/socket/clientIp.js';
+import { getHttpClientIp, getSocketClientIp } from '../server/src/socket/clientIp.js';
 
 const serverSource = readFileSync(new URL('../server/src/index.js', import.meta.url), 'utf8');
 assert.match(serverSource, /!config\.EVOLUTION_WEBHOOK_SECRET\s*\|\|\s*!secureEquals\(getWebhookSecret\(request\), config\.EVOLUTION_WEBHOOK_SECRET\)/,
@@ -25,9 +25,19 @@ assert.equal(limiter.consume('second', { limit: 1, windowMs: 1000 }).allowed, tr
 assert.equal(limiter.consume('third', { limit: 1, windowMs: 1000 }).allowed, true);
 assert.equal(limiter.consume('first', { limit: 1, windowMs: 1000 }).allowed, true, 'limiter bounded deve expulsar a chave mais antiga');
 
-const socketIp = (address, forwardedFor) => getSocketClientIp({
-  handshake: { address, headers: forwardedFor ? { 'x-forwarded-for': forwardedFor } : {} },
+const httpRequest = (realIp, requestIp = '152.233.23.193') => ({
+  get: (name) => name === 'x-real-ip' ? realIp : undefined,
+  headers: realIp ? { 'x-real-ip': realIp } : {},
+  ip: requestIp,
+  socket: { remoteAddress: requestIp },
 });
+assert.equal(getHttpClientIp(httpRequest('179.42.141.163')), '179.42.141.163', 'HTTP deve priorizar X-Real-IP validado');
+assert.equal(getHttpClientIp(httpRequest('invalid-ip')), '152.233.23.193', 'X-Real-IP invalido deve usar fallback seguro');
+
+const socketIp = (address, forwardedFor, realIp) => getSocketClientIp({
+  handshake: { address, headers: { ...(forwardedFor ? { 'x-forwarded-for': forwardedFor } : {}), ...(realIp ? { 'x-real-ip': realIp } : {}) } },
+});
+assert.equal(socketIp('10.0.0.2', '198.51.100.200, 203.0.113.10', '179.42.141.163'), '179.42.141.163', 'Socket deve priorizar X-Real-IP validado');
 const socketIpA = socketIp('10.0.0.2', '198.51.100.200, 203.0.113.10');
 const socketIpB = socketIp('10.0.0.2', '192.0.2.250, 203.0.113.11');
 const socketIpSameAsA = socketIp('10.0.0.2', '192.0.2.251, 203.0.113.10');
