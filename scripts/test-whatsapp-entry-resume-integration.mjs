@@ -112,11 +112,17 @@ async function expectHandshakeDenied({ entryToken = '', sessionKey = null, match
     },
   });
   sockets.push(socket);
+  const unexpectedEvents = [];
+  ['connection:success', 'queueJoined', 'matchFound', 'matchStarted'].forEach((eventName) => {
+    socket.on(eventName, () => unexpectedEvents.push(eventName));
+  });
   const denied = once(socket, 'connect_error');
   socket.connect();
   const error = await denied;
   assert.equal(error.message, 'ENTRY_ACCESS_DENIED');
   assert.equal(error.data?.code, 'ENTRY_ACCESS_DENIED');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(unexpectedEvents, [], 'Handshake negado não pode receber acesso nem iniciar fila/partida.');
   socket.close();
 }
 
@@ -215,6 +221,7 @@ try {
   const matchId = initialA.matchId;
   const playerAId = initialA.you.playerId;
   const playerBId = initialB.you.playerId;
+  const entriesBeforeF5 = new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length;
   assert.equal(initialA.currentTurnPlayerId, playerAId, 'A deve iniciar, permitindo testar ação autenticada e tentativa do socket antigo no mesmo turno.');
   assert.equal(JSON.stringify(initialA).includes(sessionKeyA), false, 'Estado privado de jogo não deve redistribuir a credencial de sessão.');
   assert.equal(JSON.stringify(initialB).includes(sessionKeyA), false, 'A sessão de A não pode aparecer na visão de B.');
@@ -224,10 +231,21 @@ try {
   // Primeiro substitui A mantendo o socket antigo aberto: ele deve perder autorização para agir.
   const staleReplacement = await connectClient({ matchId, sessionKey: sessionKeyA });
   assert.equal(staleReplacement.connection.entryAccess.entryId, playerAEntry.entry.entryId);
+  assert.equal(staleReplacement.connection.entryAccess.linkedMatchId, matchId);
+  assert.equal(staleReplacement.socket.auth.entryToken, undefined, 'F5 usa somente matchId + sessionKey, sem ticket original.');
+  assert.equal(staleReplacement.socket.auth.entrySessionKey, sessionKeyA);
+  const f5AutomaticFlowEvents = listenForEvents(staleReplacement.socket, ['queueJoined', 'matchFound', 'matchStarted']);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(f5AutomaticFlowEvents.events, [], 'Reconectar por sessionKey não deve iniciar fila/partida nova automaticamente.');
+  f5AutomaticFlowEvents.stop();
+  assert.equal(new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length, entriesBeforeF5,
+    'F5 não pode criar uma nova entrada WhatsApp.');
   const replacementViewPromise = once(staleReplacement.socket, 'gameStateUpdated');
-  resume(staleReplacement.socket, { matchId, playerId: playerAId });
+  resume(staleReplacement.socket, { matchId });
   const replacementView = await replacementViewPromise;
   assertPrivateView(replacementView, { matchId, playerId: playerAId, opponentPlayerId: playerBId });
+  assert.equal(replacementView.matchId, initialA.matchId, 'F5 precisa recuperar exatamente o mesmo match.');
+  assert.equal(replacementView.you.playerId, initialA.you.playerId, 'F5 precisa recuperar exatamente o mesmo jogador autorizado.');
 
   await expectHandshakeDenied({ matchId, sessionKey: 'invalid-session-key' });
   await expectHandshakeDenied({ matchId });

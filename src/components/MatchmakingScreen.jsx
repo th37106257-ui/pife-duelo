@@ -14,7 +14,7 @@ import {
 } from '../services/socket.js';
 import { resumeOnlineMatch, startOnlineListeners, stopOnlineListeners } from '../services/onlineGameSocket.js';
 import { formatMoney, listOfficialTables } from '../shared/economy.js';
-import { isWhatsAppFirstLobbyEnabled } from '../services/whatsAppLink.js';
+import { isWhatsAppFirstLobbyEnabled, resolveWhatsAppEntryBootstrapAction } from '../services/whatsAppLink.js';
 
 const TABLE_OPTIONS = listOfficialTables();
 const ACTIVE_MATCH_STORAGE_KEY = 'pifeDuelo.activeOnlineMatch';
@@ -118,14 +118,16 @@ export default function MatchmakingScreen() {
   const recoveryLoggedMatchRef = useRef(null);
   const terminalFlowRef = useRef(null);
   const directJoinMatchId = useMemo(() => readJoinMatchIdFromUrl(), []);
+  const storedMatchSession = useMemo(() => readStoredMatchSession(), []);
   const hasDirectEntryLink = useMemo(() => Boolean(readEntryTokenFromUrl()), []);
   const hasDirectEntrySession = useMemo(
     () => Boolean(directJoinMatchId && hasStoredEntrySession(directJoinMatchId)),
     [],
   );
-  const shouldAutoJoinEntry = hasDirectEntryLink || hasDirectEntrySession;
   const whatsappFirstLobbyEnabled = useMemo(() => isWhatsAppFirstLobbyEnabled(), []);
-  const hasStoredSession = useMemo(() => Boolean(readStoredMatchSession()), []);
+  const hasStoredSession = Boolean(storedMatchSession);
+  const hasStoredMatchForEntry = hasStoredSession
+    && (!directJoinMatchId || storedMatchSession.matchId === directJoinMatchId);
 
   const opponent = useMemo(
     () => matchInfo?.players?.find((player) => player.position === 'top') ?? null,
@@ -587,7 +589,9 @@ export default function MatchmakingScreen() {
     let cancelled = false;
 
     const bootstrapLobby = async () => {
-      const restored = hasDirectEntryLink ? false : await restoreActiveMatch();
+      const restored = hasStoredMatchForEntry && (!hasDirectEntryLink || hasDirectEntrySession)
+        ? await restoreActiveMatch()
+        : false;
       if (cancelled || restored) return;
 
       try {
@@ -595,35 +599,53 @@ export default function MatchmakingScreen() {
         if (cancelled) return;
         attachListeners(socket);
         socket.emit('requestServerStatus');
-        if (shouldAutoJoinEntry && !directJoinAttemptedRef.current) {
+        const entryAccess = socket.connectionSuccess?.entryAccess ?? null;
+        const bootstrapAction = resolveWhatsAppEntryBootstrapAction({
+          hasEntryToken: hasDirectEntryLink,
+          hasStoredEntrySession: hasDirectEntrySession,
+          hasStoredMatchSession: hasStoredMatchForEntry,
+          entryAccess,
+        });
+        if (bootstrapAction === 'resume_match') {
+          recoveryInProgressRef.current = true;
+          const authorizedMatchId = entryAccess.linkedMatchId;
+          activeSessionRef.current = {
+            ...(readStoredMatchSession() ?? {}),
+            matchId: authorizedMatchId,
+            entryAccess,
+          };
+          console.info('CLIENT_ENTRY_RECOVERY_REQUESTED', {
+            matchId: maskClientId(authorizedMatchId),
+            entryId: maskClientId(entryAccess.entryId),
+          });
+          resumeOnlineMatch({ matchId: authorizedMatchId });
+          return;
+        }
+        if (bootstrapAction === 'join_queue' && !directJoinAttemptedRef.current) {
           directJoinAttemptedRef.current = true;
           console.info('[whatsapp-link] abrindo entrada direta:', { matchId: directJoinMatchId || null });
           await enterOnlineQueue({ automatic: true });
+          return;
+        }
+        if (bootstrapAction === 'blocked') {
+          setTerminalFlow({
+            title: 'Sessão indisponível',
+            message: 'Este link já foi usado, expirou ou não foi possível recuperar a mesma partida. Volte ao WhatsApp para continuar.',
+            autoRedirect: false,
+            blockedEntryAccess: true,
+          });
+          setStatus('terminal');
         }
       } catch (error) {
         if (error?.code === 'ENTRY_ACCESS_DENIED' && !cancelled) {
-          if (whatsappFirstLobbyEnabled) {
-            setTerminalFlow({
-              title: 'Link indisponível',
-              message: 'Este link expirou, já foi utilizado em outra sessão ou a partida foi encerrada.',
-              autoRedirect: true,
-            });
-            setStatus('terminal');
-            return;
-          }
-          try {
-            const freshSocket = await connectSocket();
-            if (cancelled) return;
-            attachListeners(freshSocket);
-            freshSocket.emit('requestServerStatus');
-            setStatus('idle');
-            setErrorMessage(error.message || 'Sua partida anterior foi encerrada. Voce ja pode escolher uma mesa novamente.');
-            return;
-          } catch (reconnectError) {
-            setOnlinePlayers(null);
-            setErrorMessage(reconnectError.message || 'Servidor indisponivel. Tente novamente.');
-            return;
-          }
+          setTerminalFlow({
+            title: 'Link indisponível',
+            message: 'Este link expirou, já foi utilizado em outra sessão ou a partida foi encerrada. Volte ao WhatsApp para solicitar uma nova entrada.',
+            autoRedirect: false,
+            blockedEntryAccess: true,
+          });
+          setStatus('terminal');
+          return;
         }
         setOnlinePlayers(null);
         setErrorMessage(error.message || 'Servidor indisponivel. Tente novamente.');
@@ -747,7 +769,7 @@ export default function MatchmakingScreen() {
     return <MatchHistoryScreen onBack={() => setShowHistory(false)} />;
   }
 
-  if (whatsappFirstLobbyEnabled && (status === 'terminal' || terminalFlow)) {
+  if ((whatsappFirstLobbyEnabled || terminalFlow?.blockedEntryAccess) && (status === 'terminal' || terminalFlow)) {
     return (
       <WhatsAppLobbyFallback
         title={terminalFlow?.title}

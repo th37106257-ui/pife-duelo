@@ -3,6 +3,25 @@ import { readFileSync } from 'node:fs';
 import { WhatsAppEntryStore } from '../server/src/entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from '../server/src/entries/WhatsAppEntryService.js';
 import { MatchQueue } from '../server/src/services/matchQueue.js';
+import { resolveWhatsAppEntryBootstrapAction } from '../src/services/whatsAppLink.js';
+
+assert.equal(resolveWhatsAppEntryBootstrapAction({
+  hasStoredEntrySession: true,
+  entryAccess: { entryId: 'entry-a', linkedMatchId: 'match-a' },
+}), 'resume_match', 'F5 com sessionKey recuperável deve priorizar a mesma partida.');
+assert.equal(resolveWhatsAppEntryBootstrapAction({
+  hasStoredEntrySession: true,
+  entryAccess: { entryId: 'entry-a', linkedMatchId: null },
+}), 'blocked', 'SessionKey sem vínculo ativo nunca pode iniciar outra fila automaticamente.');
+assert.equal(resolveWhatsAppEntryBootstrapAction({
+  hasEntryToken: true,
+  entryAccess: { entryId: 'entry-fresh' },
+}), 'join_queue', 'Somente ticket inicial aceito e sem sessão anterior pode iniciar a fila.');
+assert.equal(resolveWhatsAppEntryBootstrapAction({
+  hasEntryToken: true,
+  entryAccess: null,
+}), 'blocked', 'Ticket copiado/rejeitado não pode cair em jogo de treino ou fila nova.');
+assert.equal(resolveWhatsAppEntryBootstrapAction(), 'lobby');
 
 let now = Date.parse('2026-07-14T12:00:00.000Z');
 let tokenSequence = 0;

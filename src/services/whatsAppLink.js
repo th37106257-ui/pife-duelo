@@ -41,3 +41,19 @@ export function isWhatsAppFirstLobbyEnabled() {
   return typeof __PIFE_WHATSAPP_FIRST_LOBBY_ENABLED__ !== 'undefined'
     && __PIFE_WHATSAPP_FIRST_LOBBY_ENABLED__ === true;
 }
+
+export function resolveWhatsAppEntryBootstrapAction({
+  hasEntryToken = false,
+  hasStoredEntrySession = false,
+  hasStoredMatchSession = false,
+  entryAccess = null,
+} = {}) {
+  if (hasStoredEntrySession) {
+    return entryAccess?.entryId && entryAccess?.linkedMatchId ? 'resume_match' : 'blocked';
+  }
+  if (hasEntryToken) {
+    if (hasStoredMatchSession && entryAccess?.entryId && entryAccess?.linkedMatchId) return 'resume_match';
+    return entryAccess?.entryId ? 'join_queue' : 'blocked';
+  }
+  return 'lobby';
+}
