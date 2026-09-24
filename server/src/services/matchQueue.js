@@ -891,7 +891,7 @@ export class MatchQueue {
     throw new Error('ENTRY_NOT_AVAILABLE');
   }
 
-  async joinQueue(playerPhone, tableId, { replyTo = null } = {}) {
+  async joinQueue(playerPhone, tableId, { replyTo = null, approvedAccess = null } = {}) {
     if (!this.isConfigured()) {
       return { blocked: true, reason: 'queue_not_configured' };
     }
@@ -1025,7 +1025,18 @@ export class MatchQueue {
 
     let approval;
     try {
-      approval = await this.ensureEntryAccess({ phone, tableValue });
+      if (approvedAccess) {
+        const current = this.entryService?.getActiveEntryForPhone?.(phone);
+        if (!current || current.entryId !== approvedAccess.entry?.entryId
+          || current.status !== 'approved_for_queue'
+          || Number(current.selectedTable) !== tableValue
+          || current.linkedMatchId || current.queueSocketId || current.playingAt) {
+          throw new Error('ENTRY_NOT_AVAILABLE');
+        }
+        approval = approvedAccess;
+      } else {
+        approval = await this.ensureEntryAccess({ phone, tableValue });
+      }
     } catch (error) {
       this.logWarn('WHATSAPP_QUEUE_ENTRY_REJECTED', {
         phone: maskPhone(phone),
@@ -1165,7 +1176,7 @@ export class MatchQueue {
         tableId: tableValue,
         gameCode: 'PIFE_DUELO',
       });
-      const result = await this.joinQueue(phone, tableValue, { replyTo });
+      const result = await this.joinQueue(phone, tableValue, { replyTo, approvedAccess: approval });
       if (result.blocked) await this.financialWalletService.releaseStake(approval.entry.entryId, `queue_rejected:${result.reason}`);
       return result;
     } catch (error) {
