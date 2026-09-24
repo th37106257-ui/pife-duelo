@@ -1293,13 +1293,13 @@ export class WhatsAppPaymentBot {
       }
       const preStartMatch = this.entryService?.getPreStartMatchForPhone?.(targetPhone);
       if (preStartMatch?.matchId) {
-        this.matchQueue?.abortMatchAndReleaseParticipants?.({
+        await this.matchQueue?.abortMatchAndReleaseParticipants?.({
           matchId: preStartMatch.matchId,
           reason: `whatsapp_admin_${command}_before_start`,
           cancelledBy: targetPhone,
         });
       }
-      const result = this.entryService?.adminDecidePaidEntryForPhone?.(targetPhone, {
+      const result = await this.entryService?.adminDecidePaidEntryForPhone?.(targetPhone, {
         actor: senderPhone,
         decision: decisionByCommand[command],
         source: `whatsapp_admin_${command}`,
@@ -1352,7 +1352,7 @@ export class WhatsAppPaymentBot {
       let approval = null;
       try {
         const internalEntry = this.entryService.getEntry(entryId, { includeSecrets: true });
-        approval = this.entryService.approveEntry({ entryId, actor: phone, source: 'whatsapp-admin' });
+        approval = await this.entryService.approveEntry({ entryId, actor: phone, source: 'whatsapp-admin' });
         await this.send(internalEntry.phone, this.safeEntryApprovedText(approval.entry, approval.accessLink));
         this.entryService.markLinkDelivery(entryId, { sent: true });
         await this.send(replyTo, `\u2705 Entrada #${entryId} liberada. Link enviado ao jogador.`);
@@ -1361,7 +1361,7 @@ export class WhatsAppPaymentBot {
         const current = approval ? this.entryService.getEntry(entryId) : null;
         if (current?.status === 'approved_for_queue' && !current.linkSentAt) {
           this.entryService.markLinkDelivery(entryId, { sent: false, error: error.message });
-          this.entryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
+          await this.entryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
         }
         await this.send(replyTo, `N\u00e3o foi poss\u00edvel liberar a entrada: ${error.message}`);
         return { type: 'entry_admin_command_failed', decision: 'reply_sent', reason: error.message, entryId };
@@ -1373,7 +1373,7 @@ export class WhatsAppPaymentBot {
       const entryId = rejectMatch[1].toUpperCase().startsWith('E') ? rejectMatch[1].toUpperCase() : `E${rejectMatch[1]}`;
       try {
         const internalEntry = this.entryService.getEntry(entryId, { includeSecrets: true });
-        const entry = this.entryService.rejectEntry({
+        const entry = await this.entryService.rejectEntry({
           entryId,
           actor: phone,
           reason: sanitizeText(rejectMatch[2]),
@@ -1552,7 +1552,7 @@ export class WhatsAppPaymentBot {
       && entry?.whatsappMatchId
     ) {
       try {
-        const refreshed = this.entryService.refreshQueueAccessLink(entry.entryId, {
+        const refreshed = await this.entryService.refreshQueueAccessLink(entry.entryId, {
           actor: incoming.phone,
           source: 'whatsapp-link-recovery',
           matchId: entry.whatsappMatchId,

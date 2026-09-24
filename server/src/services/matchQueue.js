@@ -281,7 +281,7 @@ export class MatchQueue {
       cancelledBy: normalizedCancelledBy ? maskPhone(normalizedCancelledBy) : null,
     });
 
-    const result = this.entryService?.abortPreStartMatchAndReleaseParticipants?.({
+    const result = await this.entryService?.abortPreStartMatchAndReleaseParticipants?.({
       matchId: safeMatchId,
       reason,
       cancelledBy: normalizedCancelledBy,
@@ -496,7 +496,7 @@ export class MatchQueue {
           reason,
           cancelledBy: phone,
         })
-      : this.entryService?.cancelPreStartMatchForPhone?.(phone, {
+      : await this.entryService?.cancelPreStartMatchForPhone?.(phone, {
           actor: actor || phone,
           source: reason,
         });
@@ -658,7 +658,7 @@ export class MatchQueue {
     let clearedEntries = { cleared: 0, skipped: 0, entries: [] };
     if (!realActiveMatch) {
       this.activeMatchesByPhone.delete(phone);
-      clearedEntries = this.entryService?.clearPlayerEntries?.(phone, {
+      clearedEntries = await this.entryService?.clearPlayerEntries?.(phone, {
         actor: actor || phone,
         source: reason,
         forceFreeMode: !this.paymentsEnabled,
@@ -712,11 +712,12 @@ export class MatchQueue {
         const [entry] = queue.splice(index, 1);
         if (cancelEntry && entry.entryId) {
           try {
-            this.entryService?.cancelQueueEntry?.(entry.entryId, {
+            await this.entryService?.cancelQueueEntry?.(entry.entryId, {
               actor: phone,
               source: reason,
             });
           } catch (error) {
+            queue.splice(index, 0, entry);
             this.logWarn('WHATSAPP_QUEUE_ENTRY_CANCEL_FAILED', {
               tableId: queueId,
               tableValue: entry.tableValue,
@@ -724,6 +725,7 @@ export class MatchQueue {
               entryId: entry.entryId,
               reason: error.message,
             });
+            throw error;
           }
         }
         this.releaseDemoReservation(entry, reason);
@@ -795,7 +797,7 @@ export class MatchQueue {
       && existing?.mode === 'safe_test_without_pix'
       && ['requeued_after_opponent_cancel', 'admin_review'].includes(existing.status);
     if (staleFreeEntry) {
-      this.entryService.clearPlayerEntries(phone, {
+      await this.entryService.clearPlayerEntries(phone, {
         actor: phone,
         source: 'stale-free-entry-released-on-table-selection',
         forceFreeMode: true,
@@ -869,7 +871,7 @@ export class MatchQueue {
         hasLinkSent: Boolean(entry.linkSentAt),
         reason: 'approved_entry_without_real_match',
       });
-      this.entryService.cancelQueueEntry(entry.entryId, {
+      await this.entryService.cancelQueueEntry(entry.entryId, {
         actor: phone,
         source: 'stale-approved-entry-recycled',
         force: true,
@@ -942,7 +944,7 @@ export class MatchQueue {
         entryId: existingQueue.entry.entryId,
         queueSize: existingQueueState.length,
       });
-      const recoveredMatch = this.tryCreateMatch(existingQueue.tableValue);
+      const recoveredMatch = await this.tryCreateMatch(existingQueue.tableValue);
       if (recoveredMatch) {
         this.logInfo('WHATSAPP_QUEUE_DUPLICATE_RECOVERED_MATCH', {
           phone: maskPhone(phone),
@@ -1053,16 +1055,24 @@ export class MatchQueue {
           tableId: tableValue,
         });
       } catch (error) {
+        let cancellationError = null;
         try {
-          this.entryService?.cancelQueueEntry?.(approval.entry.entryId, {
+          await this.entryService?.cancelQueueEntry?.(approval.entry.entryId, {
             actor: phone,
             source: `demo-credits-${error.message}`,
             force: true,
           });
-        } catch {}
+        } catch (cleanupError) {
+          cancellationError = cleanupError;
+          this.logError('SAFE_ENTRY_CANCELLATION_FAILED', {
+            entryId: approval.entry.entryId,
+            reason: cleanupError.message,
+            source: 'demo-reservation-failed',
+          });
+        }
         return {
           blocked: true,
-          reason: error.message,
+          reason: cancellationError?.message || error.message,
           availableBalance: error.availableBalance ?? null,
           requiredAmount: error.requiredAmount ?? tableValue,
         };
@@ -1119,7 +1129,7 @@ export class MatchQueue {
       queueSize: queue.length,
     });
 
-    const match = this.tryCreateMatch(tableValue);
+    const match = await this.tryCreateMatch(tableValue);
     if (!match) {
       this.logInfo('WHATSAPP_QUEUE_WAITING', {
         tableId: queueId,
@@ -1159,17 +1169,25 @@ export class MatchQueue {
       if (result.blocked) await this.financialWalletService.releaseStake(approval.entry.entryId, `queue_rejected:${result.reason}`);
       return result;
     } catch (error) {
+      let cancellationError = null;
       if (approval?.entry?.entryId) {
         try { await this.financialWalletService.releaseStake(approval.entry.entryId, `queue_failed:${error.message}`); } catch {}
         try {
-          this.entryService?.cancelQueueEntry?.(approval.entry.entryId, { actor: phone, source: 'financial-reservation-failed', force: true });
-        } catch {}
+          await this.entryService?.cancelQueueEntry?.(approval.entry.entryId, { actor: phone, source: 'financial-reservation-failed', force: true });
+        } catch (cleanupError) {
+          cancellationError = cleanupError;
+          this.logError('SAFE_ENTRY_CANCELLATION_FAILED', {
+            entryId: approval.entry.entryId,
+            reason: cleanupError.message,
+            source: 'financial-reservation-failed',
+          });
+        }
       }
-      return { blocked: true, reason: error.message };
+      return { blocked: true, reason: cancellationError?.message || error.message };
     }
   }
 
-  tryCreateMatch(tableId) {
+  async tryCreateMatch(tableId) {
     const tableValue = this.normalizeTable(tableId);
     const queueId = tableQueueId(tableValue);
     if (!queueId) return null;
@@ -1207,23 +1225,34 @@ export class MatchQueue {
         entryId: player.entryId,
       })),
     });
-    players.forEach((player) => {
-      const refreshed = this.entryService?.refreshQueueAccessLink?.(player.entryId, {
-        actor: 'whatsapp-queue',
-        source: 'whatsapp-queue-match',
+    try {
+      for (const player of players) {
+        const refreshed = await this.entryService?.refreshQueueAccessLink?.(player.entryId, {
+          actor: 'whatsapp-queue',
+          source: 'whatsapp-queue-match',
+          matchId,
+          preMatchDeadline,
+        });
+        if (player.entryId && !refreshed?.accessLink) throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+        player.accessLink = refreshed?.accessLink ?? player.accessLink;
+        console.log('[5.3] link gerado:', maskAccessLink(player.accessLink));
+        this.logInfo('Link gerado:', {
+          matchId,
+          tableValue,
+          entryId: player.entryId,
+          phone: player.phoneMasked,
+          linkGenerated: Boolean(player.accessLink),
+        });
+      }
+    } catch (error) {
+      queue.unshift(...players);
+      this.logError('SAFE_ENTRY_MATCH_LINK_PERSISTENCE_FAILED', {
         matchId,
-        preMatchDeadline,
+        entryIds: players.map((player) => player.entryId).filter(Boolean),
+        reason: error?.message || 'SAFE_ENTRY_STORE_UNAVAILABLE',
       });
-      player.accessLink = refreshed?.accessLink ?? player.accessLink;
-      console.log('[5.3] link gerado:', maskAccessLink(player.accessLink));
-      this.logInfo('Link gerado:', {
-        matchId,
-        tableValue,
-        entryId: player.entryId,
-        phone: player.phoneMasked,
-        linkGenerated: Boolean(player.accessLink),
-      });
-    });
+      throw error;
+    }
     const roomUrl = players[0].accessLink;
     console.log('[5.3] sala criada:', matchId);
     this.logInfo('Room ID gerado:', {

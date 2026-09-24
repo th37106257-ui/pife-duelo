@@ -52,7 +52,7 @@ export function setupSocketServer(httpServer, {
     next();
   });
   if (paymentGateEnabled || safeEntryEnabled) {
-    io.use((socket, next) => {
+    io.use(async (socket, next) => {
       const entryToken = String(socket.handshake.auth?.entryToken || '').trim();
       const entrySessionKey = String(socket.handshake.auth?.entrySessionKey || '').trim();
       const requestedMatchId = String(socket.handshake.auth?.joinMatchId || '').trim();
@@ -75,25 +75,24 @@ export function setupSocketServer(httpServer, {
         try {
           if (isRecovery) {
             if (!entrySessionKey || !requestedMatchId) throw new Error('ENTRY_ACCESS_DENIED');
-            accessSession = entryService?.recoverAccessSession({
+            accessSession = await entryService?.recoverAccessSessionAuthoritative({
               matchId: requestedMatchId,
               sessionKey: entrySessionKey,
             });
             if (!accessSession?.entry) throw new Error('ENTRY_ACCESS_DENIED');
           } else {
-            const entry = entryService?.validateAccessToken(entryToken);
+            const entry = await entryService?.validateAccessTokenAuthoritative(entryToken);
             if (!entry) throw new Error('ENTRY_ACCESS_DENIED');
             expectedMatchId = entry.whatsappMatchId || entry.linkedMatchId || null;
-            if (requestedMatchId && expectedMatchId && requestedMatchId !== expectedMatchId) {
+            if (requestedMatchId && requestedMatchId !== expectedMatchId) {
               throw new Error('ENTRY_ACCESS_DENIED');
             }
-            accessSession = { entry, sessionKey: null, recovered: false };
-            if (config.WHATSAPP_FIRST_LOBBY_ENABLED) {
-              accessSession = entryService.claimAccessSession({
-                entryId: entry.entryId,
-                sessionKey: entrySessionKey || null,
-              });
-            }
+            accessSession = await entryService.claimAccessSessionAuthoritative({
+              entryId: entry.entryId,
+              sessionKey: entrySessionKey || null,
+              accessToken: entryToken,
+              matchId: requestedMatchId || null,
+            });
           }
         } catch (sessionError) {
           const entryId = accessSession?.entry?.entryId ?? null;
@@ -101,12 +100,15 @@ export function setupSocketServer(httpServer, {
             socketId: socket.id,
             requestedMatchId: requestedMatchId || null,
             entryId,
-            reason: ['ENTRY_ACCESS_DENIED', 'ENTRY_ACCESS_EXPIRED', 'ENTRY_DUPLICATE_SESSION'].includes(sessionError.message)
+            reason: ['ENTRY_ACCESS_DENIED', 'ENTRY_ACCESS_EXPIRED', 'ENTRY_DUPLICATE_SESSION', 'SAFE_ENTRY_STORE_UNAVAILABLE'].includes(sessionError.message)
               ? sessionError.message
               : 'ENTRY_ACCESS_DENIED',
           });
-          const error = new Error('ENTRY_ACCESS_DENIED');
-          error.data = { code: 'ENTRY_ACCESS_DENIED' };
+          const errorCode = sessionError.message === 'SAFE_ENTRY_STORE_UNAVAILABLE'
+            ? 'SAFE_ENTRY_STORE_UNAVAILABLE'
+            : 'ENTRY_ACCESS_DENIED';
+          const error = new Error(errorCode);
+          error.data = { code: errorCode };
           next(error);
           return;
         }
@@ -133,6 +135,8 @@ export function setupSocketServer(httpServer, {
           preMatchDeadline: authorizedEntry.preMatchDeadline ?? null,
           publicMatchReference: authorizedEntry.publicMatchReference ?? null,
           sessionVersion: authorizedEntry.sessionVersion ?? null,
+          playerId: authorizedEntry.playerId ?? null,
+          authorizationStatus: authorizedEntry.status ?? null,
           sessionKey: accessSession.sessionKey ?? null,
         };
       }
@@ -493,14 +497,21 @@ export function setupSocketServer(httpServer, {
         paymentIds: entries.map((entry) => entry.paymentId),
       });
     }
-    entries.filter((entry) => entry.entryId).forEach((entry) => {
-      entryService.linkToMatch({
+    for (const entry of entries.filter((candidate) => candidate.entryId)) {
+      await entryService.linkToMatch({
         entryId: entry.entryId,
         socketId: entry.socketId,
         matchId: onlineMatch.matchId,
         playerId: entry.playerId,
       });
-    });
+      for (const socket of io.sockets.sockets.values()) {
+        if (socket.entryAccess?.entryId === entry.entryId) {
+          socket.entryAccess.linkedMatchId = onlineMatch.matchId;
+          socket.entryAccess.playerId = entry.playerId;
+          socket.entryAccess.authorizationStatus = 'playing';
+        }
+      }
+    }
     whatsappPreMatchIds.forEach((whatsappMatchId) => {
       whatsappMatchQueue?.markMatchStarted?.(whatsappMatchId, onlineMatch.matchId);
     });
@@ -630,6 +641,7 @@ export function setupSocketServer(httpServer, {
         preMatchDeadline: socket.entryAccess.preMatchDeadline,
         publicMatchReference: socket.entryAccess.publicMatchReference,
         sessionVersion: socket.entryAccess.sessionVersion,
+        playerId: socket.entryAccess.playerId,
         sessionKey: socket.entryAccess.sessionKey,
       } : null,
       whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
@@ -829,7 +841,7 @@ export function setupSocketServer(httpServer, {
         tableValue,
       });
 
-      if (config.WHATSAPP_FIRST_LOBBY_ENABLED && !socket.entryAccess && !socket.paymentAccess) {
+      if ((safeEntryEnabled || config.WHATSAPP_FIRST_LOBBY_ENABLED) && !socket.entryAccess && !socket.paymentAccess) {
         logWarn('WHATSAPP_FIRST_DIRECT_QUEUE_BLOCKED', {
           socketId: socket.id,
           playerId: player.id,

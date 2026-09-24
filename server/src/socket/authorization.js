@@ -21,15 +21,16 @@ export function resolveAuthorizedMatchPlayer({
   const entryId = socket.entryAccess?.entryId;
   if (entryId) {
     const entry = entryService?.getEntry?.(entryId, { includeSecrets: true });
-    const sessionMatchId = socket.entryAccess.linkedMatchId;
+    const linkedMatchId = entry?.linkedMatchId ?? socket.entryAccess.linkedMatchId;
+    const playerId = entry?.playerId ?? socket.entryAccess.playerId;
+    const status = entry?.status ?? socket.entryAccess.authorizationStatus;
     if (
-      entry
-      && ACTIVE_ENTRY_STATUSES.has(entry.status)
-      && entry.playerId
-      && entry.linkedMatchId === match.matchId
-      && sessionMatchId === match.matchId
+      ACTIVE_ENTRY_STATUSES.has(status)
+      && playerId
+      && linkedMatchId === match.matchId
+      && socket.entryAccess.linkedMatchId === match.matchId
     ) {
-      const authorizedPlayer = match.players.find((candidate) => candidate.id === entry.playerId);
+      const authorizedPlayer = match.players.find((candidate) => candidate.id === playerId);
       if (authorizedPlayer && (!requestedPlayerId || requestedPlayerId === authorizedPlayer.id)) {
         return authorizedPlayer.id;
       }

@@ -6,38 +6,71 @@ import { join } from 'node:path';
 import { io } from 'socket.io-client';
 import { WhatsAppEntryStore } from '../server/src/entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from '../server/src/entries/WhatsAppEntryService.js';
+import { PostgresWhatsAppEntryAccessRepository } from '../server/src/entries/PostgresWhatsAppEntryAccessRepository.js';
 
 const port = 3216;
 const baseUrl = `http://127.0.0.1:${port}`;
+const firstLobbyEnabled = process.env.PIFE_TEST_FIRST_LOBBY_ENABLED ?? 'true';
+const databaseUrl = process.env.PIFE_SAFE_ENTRY_TEST_DATABASE_URL || process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error('PIFE_SAFE_ENTRY_TEST_DATABASE_URL_REQUIRED');
+const database = new URL(databaseUrl);
+if (!['127.0.0.1', 'localhost'].includes(database.hostname) || database.port !== '55432'
+  || database.pathname !== '/pife_safe_entry_test' || database.username !== 'pife_test') {
+  throw new Error('SAFE_ENTRY_INTEGRATION_TEST_REQUIRES_ISOLATED_LOCAL_POSTGRES');
+}
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'pife-entry-resume-'));
 const entryStorePath = join(temporaryDirectory, 'entries.json');
 const accessSecret = 'entry-resume-integration-secret';
+const seedRepository = new PostgresWhatsAppEntryAccessRepository({ connectionString: databaseUrl });
+await seedRepository.initialize();
+await seedRepository.pool.query('TRUNCATE TABLE whatsapp_safe_entries');
 const seedService = new WhatsAppEntryService({
   store: new WhatsAppEntryStore({ filePath: entryStorePath }),
   accessSecret,
   publicGameUrl: baseUrl,
+  sharedAccessRepository: seedRepository,
+  requireSharedAccessRepository: true,
 });
 
-function createApprovedEntry(phone) {
+async function createApprovedEntry(phone) {
   const entry = seedService.createEntry({ phone, selectedTable: 5, source: 'resume-integration-test' });
   return seedService.approveEntry({ entryId: entry.entryId, actor: 'resume-integration-test' });
 }
 
-const playerAEntry = createApprovedEntry('5511888881212');
-const playerBEntry = createApprovedEntry('5511777773434');
+const playerAEntry = await createApprovedEntry('5511888881212');
+const playerBEntry = await createApprovedEntry('5511777773434');
 const playerAToken = new URL(playerAEntry.accessLink).searchParams.get('entry');
 const playerBToken = new URL(playerBEntry.accessLink).searchParams.get('entry');
-const unrelatedEntry = createApprovedEntry('5511666665656');
+const unrelatedEntry = await createApprovedEntry('5511666665656');
 const unrelatedMatchId = 'whatsapp_match_unrelated_recovery';
-const unrelatedAccess = seedService.refreshQueueAccessLink(unrelatedEntry.entry.entryId, { matchId: unrelatedMatchId });
+const unrelatedAccess = await seedService.refreshQueueAccessLink(unrelatedEntry.entry.entryId, { matchId: unrelatedMatchId });
 const unrelatedToken = new URL(unrelatedAccess.accessLink).searchParams.get('entry');
+const raceEntry = await createApprovedEntry('5511666667878');
+const raceMatchId = 'whatsapp_match_claim_race';
+const raceAccess = await seedService.refreshQueueAccessLink(raceEntry.entry.entryId, { matchId: raceMatchId });
+const raceToken = new URL(raceAccess.accessLink).searchParams.get('entry');
+const crossSessionEntry = await createApprovedEntry('5511666669890');
+const crossSessionMatchId = 'whatsapp_match_cross_session';
+const crossSessionAccess = await seedService.refreshQueueAccessLink(crossSessionEntry.entry.entryId, { matchId: crossSessionMatchId });
+const crossSessionToken = new URL(crossSessionAccess.accessLink).searchParams.get('entry');
 
 const server = spawn(process.execPath, ['server/src/index.js'], {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    DATABASE_URL: databaseUrl,
+    NODE_ENV: 'test',
+    FINANCIAL_MODE: 'sandbox',
+    PAYMENT_PROVIDER: 'mock',
+    FINANCIAL_WALLET_ENABLED: 'false',
+    PIX_DEPOSITS_ENABLED: 'false',
+    REAL_MONEY_GAMES_ENABLED: 'false',
+    WITHDRAWALS_ENABLED: 'false',
+    AUTO_WITHDRAWALS_ENABLED: 'false',
+    ASAAS_API_KEY: '',
+    ASAAS_WEBHOOK_TOKEN: '',
     PORT: String(port),
-    NODE_ENV: 'production',
+    WHATSAPP_PROVIDER: 'evolution',
     ADMIN_PASSWORD: 'entry-resume-test-admin',
     CLIENT_URL: baseUrl,
     FRONTEND_URL: baseUrl,
@@ -45,15 +78,15 @@ const server = spawn(process.execPath, ['server/src/index.js'], {
     PAYMENT_GATE_ENABLED: 'false',
     WHATSAPP_PAYMENTS_ENABLED: 'false',
     WHATSAPP_SAFE_ENTRY_ENABLED: 'true',
-    WHATSAPP_FIRST_LOBBY_ENABLED: 'true',
+    WHATSAPP_FIRST_LOBBY_ENABLED: firstLobbyEnabled,
     WHATSAPP_ENTRY_STORE_PATH: entryStorePath,
     WHATSAPP_ENTRY_ACCESS_SECRET: accessSecret,
     PUBLIC_GAME_URL: baseUrl,
     ADMIN_WHATSAPP_NUMBERS: '5511999998888',
-    EVOLUTION_API_URL: 'https://evolution.example',
-    EVOLUTION_API_KEY: 'integration-placeholder',
-    EVOLUTION_INSTANCE_NAME: 'pife-entry-resume-test',
-    EVOLUTION_WEBHOOK_SECRET: 'integration-webhook-secret',
+    EVOLUTION_API_URL: 'http://127.0.0.1:9',
+    EVOLUTION_API_KEY: 'local-integration-placeholder',
+    EVOLUTION_INSTANCE_NAME: 'local-integration-test',
+    EVOLUTION_WEBHOOK_SECRET: 'local-integration-secret',
   },
   stdio: 'ignore',
 });
@@ -100,7 +133,44 @@ async function connectClient({ entryToken = '', sessionKey = null, matchId = '' 
   return { socket, connection: await identity };
 }
 
-async function expectHandshakeDenied({ entryToken = '', sessionKey = null, matchId = '' } = {}) {
+function connectClientOutcome({ entryToken = '', sessionKey = null, matchId = '' } = {}) {
+  const socket = io(baseUrl, {
+    autoConnect: false,
+    transports: ['websocket'],
+    reconnection: false,
+    auth: {
+      ...(entryToken ? { entryToken } : {}),
+      ...(sessionKey ? { entrySessionKey: sessionKey } : {}),
+      ...(matchId ? { joinMatchId: matchId } : {}),
+    },
+  });
+  sockets.push(socket);
+  const events = [];
+  ['queueJoined', 'matchFound', 'matchStarted'].forEach((eventName) => {
+    socket.on(eventName, () => events.push(eventName));
+  });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error('Handshake simultâneo não foi concluído.'));
+    }, 5000);
+    socket.once('connection:success', (connection) => {
+      clearTimeout(timeout);
+      resolve({ accepted: true, socket, connection, events });
+    });
+    socket.once('connect_error', (error) => {
+      clearTimeout(timeout);
+      resolve({ accepted: false, socket, error, events });
+    });
+    socket.connect();
+  });
+}
+
+async function expectHandshakeDenied({ entryToken = '', sessionKey = null, matchId = '', entryId = null } = {}) {
+  const entryCountBefore = new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length;
+  const entryBefore = entryId
+    ? new WhatsAppEntryStore({ filePath: entryStorePath }).getEntry(entryId)
+    : null;
   const socket = io(baseUrl, {
     autoConnect: false,
     transports: ['websocket'],
@@ -123,6 +193,12 @@ async function expectHandshakeDenied({ entryToken = '', sessionKey = null, match
   assert.equal(error.data?.code, 'ENTRY_ACCESS_DENIED');
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(unexpectedEvents, [], 'Handshake negado não pode receber acesso nem iniciar fila/partida.');
+  assert.equal(new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length, entryCountBefore,
+    'Handshake negado não pode criar uma nova entrada.');
+  if (entryId) {
+    assert.deepEqual(new WhatsAppEntryStore({ filePath: entryStorePath }).getEntry(entryId), entryBefore,
+      'Handshake negado não pode alterar a entrada/ticket alvo.');
+  }
   socket.close();
 }
 
@@ -200,13 +276,69 @@ function gameplaySnapshot(state) {
 try {
   await waitForHealth();
 
+  const anonymousEntryCount = new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length;
+  const anonymousClient = await connectClientOutcome();
+  assert.equal(anonymousClient.accepted, true, 'A compatibilidade do handshake anônimo permanece, mas não deve conceder fila.');
+  assert.equal(anonymousClient.connection.entryAccess, null);
+  const anonymousQueueResult = await joinQueue(anonymousClient.socket, 'Anônimo sem ticket');
+  assert.equal(anonymousQueueResult.ok, false);
+  assert.equal(anonymousQueueResult.reason, 'WHATSAPP_ENTRY_REQUIRED',
+    'SAFE ENTRY deve bloquear fila anônima mesmo com FIRST_LOBBY=false.');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(anonymousClient.events, [], 'A conexão sem credenciais não pode criar fila ou partida.');
+  assert.equal(new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length, anonymousEntryCount,
+    'A tentativa anônima não pode criar uma nova entrada.');
+  anonymousClient.socket.close();
+
+  const raceEntryCountBefore = new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length;
+  await expectHandshakeDenied({
+    entryToken: raceToken,
+    sessionKey: 'session-key-of-another-player',
+    matchId: raceMatchId,
+    entryId: raceEntry.entry.entryId,
+  });
+  assert.equal(new WhatsAppEntryStore({ filePath: entryStorePath }).getEntry(raceEntry.entry.entryId)?.accessSessionTokenHash, null,
+    'SessionKey fornecida pelo cliente não pode reclamar ticket ainda não usado.');
+
+  const raceResults = await Promise.all([
+    connectClientOutcome({ entryToken: raceToken, matchId: raceMatchId }),
+    connectClientOutcome({ entryToken: raceToken, matchId: raceMatchId }),
+  ]);
+  assert.deepEqual(raceResults.map((result) => result.accepted).sort(), [false, true],
+    'Duas reclamações simultâneas do mesmo ticket devem produzir exatamente um sucesso e uma rejeição.');
+  const raceWinner = raceResults.find((result) => result.accepted);
+  const raceRejected = raceResults.find((result) => !result.accepted);
+  assert.equal(raceWinner.connection.entryAccess.entryId, raceEntry.entry.entryId);
+  assert.ok(raceWinner.connection.entryAccess.sessionKey, 'O servidor gera a sessionKey somente no claim vencedor.');
+  assert.equal(raceRejected.error.data?.code, 'ENTRY_ACCESS_DENIED');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(raceResults.flatMap((result) => result.events), [], 'Handshake não deve criar fila ou partida automaticamente.');
+  const raceEntryAfter = new WhatsAppEntryStore({ filePath: entryStorePath }).getEntry(raceEntry.entry.entryId);
+  assert.ok(raceEntryAfter.accessSessionTokenHash);
+  const raceDatabaseEntry = await seedRepository.getEntry(raceEntry.entry.entryId);
+  assert.ok(raceDatabaseEntry.accessSessionClaimedAt, 'O claim vencedor deve estar persistido na autoridade compartilhada PostgreSQL.');
+  assert.ok(raceDatabaseEntry.accessSessionTokenHash, 'PostgreSQL deve persistir um único hash de sessão.');
+  assert.equal(await seedRepository.countEntry(raceEntry.entry.entryId), 1,
+    'A tentativa concorrente deve manter exatamente uma entrada persistida.');
+  assert.equal(new WhatsAppEntryStore({ filePath: entryStorePath }).listEntries().length, raceEntryCountBefore,
+    'Claims concorrentes/rejeitados não podem criar entries.');
+  raceResults.forEach((result) => result.socket.close());
+
   const playerA = await connectClient({ entryToken: playerAToken });
   const playerB = await connectClient({ entryToken: playerBToken });
   const sessionKeyA = playerA.connection.entryAccess.sessionKey;
   const sessionKeyB = playerB.connection.entryAccess.sessionKey;
   assert.ok(sessionKeyA, 'O handshake inicial deve emitir a entrySessionKey do jogador A.');
   assert.ok(sessionKeyB, 'O handshake inicial deve emitir a entrySessionKey do jogador B.');
+  assert.notEqual(sessionKeyA, sessionKeyB, 'As sessionKeys devem ser distintas entre jogadores.');
   assert.equal(playerA.connection.entryAccess.entryId, playerAEntry.entry.entryId);
+  assert.ok(new WhatsAppEntryStore({ filePath: entryStorePath }).getEntry(playerAEntry.entry.entryId)?.accessSessionTokenHash,
+    'SAFE ENTRY deve reclamar a sessão no primeiro acesso, independentemente da flag de lobby.');
+  await expectHandshakeDenied({
+    entryToken: unrelatedToken,
+    matchId: 'invented-match-for-entry-token',
+    entryId: unrelatedEntry.entry.entryId,
+  });
   const unrelatedBootstrap = await connectClient({ entryToken: unrelatedToken, matchId: unrelatedMatchId });
   const unrelatedSessionKey = unrelatedBootstrap.connection.entryAccess.sessionKey;
   assert.ok(unrelatedSessionKey);
@@ -227,6 +359,13 @@ try {
   assert.equal(JSON.stringify(initialB).includes(sessionKeyA), false, 'A sessão de A não pode aparecer na visão de B.');
   assert.equal(JSON.stringify(initialA).includes(playerAToken), false, 'O ticket inicial não deve aparecer no estado de jogo.');
   assertPrivateView(initialA, { matchId, playerId: playerAId, opponentPlayerId: playerBId });
+
+  await expectHandshakeDenied({
+    entryToken: crossSessionToken,
+    sessionKey: sessionKeyB,
+    matchId: crossSessionMatchId,
+    entryId: crossSessionEntry.entry.entryId,
+  });
 
   // Primeiro substitui A mantendo o socket antigo aberto: ele deve perder autorização para agir.
   const staleReplacement = await connectClient({ matchId, sessionKey: sessionKeyA });
@@ -251,7 +390,8 @@ try {
   await expectHandshakeDenied({ matchId });
   await expectHandshakeDenied({ sessionKey: sessionKeyA });
   await expectHandshakeDenied({ matchId, sessionKey: unrelatedSessionKey });
-  await expectHandshakeDenied({ entryToken: playerAToken });
+  await expectHandshakeDenied({ entryToken: playerAToken, sessionKey: sessionKeyB, matchId, entryId: playerAEntry.entry.entryId });
+  await expectHandshakeDenied({ entryToken: playerAToken, matchId, entryId: playerAEntry.entry.entryId });
 
   const recoveredB = await connectClient({ matchId, sessionKey: sessionKeyB });
   assert.equal(recoveredB.connection.entryAccess.entryId, playerBEntry.entry.entryId,
@@ -443,7 +583,6 @@ try {
   });
   assert.equal(bDrawAck.ok, true);
   const bAfterDraw = await bDrawUpdate;
-  const aAfterBDiscardUpdate = once(resumedA.socket, 'gameStateUpdated');
   const bDiscardAck = await emitAction(playerB.socket, 'playerDiscardCard', {
     matchId,
     turnNumber: bAfterDraw.turnNumber,
@@ -451,7 +590,7 @@ try {
     actionId: `player-b-discard-${Date.now()}`,
   });
   assert.equal(bDiscardAck.ok, true);
-  const aAfterBDiscard = await aAfterBDiscardUpdate;
+  const aAfterBDiscard = await requestState(resumedA.socket, matchId);
   assert.equal(aAfterBDiscard.currentTurnPlayerId, playerAId);
 
   const staleTurnReplay = await emitAction(resumedA.socket, 'playerDrawFromDeck', {
@@ -465,15 +604,17 @@ try {
   assert.deepEqual(gameplaySnapshot(stateAfterStaleReplay), gameplaySnapshot(aAfterBDiscard));
 
   const surrenderId = `surrender-replay-${Date.now()}`;
+  const surrenderActorSocket = aAfterBDiscard.currentTurnPlayerId === playerAId ? resumedA.socket : playerB.socket;
   const surrenderFinishedA = once(resumedA.socket, 'matchFinished');
   const surrenderFinishedB = once(playerB.socket, 'matchFinished');
   const staleEventsAfterFinish = listenForEvents(staleReplacement.socket, ['gameStateUpdated', 'matchFinished', 'time_sync']);
   const surrenderResults = await Promise.all([
-    emitAction(playerB.socket, 'playerSurrender', { matchId, turnNumber: aAfterBDiscard.turnNumber, actionId: surrenderId }),
-    emitAction(playerB.socket, 'playerSurrender', { matchId, turnNumber: aAfterBDiscard.turnNumber, actionId: surrenderId }),
-    emitAction(playerB.socket, 'playerDrawFromDeck', { matchId, turnNumber: aAfterBDiscard.turnNumber, actionId: `draw-during-surrender-${Date.now()}` }),
+    emitAction(surrenderActorSocket, 'playerSurrender', { matchId, turnNumber: aAfterBDiscard.turnNumber, actionId: surrenderId }),
+    emitAction(surrenderActorSocket, 'playerSurrender', { matchId, turnNumber: aAfterBDiscard.turnNumber, actionId: surrenderId }),
+    emitAction(surrenderActorSocket, 'playerDrawFromDeck', { matchId, turnNumber: aAfterBDiscard.turnNumber, actionId: `draw-during-surrender-${Date.now()}` }),
   ]);
-  assert.equal(surrenderResults.filter((ack) => ack.ok).length, 1, 'Surrender + replay + outra ação devem produzir só uma transição válida.');
+  assert.equal(surrenderResults.filter((ack) => ack.ok && !ack.duplicate).length, 1,
+    `Surrender + replay + outra ação devem produzir só uma transição válida. ACKs=${JSON.stringify(surrenderResults)}`);
   assert.ok(surrenderResults.every((ack) => ack.ok || ack.reason), 'Replay deve receber ACK coerente e seguro.');
   const [finishedA, finishedB] = await Promise.all([surrenderFinishedA, surrenderFinishedB]);
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -487,4 +628,6 @@ try {
   sockets.forEach((socket) => socket.connected && socket.disconnect());
   server.kill();
   rmSync(temporaryDirectory, { recursive: true, force: true });
+  await seedRepository.pool.query('TRUNCATE TABLE whatsapp_safe_entries').catch(() => {});
+  await seedRepository.close();
 }

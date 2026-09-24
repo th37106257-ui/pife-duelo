@@ -22,10 +22,11 @@ import { buildEvolutionMessageDiagnostic, WhatsAppPaymentBot } from './payments/
 import { createWhatsAppProvider } from './payments/WhatsAppProvider.js';
 import { WhatsAppEntryStore } from './entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
+import { PostgresWhatsAppEntryAccessRepository } from './entries/PostgresWhatsAppEntryAccessRepository.js';
 import { DemoCreditsRepository } from './demoCredits/DemoCreditsRepository.js';
 import { DemoCreditsService } from './demoCredits/DemoCreditsService.js';
 import { assertFinancialConfig } from './financial/financialConfig.js';
-import { PostgresFinancialRepository } from './financial/PostgresFinancialRepository.js';
+import { PostgresFinancialRepository, resolveFinancialDatabaseSsl } from './financial/PostgresFinancialRepository.js';
 import { FinancialWalletService } from './financial/FinancialWalletService.js';
 import { AsaasSandboxProvider } from './financial/paymentProviders/AsaasSandboxProvider.js';
 import { MockPaymentProvider } from './financial/paymentProviders/MockPaymentProvider.js';
@@ -64,6 +65,22 @@ const paymentService = new PaymentService({
   accessTtlMinutes: config.PAYMENT_ACCESS_TTL_MINUTES,
 });
 const whatsappEntryStore = new WhatsAppEntryStore({ filePath: config.WHATSAPP_ENTRY_STORE_PATH || null });
+let whatsappEntryAccessRepository = null;
+if (config.WHATSAPP_SAFE_ENTRY_ENABLED) {
+  try {
+    whatsappEntryAccessRepository = new PostgresWhatsAppEntryAccessRepository({
+      connectionString: config.FINANCIAL.databaseUrl,
+      ssl: resolveFinancialDatabaseSsl({ connectionString: config.FINANCIAL.databaseUrl }),
+    });
+    await whatsappEntryAccessRepository.initialize();
+  } catch (error) {
+    logError('WHATSAPP_SAFE_ENTRY_POSTGRES_INIT_FAILED', {
+      code: error?.code || error?.message || 'SAFE_ENTRY_STORE_UNAVAILABLE',
+    });
+    await whatsappEntryAccessRepository?.close().catch(() => {});
+    whatsappEntryAccessRepository = null;
+  }
+}
 const whatsappEntryService = new WhatsAppEntryService({
   store: whatsappEntryStore,
   adminNumbers: config.ADMIN_WHATSAPP_NUMBERS,
@@ -71,6 +88,8 @@ const whatsappEntryService = new WhatsAppEntryService({
   publicGameUrl: config.PUBLIC_GAME_URL,
   entryExpiryMinutes: config.WHATSAPP_ENTRY_EXPIRY_MINUTES,
   accessTtlMinutes: config.WHATSAPP_ENTRY_ACCESS_TTL_MINUTES,
+  sharedAccessRepository: whatsappEntryAccessRepository,
+  requireSharedAccessRepository: config.WHATSAPP_SAFE_ENTRY_ENABLED,
 });
 const whatsappProviderContext = createWhatsAppProvider({
   config,
@@ -430,7 +449,7 @@ async function approveAndDeliverWhatsAppEntry(entryId, { actor, source }) {
   if (!evolutionClient.isConfigured()) throw new Error('WHATSAPP_PROVIDER_NOT_CONFIGURED');
   const internalEntry = whatsappEntryService.getEntry(entryId, { includeSecrets: true });
   if (!internalEntry) throw new Error('ENTRY_NOT_FOUND');
-  const result = whatsappEntryService.approveEntry({ entryId, actor, source });
+  const result = await whatsappEntryService.approveEntry({ entryId, actor, source });
   try {
     await sendWhatsAppMessage(
       internalEntry.phone,
@@ -441,7 +460,7 @@ async function approveAndDeliverWhatsAppEntry(entryId, { actor, source }) {
     return { entry: whatsappEntryService.getEntry(entryId), notificationSent: true };
   } catch (error) {
     whatsappEntryService.markLinkDelivery(entryId, { sent: false, error: error.message });
-    whatsappEntryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
+    await whatsappEntryService.rollbackApprovalAfterDeliveryFailure(entryId, { error: error.message });
     error.entryId = entryId;
     throw error;
   }
@@ -598,9 +617,9 @@ function buildMatchFinishedLog(gameState, reason = null) {
   };
 }
 
-function releaseWhatsAppEntriesAfterMatch(gameState, reason = 'match_finished') {
+async function releaseWhatsAppEntriesAfterMatch(gameState, reason = 'match_finished') {
   if (!gameState?.matchId || !whatsappEntryService?.finishEntriesForMatch) return [];
-  const released = whatsappEntryService.finishEntriesForMatch({
+  const released = await whatsappEntryService.finishEntriesForMatch({
     matchId: gameState.matchId,
     winnerId: gameState.result?.winnerId ?? null,
     loserId: gameState.result?.loserId ?? null,
@@ -984,13 +1003,19 @@ app.get('/api/payment-access/validate', (request, response) => {
   });
 });
 
-app.get('/api/entry-access/validate', (request, response) => {
+app.get('/api/entry-access/validate', async (request, response) => {
   if (!applyPublicRateLimit(request, response, { scope: 'entry-access-validation', limit: 60 })) return;
   if (!whatsappSafeEntryEnabled) {
     response.status(503).json({ ok: false, error: 'whatsapp-safe-entries-disabled' });
     return;
   }
-  const entry = whatsappEntryService.validateAccessToken(request.query?.token);
+  let entry;
+  try {
+    entry = await whatsappEntryService.validateAccessTokenAuthoritative(request.query?.token);
+  } catch {
+    response.status(503).json({ ok: false, error: 'entry-access-temporarily-unavailable' });
+    return;
+  }
   if (!entry) {
     response.status(403).json({ ok: false, error: 'entry-access-denied' });
     return;
@@ -1117,7 +1142,7 @@ app.post('/api/admin/whatsapp-entries/:entryId/reject', async (request, response
   try {
     const internalEntry = whatsappEntryService.getEntry(request.params.entryId, { includeSecrets: true });
     if (!internalEntry) throw new Error('ENTRY_NOT_FOUND');
-    const entry = whatsappEntryService.rejectEntry({
+    const entry = await whatsappEntryService.rejectEntry({
       entryId: request.params.entryId,
       actor: 'admin-panel',
       reason: request.body?.reason,
@@ -1156,10 +1181,10 @@ app.post('/api/admin/whatsapp-entries/:entryId/reject', async (request, response
   }
 });
 
-app.post('/api/admin/whatsapp-entries/:entryId/expire', (request, response) => {
+app.post('/api/admin/whatsapp-entries/:entryId/expire', async (request, response) => {
   if (!requireAdmin(request, response)) return;
   try {
-    const entry = whatsappEntryService.expireEntry({
+    const entry = await whatsappEntryService.expireEntry({
       entryId: request.params.entryId,
       actor: 'admin-panel',
       source: 'admin-panel',

@@ -248,7 +248,7 @@ export function createPostMatchFlow({
     let adminSent = false;
 
     try {
-      releasedEntries = entryService?.finishEntriesForMatch?.({
+      releasedEntries = await entryService?.finishEntriesForMatch?.({
         matchId,
         winnerId: gameState?.result?.winnerId ?? null,
         loserId: gameState?.result?.loserId ?? null,

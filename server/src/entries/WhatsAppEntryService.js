@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { calculatePrize } from '../../../src/shared/economy.js';
 import { maskPhone, normalizePhone } from '../payments/PaymentService.js';
 import { buildPublicMatchReference } from '../services/publicMatchReference.js';
@@ -60,6 +60,13 @@ function isPaidConfirmedLikeEntry(entry) {
 
 function nowIso(clock) {
   return new Date(clock()).toISOString();
+}
+
+function isAccessExpiryInvalidOrElapsed(entry, clock) {
+  const value = entry?.accessExpiresAt;
+  if (typeof value !== 'string' || !value.trim()) return true;
+  const expiresAt = Date.parse(value);
+  return !Number.isFinite(expiresAt) || expiresAt <= clock();
 }
 
 function auditEntry({ action, actor, at, details = null }) {
@@ -125,6 +132,8 @@ export class WhatsAppEntryService {
     accessTtlMinutes = 180,
     clock = Date.now,
     tokenFactory = () => randomBytes(32).toString('base64url'),
+    sharedAccessRepository = null,
+    requireSharedAccessRepository = false,
   } = {}) {
     this.store = store;
     this.adminNumbers = new Set(adminNumbers.map(normalizePhone).filter(Boolean));
@@ -134,6 +143,8 @@ export class WhatsAppEntryService {
     this.accessTtlMs = Number(accessTtlMinutes) * 60 * 1000;
     this.clock = clock;
     this.tokenFactory = tokenFactory;
+    this.sharedAccessRepository = sharedAccessRepository;
+    this.requireSharedAccessRepository = Boolean(requireSharedAccessRepository);
   }
 
   assertConfigured() {
@@ -150,6 +161,170 @@ export class WhatsAppEntryService {
 
   hashToken(token) {
     return createHmac('sha256', this.accessSecret).update(String(token)).digest('hex');
+  }
+
+  hashPlayerBinding(phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized || !this.accessSecret) throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    return this.hashToken(`safe-entry-player:${normalized}`);
+  }
+
+  requireSharedRepository() {
+    if (!this.sharedAccessRepository) throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    return this.sharedAccessRepository;
+  }
+
+  persistSharedAccess(entry) {
+    if (!this.sharedAccessRepository && !this.requireSharedAccessRepository) return null;
+    const repository = this.requireSharedRepository();
+    return repository.issueAccess(entry, this.hashPlayerBinding(entry.phone)).catch((error) => {
+      if (['SAFE_ENTRY_BINDING_MISMATCH', 'SAFE_ENTRY_ISSUE_REJECTED'].includes(error?.message)) throw error;
+      throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    });
+  }
+
+  bindSharedMatch(entry) {
+    if (!this.sharedAccessRepository && !this.requireSharedAccessRepository) return null;
+    const repository = this.requireSharedRepository();
+    return repository.bindMatch({
+      entryId: entry.entryId,
+      playerBindingHash: this.hashPlayerBinding(entry.phone),
+      whatsappMatchId: entry.whatsappMatchId || null,
+      linkedMatchId: entry.linkedMatchId || null,
+      playerId: entry.playerId || null,
+      status: entry.status,
+    }).catch(() => { throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE'); });
+  }
+
+  buildSharedEntry(record) {
+    const local = this.store.getEntry(record.entryId);
+    const matchId = record.linkedMatchId || record.whatsappMatchId || null;
+    const sharedFields = {
+      entryId: record.entryId,
+      selectedTable: record.selectedTable,
+      status: record.revokedAt ? 'expired' : record.status,
+      accessTokenHash: record.accessTokenHash,
+      accessExpiresAt: record.accessExpiresAt,
+      accessSessionTokenHash: record.accessSessionTokenHash,
+      accessSessionClaimedAt: record.accessSessionClaimedAt,
+      sessionVersion: record.sessionVersion,
+      whatsappMatchId: record.whatsappMatchId,
+      linkedMatchId: record.linkedMatchId,
+      playerId: record.playerId,
+      phone: local?.phone ?? null,
+    };
+    return sanitizeWhatsAppEntry({
+      ...(local || {}),
+      ...sharedFields,
+      preMatchDeadline: local?.preMatchDeadline ?? null,
+      publicMatchReference: local?.publicMatchReference ?? null,
+      roomUrl: local?.roomUrl ?? (matchId ? `${this.publicGameUrl}/join/${buildSafePathSegment(matchId)}` : null),
+    });
+  }
+
+  async validateAccessTokenAuthoritative(token) {
+    if (!token || !this.accessSecret) return null;
+    if (!this.sharedAccessRepository && !this.requireSharedAccessRepository) return this.validateAccessToken(token);
+    const repository = this.requireSharedRepository();
+    let record;
+    try {
+      record = await repository.findByTokenHash(this.hashToken(token));
+    } catch {
+      throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    }
+    if (!record || !TOKEN_VALID_STATUSES.has(record.status)) return null;
+    return this.buildSharedEntry(record);
+  }
+
+  async claimAccessSessionAuthoritative({ entryId, sessionKey = null, accessToken = null, matchId = null } = {}) {
+    if (!this.sharedAccessRepository && !this.requireSharedAccessRepository) {
+      return this.claimAccessSession({ entryId, sessionKey, accessToken });
+    }
+    if (!this.accessSecret) throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    const repository = this.requireSharedRepository();
+    const nextSessionKey = this.tokenFactory();
+    const nextHash = this.hashToken(nextSessionKey);
+    let result;
+    try {
+      result = await repository.claimOrRecover({
+        entryId: String(entryId || ''),
+        expectedMatchId: String(matchId || '').trim() || null,
+        tokenHash: accessToken ? this.hashToken(accessToken) : null,
+        sessionKeyHash: sessionKey ? this.hashToken(sessionKey) : null,
+        nextSessionKeyHash: nextHash,
+      });
+    } catch (error) {
+      if (['ENTRY_ACCESS_DENIED', 'ENTRY_DUPLICATE_SESSION'].includes(error?.message)) throw error;
+      throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    }
+    if (result.claimed) {
+      const local = this.store.getEntry(result.entry.entryId);
+      if (local) {
+        try {
+          this.store.updateEntry(local.entryId, (current) => ({
+            ...current,
+            accessSessionTokenHash: nextHash,
+            accessSessionClaimedAt: result.entry.accessSessionClaimedAt,
+            accessUsedAt: current.accessUsedAt || result.entry.accessSessionClaimedAt,
+            updatedAt: result.entry.accessSessionClaimedAt,
+          }));
+        } catch {}
+      }
+      return { entry: this.buildSharedEntry(result.entry), sessionKey: nextSessionKey, recovered: false };
+    }
+    const suppliedHash = sessionKey ? Buffer.from(this.hashToken(sessionKey), 'hex') : null;
+    const storedHash = result.entry.accessSessionTokenHash
+      ? Buffer.from(result.entry.accessSessionTokenHash, 'hex')
+      : null;
+    if (!suppliedHash || !storedHash || suppliedHash.length !== storedHash.length || !timingSafeEqual(suppliedHash, storedHash)) {
+      throw new Error('ENTRY_ACCESS_DENIED');
+    }
+    return { entry: this.buildSharedEntry(result.entry), sessionKey: null, recovered: true };
+  }
+
+  async recoverAccessSessionAuthoritative({ matchId, sessionKey } = {}) {
+    if (!this.sharedAccessRepository && !this.requireSharedAccessRepository) return this.recoverAccessSession({ matchId, sessionKey });
+    if (!matchId || !sessionKey || !this.accessSecret) throw new Error('ENTRY_ACCESS_DENIED');
+    let record;
+    try {
+      record = await this.requireSharedRepository().findBySession({
+        matchId: String(matchId).trim(),
+        sessionKeyHash: this.hashToken(sessionKey),
+      });
+    } catch (error) {
+      if (error?.message === 'ENTRY_ACCESS_DENIED') throw error;
+      throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    }
+    const expected = Buffer.from(this.hashToken(sessionKey), 'hex');
+    const stored = Buffer.from(record.accessSessionTokenHash || '', 'hex');
+    if (!stored.length || expected.length !== stored.length || !timingSafeEqual(expected, stored)) {
+      throw new Error('ENTRY_ACCESS_DENIED');
+    }
+    return { entry: this.buildSharedEntry(record), sessionKey: null, recovered: true };
+  }
+
+  revokeSharedAccess(entry) {
+    if (!entry || (!this.sharedAccessRepository && !this.requireSharedAccessRepository)) return false;
+    const repository = this.requireSharedRepository();
+    return repository.revoke({
+      entryId: entry.entryId,
+      playerBindingHash: this.hashPlayerBinding(entry.phone),
+    }).then((revoked) => {
+      if (!revoked && (entry.accessTokenHash || entry.accessSessionTokenHash)) {
+        throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+      }
+      return revoked;
+    }).catch((error) => {
+      if (error?.message === 'SAFE_ENTRY_STORE_UNAVAILABLE') throw error;
+      throw new Error('SAFE_ENTRY_STORE_UNAVAILABLE');
+    });
+  }
+
+  syncRevocations(entries, result) {
+    if (!this.sharedAccessRepository && !this.requireSharedAccessRepository) return result;
+    const accessEntries = (entries || []).filter((entry) => entry && (entry.accessTokenHash || entry.accessSessionTokenHash));
+    if (!accessEntries.length) return result;
+    return Promise.all(accessEntries.map((entry) => this.revokeSharedAccess(entry))).then(() => result);
   }
 
   buildAccessLink(token, { matchId = null } = {}) {
@@ -324,7 +499,7 @@ export class WhatsAppEntryService {
       };
     });
 
-    return {
+    const result = {
       aborted: true,
       alreadyProcessed: false,
       reason,
@@ -334,6 +509,7 @@ export class WhatsAppEntryService {
       paidEntryPreserved: released.some((entry) => entry.paidConfirmed),
       participants: released,
     };
+    return this.syncRevocations(participants, result);
   }
 
   clearPlayerEntries(phone, { actor = 'system', source = 'clear-player-state', forceFreeMode = false } = {}) {
@@ -347,6 +523,7 @@ export class WhatsAppEntryService {
       paidEntryPreserved: false,
       entries: [],
     };
+    const revokedEntries = [];
 
     this.store.listEntries()
       .filter((entry) => entry.phone === normalizedPhone && ACTIVE_STATUSES.has(entry.status))
@@ -414,6 +591,7 @@ export class WhatsAppEntryService {
             details: { source },
           })],
         }));
+        revokedEntries.push(entry);
         result.cleared += 1;
         result.entries.push({
           entryId: updated.entryId,
@@ -423,7 +601,7 @@ export class WhatsAppEntryService {
         });
       });
 
-    return result;
+    return this.syncRevocations(revokedEntries, result);
   }
 
   cancelPreStartMatchForPhone(phone, { actor = 'system', source = 'opponent-cancel-before-start' } = {}) {
@@ -536,7 +714,7 @@ export class WhatsAppEntryService {
         };
       });
 
-    return {
+    const result = {
       cancelled: true,
       matchId,
       table,
@@ -544,6 +722,16 @@ export class WhatsAppEntryService {
       cancelledPaidConfirmed: paidConfirmed,
       requeued,
     };
+    const requeuedOriginalEntries = entries.filter((entry) => (
+      entry.entryId !== current.entryId
+      && entry.whatsappMatchId === matchId
+      && Number(entry.selectedTable) === Number(table)
+      && ACTIVE_STATUSES.has(entry.status)
+      && !entry.linkedMatchId
+      && !entry.queueSocketId
+      && !entry.playingAt
+    ));
+    return this.syncRevocations([current, ...requeuedOriginalEntries], result);
   }
 
   adminDecidePaidEntryForPhone(phone, { actor = 'admin', decision, source = 'admin-whatsapp-command' } = {}) {
@@ -585,11 +773,13 @@ export class WhatsAppEntryService {
       })],
     }));
 
-    return {
+    const result = {
       updated: true,
       decision: safeDecision,
       entry: sanitizeWhatsAppEntry(updated),
     };
+    const persisted = this.revokeSharedAccess(entry);
+    return persisted ? persisted.then(() => result) : result;
   }
 
   createEntry({ phone, selectedTable, source = 'whatsapp' }) {
@@ -680,10 +870,12 @@ export class WhatsAppEntryService {
       })],
     }));
 
-    return {
+    const result = {
       entry: sanitizeWhatsAppEntry(updated),
       accessLink: this.buildAccessLink(token),
     };
+    const persisted = this.persistSharedAccess(updated);
+    return persisted ? persisted.then(() => result) : result;
   }
 
   rejectEntry({ entryId, actor, reason, source = 'admin-panel' }) {
@@ -694,7 +886,7 @@ export class WhatsAppEntryService {
     const safeReason = String(reason || '').trim().slice(0, 180);
     if (!safeReason) throw new Error('REJECTION_REASON_REQUIRED');
     const at = nowIso(this.clock);
-    return sanitizeWhatsAppEntry(this.store.updateEntry(entry.entryId, (current) => ({
+    const updated = this.store.updateEntry(entry.entryId, (current) => ({
       ...current,
       status: 'rejected',
       rejectedBy: String(actor || 'admin'),
@@ -704,7 +896,9 @@ export class WhatsAppEntryService {
       auditLog: [...current.auditLog, auditEntry({
         action: 'entry_rejected', actor: String(actor || 'admin'), at, details: { reason: safeReason, source },
       })],
-    })));
+    }));
+    const persisted = this.revokeSharedAccess(entry);
+    return persisted ? persisted.then(() => sanitizeWhatsAppEntry(updated)) : sanitizeWhatsAppEntry(updated);
   }
 
   expireEntry({ entryId, actor, source = 'admin-panel' }) {
@@ -712,14 +906,16 @@ export class WhatsAppEntryService {
     if (!entry) throw new Error('ENTRY_NOT_FOUND');
     if (entry.status !== 'pending_admin_validation') throw new Error('ENTRY_NOT_PENDING');
     const at = nowIso(this.clock);
-    return sanitizeWhatsAppEntry(this.store.updateEntry(entry.entryId, (current) => ({
+    const updated = this.store.updateEntry(entry.entryId, (current) => ({
       ...current,
       status: 'expired',
       updatedAt: at,
       auditLog: [...current.auditLog, auditEntry({
         action: 'entry_expired', actor: String(actor || 'admin'), at, details: { source },
       })],
-    })));
+    }));
+    const persisted = this.revokeSharedAccess(entry);
+    return persisted ? persisted.then(() => sanitizeWhatsAppEntry(updated)) : sanitizeWhatsAppEntry(updated);
   }
 
   markLinkDelivery(entryId, { sent, error = null } = {}) {
@@ -818,14 +1014,17 @@ export class WhatsAppEntryService {
       };
     });
 
-    return {
+    const result = {
       entry: sanitizeWhatsAppEntry(updated),
       accessLink: this.buildAccessLink(token, { matchId: safeMatchId }),
     };
+    const persisted = this.persistSharedAccess(updated);
+    return persisted ? persisted.then(() => result) : result;
   }
 
   cancelQueueEntry(entryId, { actor = 'system', source = 'whatsapp-queue-cancel', force = false } = {}) {
-    return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
+    const before = this.store.getEntry(entryId);
+    const updated = this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'approved_for_queue') throw new Error('ENTRY_CANCEL_NOT_ALLOWED');
       if (!force && (current.linkSentAt || current.linkedMatchId || current.roomUrl)) throw new Error('ENTRY_ALREADY_LINKED');
       if (current.linkedMatchId || current.queueSocketId || current.playingAt) throw new Error('ENTRY_ALREADY_ACTIVE');
@@ -847,11 +1046,14 @@ export class WhatsAppEntryService {
           details: { source },
         })],
       };
-    }));
+    });
+    const persisted = this.revokeSharedAccess(before);
+    return persisted ? persisted.then(() => sanitizeWhatsAppEntry(updated)) : sanitizeWhatsAppEntry(updated);
   }
 
   rollbackApprovalAfterDeliveryFailure(entryId, { error = null } = {}) {
-    return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
+    const before = this.store.getEntry(entryId);
+    const updated = this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'approved_for_queue' || current.linkSentAt) throw new Error('ENTRY_APPROVAL_ROLLBACK_BLOCKED');
       const at = nowIso(this.clock);
       return {
@@ -872,7 +1074,9 @@ export class WhatsAppEntryService {
           details: error ? { error: String(error).slice(0, 180) } : null,
         })],
       };
-    }));
+    });
+    const persisted = this.revokeSharedAccess(before);
+    return persisted ? persisted.then(() => sanitizeWhatsAppEntry(updated)) : sanitizeWhatsAppEntry(updated);
   }
 
   validateAccessToken(token) {
@@ -881,38 +1085,55 @@ export class WhatsAppEntryService {
     const entry = this.store.listEntries().find((item) => item.accessTokenHash === tokenHash);
     if (!entry || !TOKEN_VALID_STATUSES.has(entry.status)) return null;
     if (entry.status === 'requeued_after_opponent_cancel' && !entry.whatsappMatchId) return null;
-    if (entry.accessExpiresAt && Date.parse(entry.accessExpiresAt) <= this.clock()) return null;
+    if (isAccessExpiryInvalidOrElapsed(entry, this.clock)) return null;
     return sanitizeWhatsAppEntry(entry);
   }
 
-  claimAccessSession({ entryId, sessionKey = null } = {}) {
-    const current = this.store.getEntry(entryId);
-    if (!current || !TOKEN_VALID_STATUSES.has(current.status)) throw new Error('ENTRY_ACCESS_DENIED');
-    if (current.accessExpiresAt && Date.parse(current.accessExpiresAt) <= this.clock()) throw new Error('ENTRY_ACCESS_EXPIRED');
+  claimAccessSession({ entryId, sessionKey = null, accessToken = null } = {}) {
+    let nextSessionKey = null;
+    let recovered = false;
+    let updated;
+    try {
+      // updateEntry invokes this synchronous compare-and-update callback without yielding.
+      updated = this.store.updateEntry(entryId, (entry) => {
+        if (!entry || !TOKEN_VALID_STATUSES.has(entry.status)) throw new Error('ENTRY_ACCESS_DENIED');
+        if (isAccessExpiryInvalidOrElapsed(entry, this.clock)) throw new Error('ENTRY_ACCESS_DENIED');
+        if (accessToken && entry.accessTokenHash !== this.hashToken(accessToken)) {
+          throw new Error('ENTRY_ACCESS_DENIED');
+        }
 
-    if (current.accessSessionTokenHash) {
-      if (!sessionKey || this.hashToken(sessionKey) !== current.accessSessionTokenHash) {
-        throw new Error('ENTRY_DUPLICATE_SESSION');
-      }
-      return { entry: sanitizeWhatsAppEntry(current), sessionKey: null, recovered: true };
+        if (entry.accessSessionTokenHash) {
+          if (!sessionKey || this.hashToken(sessionKey) !== entry.accessSessionTokenHash) {
+            throw new Error('ENTRY_DUPLICATE_SESSION');
+          }
+          recovered = true;
+          return entry;
+        }
+
+        // A client-supplied key cannot establish a new session; only the server creates it.
+        if (sessionKey) throw new Error('ENTRY_ACCESS_DENIED');
+
+        nextSessionKey = this.tokenFactory();
+        const at = nowIso(this.clock);
+        return {
+          ...entry,
+          accessSessionTokenHash: this.hashToken(nextSessionKey),
+          accessSessionClaimedAt: at,
+          accessUsedAt: entry.accessUsedAt || at,
+          updatedAt: at,
+          auditLog: [...entry.auditLog, auditEntry({
+            action: 'entry_access_session_claimed',
+            actor: 'system',
+            at,
+            details: { sessionVersion: Number(entry.sessionVersion) || 1 },
+          })],
+        };
+      });
+    } catch (error) {
+      if (error?.message === 'ENTRY_NOT_FOUND') throw new Error('ENTRY_ACCESS_DENIED');
+      throw error;
     }
-
-    const nextSessionKey = this.tokenFactory();
-    const at = nowIso(this.clock);
-    const updated = this.store.updateEntry(entryId, (entry) => ({
-      ...entry,
-      accessSessionTokenHash: this.hashToken(nextSessionKey),
-      accessSessionClaimedAt: at,
-      accessUsedAt: entry.accessUsedAt || at,
-      updatedAt: at,
-      auditLog: [...entry.auditLog, auditEntry({
-        action: 'entry_access_session_claimed',
-        actor: 'system',
-        at,
-        details: { sessionVersion: Number(entry.sessionVersion) || 1 },
-      })],
-    }));
-    return { entry: sanitizeWhatsAppEntry(updated), sessionKey: nextSessionKey, recovered: false };
+    return { entry: sanitizeWhatsAppEntry(updated), sessionKey: nextSessionKey, recovered };
   }
 
   recoverAccessSession({ matchId, sessionKey } = {}) {
@@ -926,10 +1147,7 @@ export class WhatsAppEntryService {
     const matches = this.store.listEntries().filter((entry) => {
       if (!entry || !TOKEN_VALID_STATUSES.has(entry.status)) return false;
       if (!entry.accessSessionTokenHash || entry.accessSessionTokenHash !== sessionHash) return false;
-      if (entry.accessExpiresAt) {
-        const expiresAt = Date.parse(entry.accessExpiresAt);
-        if (!Number.isFinite(expiresAt) || expiresAt <= this.clock()) return false;
-      }
+      if (isAccessExpiryInvalidOrElapsed(entry, this.clock)) return false;
       if (entry.status === 'requeued_after_opponent_cancel' && !entry.whatsappMatchId) return false;
 
       return [entry.whatsappMatchId, entry.linkedMatchId]
@@ -949,7 +1167,7 @@ export class WhatsAppEntryService {
   reserveQueueAccess({ entryId, socketId, selectedTable }) {
     return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
       if (!['approved_for_queue', 'queued', 'requeued_after_opponent_cancel'].includes(current.status)) throw new Error('ENTRY_NOT_APPROVED');
-      if (current.accessExpiresAt && Date.parse(current.accessExpiresAt) <= this.clock()) throw new Error('ENTRY_ACCESS_EXPIRED');
+      if (isAccessExpiryInvalidOrElapsed(current, this.clock)) throw new Error('ENTRY_ACCESS_EXPIRED');
       if (Number(selectedTable) !== Number(current.selectedTable)) throw new Error('ENTRY_TABLE_MISMATCH');
       if (current.queueSocketId && current.queueSocketId !== socketId) throw new Error('ENTRY_ACCESS_RESERVED');
       const at = nowIso(this.clock);
@@ -983,7 +1201,7 @@ export class WhatsAppEntryService {
   }
 
   linkToMatch({ entryId, socketId, matchId, playerId = null }) {
-    return sanitizeWhatsAppEntry(this.store.updateEntry(entryId, (current) => {
+    const updated = this.store.updateEntry(entryId, (current) => {
       if (current.status !== 'queued') throw new Error('ENTRY_NOT_QUEUED');
       if (current.queueSocketId !== socketId) throw new Error('ENTRY_ACCESS_NOT_RESERVED');
       const at = nowIso(this.clock);
@@ -999,7 +1217,9 @@ export class WhatsAppEntryService {
           auditEntry({ action: 'entry_playing', actor: 'system', at, details: { matchId } }),
         ],
       };
-    }));
+    });
+    const persisted = this.bindSharedMatch(updated);
+    return persisted ? persisted.then(() => sanitizeWhatsAppEntry(updated)) : sanitizeWhatsAppEntry(updated);
   }
 
   finishEntriesForMatch({
@@ -1013,9 +1233,9 @@ export class WhatsAppEntryService {
     if (!safeMatchId) return [];
 
     const at = nowIso(this.clock);
-    return this.store.listEntries()
-      .filter((entry) => entry.linkedMatchId === safeMatchId && ['linked', 'playing'].includes(entry.status))
-      .map((entry) => {
+    const entries = this.store.listEntries()
+      .filter((entry) => entry.linkedMatchId === safeMatchId && ['linked', 'playing'].includes(entry.status));
+    const released = entries.map((entry) => {
         const updated = this.store.updateEntry(entry.entryId, (current) => ({
           ...current,
           status: 'finished',
@@ -1049,6 +1269,7 @@ export class WhatsAppEntryService {
           notifyTo: updated.whatsappReplyTo || updated.phone || null,
         };
       });
+    return this.syncRevocations(entries, released);
   }
 
   getEntriesForMatch(matchId, { includeNotificationTarget = false } = {}) {
