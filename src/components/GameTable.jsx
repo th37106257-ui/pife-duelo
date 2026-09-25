@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ActionHistory from './ActionHistory.jsx';
 import AudioToggle from './AudioToggle.jsx';
+import HapticsToggle from './HapticsToggle.jsx';
 import BeatButton from './BeatButton.jsx';
 import CardFlightLayer from './CardFlightLayer.jsx';
 import DeckArea from './DeckArea.jsx';
@@ -9,6 +10,7 @@ import GameModal from './GameModal.jsx';
 import OpponentHand from './OpponentHand.jsx';
 import PlayerHand from './PlayerHand.jsx';
 import Timer from './Timer.jsx';
+import { vibrateForGame } from '../services/haptics.js';
 import { getDebugScenarioConfig, readDebugScenarioKey } from '../game/debugScenarios.js';
 import {
   arrangeHandForActor,
@@ -391,6 +393,7 @@ export default function GameTable() {
     const isHumanTurn = Boolean(activeHumanTurn && !result);
     if (isHumanTurn && !previousHumanTurnRef.current) {
       playSoundEffect('turn');
+      vibrateForGame(24);
     }
     previousHumanTurnRef.current = isHumanTurn;
   }, [activeHumanTurn, currentTurn, matchMeta.turnsPlayed, result]);
@@ -412,7 +415,9 @@ export default function GameTable() {
     if (resultSoundRef.current === resultKey) return;
 
     resultSoundRef.current = resultKey;
-    playSoundEffect(result.winner === 'player' || result.type === 'win' ? 'win' : 'loss');
+    const won = result.winner === 'player' || result.type === 'win';
+    playSoundEffect(won ? 'win' : 'loss');
+    vibrateForGame(won ? [22, 45, 28] : 18);
   }, [matchMeta.matchId, result]);
 
   useEffect(
@@ -1188,10 +1193,11 @@ export default function GameTable() {
 
     if (!overDiscard) {
       showToast('Solte a carta no descarte.');
-      return;
+      return false;
     }
 
     discardCardById(cardId, point);
+    return true;
   }, [discardCardById, isLocalMultiplayer, isPointInsideDiscard, isTestMode, showToast]);
 
   const reorderCardByDrop = useCallback((cardId, targetIndex) => {
@@ -1307,6 +1313,7 @@ export default function GameTable() {
     if (!knockAction.blocked) {
       const { validation } = knockAction;
       playSoundEffect('beat');
+      vibrateForGame(36);
       const playerCardIds = new Set(activeCards.map((card) => card.id));
       const confirmedCardIds = (validation.validGroups ?? validation.groups ?? [])
         .flatMap((group) => (Array.isArray(group) ? group : (group?.cards ?? [])))
@@ -1947,6 +1954,7 @@ export default function GameTable() {
           {"\u21bb"}
         </button>
         <AudioToggle />
+        <HapticsToggle />
         <div
           ref={tableRef}
           onPointerDown={cancelCardSelection}

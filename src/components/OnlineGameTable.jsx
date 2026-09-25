@@ -5,6 +5,7 @@ import CardFlightLayer from './CardFlightLayer.jsx';
 import DeckArea from './DeckArea.jsx';
 import EndGameReveal from './EndGameReveal.jsx';
 import GameModal from './GameModal.jsx';
+import HapticsToggle from './HapticsToggle.jsx';
 import OpponentHand from './OpponentHand.jsx';
 import PlayerHand from './PlayerHand.jsx';
 import OnlineSyncedTimer from './OnlineSyncedTimer.jsx';
@@ -18,6 +19,7 @@ import {
   surrenderOnlineMatch,
 } from '../services/onlineGameSocket.js';
 import { playSoundEffect } from '../services/soundEffects.js';
+import { vibrateForGame } from '../services/haptics.js';
 import { buildWhatsAppPlayLink } from '../services/whatsAppLink.js';
 import { formatMoney } from '../shared/economy.js';
 import { validatePifeHand } from '../shared/pifeRules.js';
@@ -356,6 +358,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     const isYourTurn = Boolean(onlineGameState.isYourTurn && isPlaying);
     if (isYourTurn && !previousTurnRef.current) {
       playSoundEffect('turn');
+      vibrateForGame(24);
     }
     previousTurnRef.current = isYourTurn;
   }, [isPlaying, onlineGameState.isYourTurn, onlineGameState.turnNumber]);
@@ -408,7 +411,9 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     if (resultSoundRef.current === resultKey) return;
 
     resultSoundRef.current = resultKey;
-    playSoundEffect(onlineGameState.result.winnerId === onlineGameState.playerId ? 'win' : 'loss');
+    const won = onlineGameState.result.winnerId === onlineGameState.playerId;
+    playSoundEffect(won ? 'win' : 'loss');
+    vibrateForGame(won ? [22, 45, 28] : 18);
   }, [onlineGameState.matchId, onlineGameState.playerId, onlineGameState.result]);
 
   useEffect(() => () => {
@@ -436,22 +441,24 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     );
   }, []);
 
-  const handleDiscard = useCallback((cardId, originPoint = null) => {
+  const handleDiscard = useCallback(async (cardId) => {
     if (!canDiscard || !cardId || pendingActionRef.current) return;
     const card = hand.find((item) => item.id === cardId);
     const cardBox = getElementCenter(tableRef.current?.querySelector(`[data-card-id="${cardId}"]`));
-    const from = originPoint && cardBox
-      ? { ...cardBox, x: originPoint.x, y: originPoint.y }
-      : cardBox;
+    const from = cardBox;
     const to = getElementCenter(discardRef.current);
     const flight = buildOnlineFlight(card, from, to, 'discard');
 
     setIsAnimatingAction(true);
+    const accepted = await submitAction(() => discardCardOnline({ ...actionPayload, cardId }));
+    if (!accepted) {
+      finishOnlineAnimation();
+      return;
+    }
     setDepartingCardId(cardId);
     if (flight) setOnlineFlight(flight);
     playSoundEffect('discard');
-    pendingServerHandRef.current = hand.filter((item) => item.id !== cardId);
-    submitAction(() => discardCardOnline({ ...actionPayload, cardId }));
+    vibrateForGame(12);
     setSelectedCardId(null);
     setDragDiscardState({ active: false, over: false });
 
@@ -477,6 +484,7 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
       return;
     }
 
+    vibrateForGame(36);
     submitAction(() => knockOnline({
       ...actionPayload,
       clientHandOrder: hand.map((card) => card.id),
@@ -496,10 +504,11 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
   const handleDiscardDragEnd = useCallback((cardId, point) => {
     if (!isPointInsideDiscard(point)) {
       setDragDiscardState({ active: false, over: false });
-      return;
+      return false;
     }
 
     handleDiscard(cardId, point);
+    return true;
   }, [handleDiscard, isPointInsideDiscard]);
 
   const handleDiscardDragState = useCallback((active, point) => {
@@ -513,21 +522,21 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
     setHandDragging((current) => (current === active ? current : active));
   }, []);
 
-  const handleDrawDeck = useCallback(() => {
+  const handleDrawDeck = useCallback(async () => {
     if (!canDraw || pendingActionRef.current) return;
     setIsAnimatingAction(true);
     setIncomingSource('deck');
-    playSoundEffect('draw');
-    submitAction(() => drawFromDeckOnline(actionPayload));
+    const accepted = await submitAction(() => drawFromDeckOnline(actionPayload));
+    if (accepted) playSoundEffect('draw');
     actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 190);
   }, [actionPayload, canDraw, finishOnlineAnimation, submitAction]);
 
-  const handleDrawDiscard = useCallback(() => {
+  const handleDrawDiscard = useCallback(async () => {
     if (!canTakeDiscard || pendingActionRef.current) return;
     setIsAnimatingAction(true);
     setIncomingSource('discard');
-    playSoundEffect('draw');
-    submitAction(() => drawFromDiscardOnline(actionPayload));
+    const accepted = await submitAction(() => drawFromDiscardOnline(actionPayload));
+    if (accepted) playSoundEffect('draw');
     actionAnimationTimeoutRef.current = window.setTimeout(finishOnlineAnimation, 190);
   }, [actionPayload, canTakeDiscard, finishOnlineAnimation, submitAction]);
 
@@ -563,9 +572,10 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
           <span />
         </button>
         <AudioToggle />
+        <HapticsToggle />
         <div
           ref={tableRef}
-          className={`felt-table ${handDragging ? 'is-hand-dragging' : ''}`}
+          className={`felt-table ${handDragging ? 'is-hand-dragging' : ''} ${onlineGameState.isYourTurn && isPlaying ? 'is-your-turn' : ''}`}
         >
           <div className="table-texture" aria-hidden="true" />
           <div className="table-light" aria-hidden="true" />
@@ -696,6 +706,9 @@ export default function OnlineGameTable({ onlineGameState, actionError, onLeaveO
           />
 
           <section className="center-zone" aria-label="Centro da mesa">
+            <span key={`${onlineGameState.turnNumber}-${onlineGameState.isYourTurn}`} className={`game-turn-chip ${onlineGameState.isYourTurn ? 'game-turn-chip-player' : ''}`} role="status">
+              {onlineGameState.isYourTurn ? 'SUA VEZ' : 'VEZ DO ADVERSÁRIO'}
+            </span>
             <OnlineSyncedTimer
               matchId={onlineGameState.matchId}
               serverNow={onlineGameState.serverNow}

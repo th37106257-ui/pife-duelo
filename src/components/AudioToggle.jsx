@@ -30,9 +30,10 @@ export default function AudioToggle() {
       className={`chrome-button audio-toggle-button ${enabled ? 'is-on' : 'is-off'}`}
       aria-label={enabled ? 'Desligar sons' : 'Ligar sons'}
       title={enabled ? 'Desligar sons' : 'Ligar sons'}
+      aria-pressed={enabled}
       onClick={toggleAudio}
     >
-      S
+      <span aria-hidden="true">♪</span>
     </button>
   );
 }

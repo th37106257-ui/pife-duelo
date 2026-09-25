@@ -1,0 +1,137 @@
+/* Visual adjustments shared by the local and online tables. */
+.playing-card {
+  overflow: hidden;
+  isolation: isolate;
+  transform-style: flat;
+}
+
+.playing-card .card-corner,
+.playing-card .card-center-symbol {
+  max-width: 100%;
+  pointer-events: none;
+}
+
+.playing-card .card-main-rank {
+  display: none;
+}
+
+.playing-card .card-center-symbol {
+  top: 20%;
+  bottom: 6%;
+  line-height: 1;
+}
+
+.player-hand-zone .card-main-suit {
+  font-size: clamp(40px, 11.8vw, 52px);
+}
+
+.card-fan-player .card-fan-item.selected-card-item {
+  z-index: 60;
+}
+
+.hand-drag-layer-card {
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.34));
+}
+
+.hand-drag-layer-card .playing-card {
+  overflow: hidden;
+  transform-style: flat;
+}
+
+.card-flight .playing-card,
+.card-flight-discard .playing-card,
+.card-flight-draw-discard .playing-card {
+  overflow: hidden;
+  isolation: isolate;
+  transform-style: flat;
+}
+
+.audio-toggle-button {
+  right: clamp(60px, 14vw, 72px);
+}
+
+.haptics-toggle-button {
+  right: clamp(108px, 25vw, 124px);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.haptics-toggle-button.is-on {
+  border-color: rgba(100, 255, 154, 0.38);
+  color: #b9ffd0;
+}
+
+.haptics-toggle-button.is-off {
+  color: rgba(221, 214, 197, 0.56);
+}
+
+.audio-toggle-button:active,
+.haptics-toggle-button:active,
+.beat-button.active:active {
+  filter: brightness(1.1);
+}
+
+.game-turn-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 4px 10px;
+  border: 1px solid rgba(240, 228, 190, 0.23);
+  border-radius: 999px;
+  background: rgba(7, 26, 15, 0.76);
+  color: #f6e9c8;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  animation: turnChipIn 180ms ease-out both;
+}
+
+.game-turn-chip-player {
+  border-color: rgba(153, 226, 141, 0.55);
+  color: #d7ffcc;
+}
+
+.online-game-shell .felt-table.is-your-turn::before {
+  border-color: rgba(162, 219, 136, 0.24);
+}
+
+.beat-button.active {
+  box-shadow: 0 10px 16px rgba(0, 0, 0, 0.26), 0 0 0 2px rgba(255, 231, 138, 0.32);
+}
+
+.endgame-panel,
+.game-modal {
+  border-color: rgba(240, 226, 174, 0.42);
+}
+
+@keyframes turnChipIn {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 380px) {
+  .card-fan-player .card-corner {
+    font-size: 23px;
+  }
+
+  .card-fan-player .card-corner span {
+    font-size: 19px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-turn-chip {
+    animation: none;
+  }
+
+  .card-fan-item,
+  .playing-card,
+  .hand-drag-layer-card,
+  .beat-button,
+  .timer-progress {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

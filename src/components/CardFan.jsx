@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Card from './Card.jsx';
 
 const HAND_LAYOUT_LIMITS = {
@@ -320,10 +321,11 @@ function CardFan({
     if (!rect) return;
 
     frozenLayoutRef.current = getFrozenLayout(handLayout, cardRefs);
+    const pointerStart = pointerDragRef.current;
     dragOriginRef.current = {
       cardId: card.id,
-      dx: point.x - rect.left,
-      dy: point.y - rect.top,
+      dx: (pointerStart?.startX ?? point.x) - rect.left,
+      dy: (pointerStart?.startY ?? point.y) - rect.top,
     };
     dragStartedRef.current = true;
     latestDragPointRef.current = point;
@@ -419,22 +421,43 @@ function CardFan({
     scheduleDragPreview(card.id, point);
   };
 
+  const animateInvalidDrop = (card) => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const layer = dragLayerRef.current;
+    const original = cardRefs.current.get(card.id);
+    if (!layer?.animate || !original) return;
+
+    const originalRect = original.getBoundingClientRect();
+    const ghost = layer.cloneNode(true);
+    ghost.style.zIndex = '10000';
+    document.body.appendChild(ghost);
+    const animation = ghost.animate([
+      { transform: window.getComputedStyle(layer).transform, opacity: 1 },
+      { transform: `translate3d(${originalRect.left}px, ${originalRect.top}px, 0) scale(1)`, opacity: 0.45 },
+    ], { duration: 160, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'forwards' });
+    animation.finished.then(() => ghost.remove(), () => ghost.remove());
+  };
+
   const finishManualDrag = (card, point) => {
     const dragStarted = dragStartedRef.current;
+    let completedDrop = false;
 
     if (dragStarted) {
       skipClickRef.current = true;
     }
 
     if (canDiscard && dragStarted && point && !isPointInsideHand(point)) {
-      onDiscardDragEnd?.(card.id, point);
+      completedDrop = onDiscardDragEnd?.(card.id, point) === true;
     } else if (canReorder && dragStarted && point && isPointInsideHand(point)) {
       const finalDropIndex = getHandDropIndex(card.id, point);
       const currentIndex = cards.findIndex((item) => item.id === card.id);
       if (currentIndex >= 0 && finalDropIndex !== currentIndex) {
         onReorderCard?.(card.id, finalDropIndex);
+        completedDrop = true;
       }
     }
+
+    if (dragStarted && !completedDrop) animateInvalidDrop(card);
 
     setMotionState(dragStarted ? 'REORGANIZING' : 'RETURNING');
     window.setTimeout(() => setMotionState('IDLE'), 150);
@@ -471,6 +494,7 @@ function CardFan({
   };
 
   return (
+    <>
     <motion.div
       layout={false}
       ref={fanRef}
@@ -628,7 +652,7 @@ function CardFan({
                   ? {
                       opacity: 0,
                       x: targetX,
-                      y: targetY - 14,
+                      y: targetY - 74,
                       scale: 0.96,
                       rotate: targetRotate,
                     }
@@ -636,7 +660,7 @@ function CardFan({
                     ? {
                         opacity: 0,
                         x: targetX,
-                        y: targetY - 12,
+                        y: targetY - 48,
                         scale: 0.96,
                         rotate: targetRotate,
                       }
@@ -730,33 +754,34 @@ function CardFan({
             </motion.div>
           );
         })}
-        {variant === 'player' && dragLayer.card ? (
-          <div
-            key={`drag-layer-${dragLayer.card.instanceId ?? dragLayer.card.id}`}
-            ref={dragLayerRef}
-            className="hand-drag-layer-card drag-card-overlay"
-            aria-hidden="true"
-            style={{
-              '--drag-x': `${dragLayer.x}px`,
-              '--drag-y': `${dragLayer.y}px`,
-              width: dragLayer.width,
-              height: dragLayer.height,
-            }}
-          >
-            <Card
-              card={dragLayer.card}
-              faceDown={false}
-              selected={selectedCardId === dragLayer.card.id}
-              comboHighlighted={false}
-              onClick={undefined}
-              size="responsive"
-              layout={false}
-              interactive={false}
-            />
-          </div>
-        ) : null}
       </AnimatePresence>
     </motion.div>
+    {variant === 'player' && dragLayer.card && typeof document !== 'undefined' ? createPortal(
+      <div
+        key={`drag-layer-${dragLayer.card.instanceId ?? dragLayer.card.id}`}
+        ref={dragLayerRef}
+        className="hand-drag-layer-card drag-card-overlay"
+        aria-hidden="true"
+        style={{
+          '--drag-x': `${dragLayer.x}px`,
+          '--drag-y': `${dragLayer.y}px`,
+          width: dragLayer.width,
+          height: dragLayer.height,
+        }}
+      >
+        <Card
+          card={dragLayer.card}
+          faceDown={false}
+          selected={selectedCardId === dragLayer.card.id}
+          comboHighlighted={false}
+          size="responsive"
+          layout={false}
+          interactive={false}
+        />
+      </div>,
+      document.body,
+    ) : null}
+    </>
   );
 }
 

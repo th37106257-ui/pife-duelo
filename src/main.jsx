@@ -1,7 +1,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import { MotionConfig } from 'framer-motion';
 import App from './App.jsx';
 import './styles/index.css';
+import './styles/gameFeel.css';
 import { installClientErrorReporting, reportClientError } from './services/errorReporter.js';
 
 function getStartupFailurePayload(error, extra = {}) {
@@ -87,7 +89,9 @@ try {
   createRoot(rootElement).render(
     <React.StrictMode>
       <StartupBoundary>
-        <App />
+        <MotionConfig reducedMotion="user">
+          <App />
+        </MotionConfig>
       </StartupBoundary>
     </React.StrictMode>,
   );
