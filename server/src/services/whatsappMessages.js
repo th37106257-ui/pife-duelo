@@ -40,7 +40,8 @@ export function howItWorksMenu() {
 export function tablesMenu({ paymentsEnabled = false, demoCreditsEnabled = false, demoBalance = null } = {}) {
   if (demoCreditsEnabled) {
     return [
-      '*🃏 ESCOLHA UMA MESA*',
+      '*🧪 BETA — ESCOLHA UMA MESA*',
+      'Créditos fictícios — sem valor real.',
       '',
       `🧪 Seu saldo: *${Number(demoBalance ?? 0)} Créditos de Teste*`,
       '',
@@ -118,6 +119,7 @@ export function demoCreditsHistory(events = []) {
     DEMO_ENTRY_RELEASED: 'Reserva devolvida',
     DEMO_ENTRY_CONSUMED: 'Entrada iniciada',
     DEMO_MATCH_REWARD: 'Vitória na partida',
+    DEMO_PLATFORM_FEE: 'Taxa fictícia da plataforma',
     DEMO_SYSTEM_COMPENSATION: 'Compensação por falha do sistema',
     DEMO_ACCOUNT_RESET: 'Conta de teste reiniciada',
   };
@@ -512,6 +514,7 @@ export function postMatchAdminReport(report, { queueCleaned, entriesReleased, en
       '*AMBIENTE DEMONSTRATIVO — SEM VALOR FINANCEIRO*',
       `Custo em créditos: ${Number(report.table || 0)}`,
       `Recompensa fictícia: ${Number(report.demoCredits?.rewardAmount || 0)}`,
+      `Taxa fictícia: ${Number(report.demoCredits?.platformFeeAmount || 0)}`,
       `Compensações: ${Number(report.demoCredits?.compensatedPlayers || 0)}`,
     ] : []),
   ].join('\n');

@@ -25,6 +25,7 @@ import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
 import { PostgresWhatsAppEntryAccessRepository } from './entries/PostgresWhatsAppEntryAccessRepository.js';
 import { DemoCreditsRepository } from './demoCredits/DemoCreditsRepository.js';
 import { DemoCreditsService } from './demoCredits/DemoCreditsService.js';
+import { assertBetaFakeMoneySafety } from './demoCredits/betaFakeMoneySafety.js';
 import { assertFinancialConfig } from './financial/financialConfig.js';
 import { PostgresFinancialRepository, resolveFinancialDatabaseSsl } from './financial/PostgresFinancialRepository.js';
 import { FinancialWalletService } from './financial/FinancialWalletService.js';
@@ -110,9 +111,10 @@ const demoCreditsService = new DemoCreditsService({
   logError,
 });
 const financialConfig = assertFinancialConfig(config.FINANCIAL);
-if (financialConfig.enabled && config.DEMO_CREDITS_ENABLED) {
-  throw new Error('FINANCIAL_AND_DEMO_CREDITS_CANNOT_RUN_TOGETHER');
-}
+assertBetaFakeMoneySafety({
+  enabled: config.BETA_FAKE_MONEY_GAMES_ENABLED,
+  financialConfig,
+});
 let financialRepository = null;
 let financialWalletService = null;
 if (financialConfig.ready) {
@@ -692,6 +694,7 @@ app.get('/api/status', (request, response) => {
     whatsappFirstLobbyEnabled: config.WHATSAPP_FIRST_LOBBY_ENABLED,
     whatsappCleanConversationEnabled: config.WHATSAPP_CLEAN_CONVERSATION_ENABLED,
     demoCreditsEnabled: config.DEMO_CREDITS_ENABLED,
+    betaFakeMoneyGamesEnabled: config.BETA_FAKE_MONEY_GAMES_ENABLED,
     demoCreditsStartingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
     demoCreditsHistoryLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
     demoCreditsPersistenceConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),

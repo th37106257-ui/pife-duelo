@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { calculatePrize } from '../../../src/shared/economy.js';
 import {
   DEMO_CREDIT_EVENT_TYPES,
+  DEMO_CREDIT_ORIGIN,
   DEMO_RESERVATION_STATUSES,
   normalizeDemoAmount,
   normalizeDemoPlayerId,
@@ -86,6 +87,9 @@ function createEvent({
     actor: String(actor || 'system').slice(0, 80),
     createdAt: nowIso(clock),
     idempotencyKey,
+    origin: DEMO_CREDIT_ORIGIN,
+    withdrawable: false,
+    convertibleToRealMoney: false,
   };
 }
 
@@ -418,7 +422,7 @@ export class DemoCreditsService {
     return result;
   }
 
-  rewardWinner(playerId, amount, reference) {
+  rewardWinner(playerId, amount, reference, { platformFee = 0 } = {}) {
     this.assertEnabled();
     const normalizedPlayerId = normalizeDemoPlayerId(playerId);
     const normalizedAmount = normalizeDemoAmount(amount);
@@ -451,7 +455,21 @@ export class DemoCreditsService {
         idempotencyKey,
         clock: this.clock,
       }));
-      return { duplicate: false, account };
+      const normalizedFee = Number(platformFee || 0);
+      if (normalizedFee > 0) {
+        state.ledger.push(createEvent({
+          playerId: normalizedPlayerId,
+          type: DEMO_CREDIT_EVENT_TYPES.PLATFORM_FEE,
+          amount: normalizedFee,
+          previousAccount: account,
+          nextAccount: account,
+          reference: normalizedReference,
+          reason: 'taxa_ficticia_da_partida',
+          idempotencyKey: `demo:fee:${normalizedReference.matchId || normalizedReference.publicReference}`,
+          clock: this.clock,
+        }));
+      }
+      return { duplicate: false, account, platformFee: normalizedFee };
     });
     if (result.duplicate) this.logInfo('DEMO_OPERATION_DUPLICATE_IGNORED', { idempotencyKey: maskKey(idempotencyKey) });
     else this.logInfo('DEMO_MATCH_REWARD_GRANTED', {
@@ -536,7 +554,19 @@ export class DemoCreditsService {
     if (normalizedReason.includes('system_abort')) {
       return { compensated: this.compensateMatch(mappedParticipants, { matchId: safeMatchId, reason }), rewarded: null };
     }
+    const consumedReservations = this.repository.snapshot().reservations.filter((item) => (
+      item.matchId === safeMatchId && item.status === DEMO_RESERVATION_STATUSES.CONSUMED
+    ));
+    const forgedIdentity = mappedParticipants.some((participant) => !consumedReservations.some((reservation) => (
+      reservation.playerId === participant.playerId
+      && reservation.entryId === participant.entryId
+      && reservation.matchPlayerId === participant.matchPlayerId
+    )));
+    if (forgedIdentity || consumedReservations.length !== mappedParticipants.length) {
+      throw new Error('DEMO_FORGED_IDENTITY_REJECTED');
+    }
     const winner = mappedParticipants.find((item) => item.matchPlayerId === winnerMatchPlayerId) ?? null;
+    if (winnerMatchPlayerId && !winner) throw new Error('DEMO_FORGED_WINNER_REJECTED');
     if (!winner) {
       return {
         compensated: this.compensateMatch(mappedParticipants, { matchId: safeMatchId, reason: reason || 'winner_not_mapped' }),
@@ -551,20 +581,36 @@ export class DemoCreditsService {
       matchId: safeMatchId,
       tableId: Number(tableId),
       entryId: winner.entryId,
-    });
-    return { compensated: [], rewarded, rewardAmount: economy.winnerPrize, winnerPlayerId: winner.playerId };
+    }, { platformFee: economy.platformFeeAmount });
+    return {
+      compensated: [],
+      rewarded,
+      rewardAmount: economy.winnerPrize,
+      platformFeeAmount: economy.platformFeeAmount,
+      winnerPlayerId: winner.playerId,
+    };
   }
 
-  adminGrantCredits(playerId, amount, reason, actor = 'admin') {
+  adminGrantCredits(playerId, amount, reason, actor = 'admin', requestId = null) {
     this.assertEnabled();
     const normalizedPlayerId = normalizeDemoPlayerId(playerId);
     const normalizedAmount = normalizeDemoAmount(amount, { integer: true });
     if (normalizedAmount > this.maxAdminGrant) throw new Error('DEMO_ADMIN_GRANT_LIMIT_EXCEEDED');
     const safeReason = String(reason || '').trim().slice(0, 180);
     if (!safeReason) throw new Error('DEMO_ADMIN_REASON_REQUIRED');
-    const idempotencyKey = `demo:admin-grant:${randomUUID()}`;
+    const normalizedRequestId = String(requestId || '').trim().replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 160);
+    const idempotencyKey = `demo:admin-grant:${normalizedRequestId || randomUUID()}`;
     const result = this.repository.transaction((state) => {
       const ensured = this.ensureAccount(state, normalizedPlayerId);
+      const duplicateEvent = findEvent(state, idempotencyKey);
+      if (duplicateEvent) {
+        return {
+          duplicate: true,
+          account: ensured.account,
+          previousBalance: duplicateEvent.previousAvailableBalance,
+          publicReference: duplicateEvent.publicReference,
+        };
+      }
       const previous = structuredClone(ensured.account);
       ensured.account.availableBalance = round(previous.availableBalance + normalizedAmount);
       ensured.account.lifetimeGranted = round(previous.lifetimeGranted + normalizedAmount);
@@ -583,7 +629,7 @@ export class DemoCreditsService {
         actor,
         clock: this.clock,
       }));
-      return { account: ensured.account, previousBalance: previous.availableBalance, publicReference };
+      return { duplicate: false, account: ensured.account, previousBalance: previous.availableBalance, publicReference };
     });
     this.logInfo('DEMO_ADMIN_GRANT', {
       playerId: maskPlayerId(normalizedPlayerId),

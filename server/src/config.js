@@ -43,6 +43,7 @@ const normalizeWhatsappProvider = (value) => {
   const provider = String(value || 'evolution').trim().toLowerCase();
   return provider === 'meta_cloud' ? 'meta_cloud' : 'evolution';
 };
+const betaFakeMoneyGamesEnabled = parseBooleanDefault(process.env.BETA_FAKE_MONEY_GAMES_ENABLED, false);
 
 export const config = {
   PORT: Number(process.env.PORT || 3000),
@@ -77,7 +78,9 @@ export const config = {
   WHATSAPP_ENTRY_ACCESS_SECRET: process.env.WHATSAPP_ENTRY_ACCESS_SECRET || '',
   WHATSAPP_ENTRY_EXPIRY_MINUTES: Number(process.env.WHATSAPP_ENTRY_EXPIRY_MINUTES || 60),
   WHATSAPP_ENTRY_ACCESS_TTL_MINUTES: Number(process.env.WHATSAPP_ENTRY_ACCESS_TTL_MINUTES || 180),
-  DEMO_CREDITS_ENABLED: parseBooleanDefault(process.env.DEMO_CREDITS_ENABLED, false),
+  BETA_FAKE_MONEY_GAMES_ENABLED: betaFakeMoneyGamesEnabled,
+  // Alias interno temporario: o modo so pode ser ativado pela flag beta explicita acima.
+  DEMO_CREDITS_ENABLED: betaFakeMoneyGamesEnabled,
   DEMO_CREDITS_STARTING_BALANCE: parsePositiveInteger(process.env.DEMO_CREDITS_STARTING_BALANCE, 100),
   DEMO_CREDITS_HISTORY_LIMIT: parsePositiveInteger(process.env.DEMO_CREDITS_HISTORY_LIMIT, 50),
   DEMO_CREDITS_STORE_PATH: process.env.DEMO_CREDITS_STORE_PATH || defaultDemoCreditsStorePath,

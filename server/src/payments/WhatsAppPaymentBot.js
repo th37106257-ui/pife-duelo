@@ -973,7 +973,7 @@ export class WhatsAppPaymentBot {
     ].join('\n');
   }
 
-  async handleSafeEntryAdminCommand(phone, text, { replyTo = phone } = {}) {
+  async handleSafeEntryAdminCommand(phone, text, { replyTo = phone, idempotencyKey = null } = {}) {
     const senderPhone = normalizePhone(phone);
     const rawText = sanitizeText(text);
     const normalizedText = normalizeCommand(rawText).replace(/\s+/g, ' ');
@@ -1137,6 +1137,7 @@ export class WhatsAppPaymentBot {
           Number(demoGrantMatch[2]),
           sanitizeText(demoGrantMatch[3]),
           senderPhone,
+          idempotencyKey,
         );
         if (!result) throw new Error('DEMO_CREDITS_DISABLED');
         await this.send(replyTo, [
@@ -1146,7 +1147,7 @@ export class WhatsAppPaymentBot {
           `Referência: ${result.publicReference}`,
           'Sem valor financeiro.',
         ].join('\n'));
-        return { type: 'demo_admin_grant', decision: 'reply_sent', reason: 'demo_grant_ok' };
+        return { type: 'demo_admin_grant', decision: 'reply_sent', reason: 'demo_grant_ok', duplicate: Boolean(result.duplicate) };
       } catch (error) {
         await this.send(replyTo, `❌ Não foi possível conceder Créditos de Teste: ${error.message}`);
         return { type: 'demo_admin_grant_failed', decision: 'reply_sent', reason: error.message };
@@ -1632,6 +1633,10 @@ export class WhatsAppPaymentBot {
   async handleFinancialCommand(incoming, { replyTo, command, originIp }) {
     command = normalizeCommand(command);
     const wallet = this.financialWalletService;
+    if (this.demoCreditsService?.isEnabled?.() && /^sacar(?:\s|$)/.test(command)) {
+      await this.send(replyTo, '🧪 Créditos fictícios de teste não podem ser sacados ou convertidos em dinheiro real.');
+      return { type: 'demo_withdrawal_blocked', decision: 'reply_sent', originIp };
+    }
     const state = this.getConversationState(incoming.phone).state;
     const walletStates = ['financial_menu', 'financial_deposit_amount', 'financial_history', 'financial_profile', 'financial_pix_expired', 'financial_insufficient'];
     const atRoot = ['idle', 'how_it_works'].includes(state);
@@ -2019,7 +2024,12 @@ export class WhatsAppPaymentBot {
         originIp,
       };
     }
-    if (isAdminCommandText(command)) return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, { replyTo });
+    if (isAdminCommandText(command)) {
+      return this.handleSafeEntryAdminCommand(incoming.phone, incoming.text, {
+        replyTo,
+        idempotencyKey: incoming.messageId ? `whatsapp:${incoming.messageId}` : null,
+      });
+    }
     try {
       const financialResult = await this.handleFinancialCommand(incoming, { replyTo, command, originIp });
       if (financialResult) return financialResult;

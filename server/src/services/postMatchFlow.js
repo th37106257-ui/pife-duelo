@@ -326,6 +326,7 @@ export function createPostMatchFlow({
         });
         report.demoCredits = {
           rewardAmount: settlement.rewardAmount ?? 0,
+          platformFeeAmount: settlement.platformFeeAmount ?? 0,
           winnerPlayerId: settlement.winnerPlayerId ?? null,
           compensatedPlayers: settlement.compensated?.length ?? 0,
           balances: participants.map((participant) => ({
