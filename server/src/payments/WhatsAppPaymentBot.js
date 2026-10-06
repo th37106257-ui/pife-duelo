@@ -1630,6 +1630,24 @@ export class WhatsAppPaymentBot {
     return walletMenu(account);
   }
 
+  async continueAfterFinancialDeposit(phone) {
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return { ok: false, skipped: true, reason: 'invalid_phone' };
+
+    this.setConversationState(normalizedPhone, 'choosing_table');
+    const result = await this.sendPanel(
+      normalizedPhone,
+      normalizedPhone,
+      'FINANCIAL_DEPOSIT_CONFIRMED_TABLES',
+      this.safeTablesText(normalizedPhone),
+    );
+    this.logInfo('FINANCIAL_DEPOSIT_RETURNED_TO_TABLES', {
+      playerPhone: maskPhone(normalizedPhone),
+      delivered: result?.ok !== false,
+    });
+    return result ?? { ok: true };
+  }
+
   async handleFinancialCommand(incoming, { replyTo, command, originIp }) {
     command = normalizeCommand(command);
     const wallet = this.financialWalletService;
