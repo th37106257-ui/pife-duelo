@@ -19,7 +19,7 @@ export const expiredPixMessage = () => ['⌛ *Pix expirado*', '', 'Esta cobranç
 export const insufficientBalanceMessage = () => ['💸 *Saldo insuficiente*', '',
   'Recarregue para continuar.', '', '1 — Recarregar', '0 — Voltar'].join('\n');
 export const pixFailureMessage = () => 'Não foi possível gerar o Pix agora. Tente novamente em instantes.';
-export const unavailableWalletMessage = () => 'A carteira está indisponível no momento. Tente novamente em instantes.';
+export const unavailableWalletMessage = () => 'A carteira financeira não está ativada neste ambiente. Não há saldo em dinheiro real disponível para consulta.';
 export const unavailableWithdrawalMessage = () => 'Saque indisponível no momento.';
 
 export function pixMessage(order, minutes) {

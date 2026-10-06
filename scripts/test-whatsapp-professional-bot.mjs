@@ -124,4 +124,38 @@ function webhook(text) {
   assert.equal(logs.some((item) => item.level === 'error'), false);
 }
 
+{
+  const sentMessages = [];
+  const demoCreditsService = {
+    isEnabled: () => true,
+    getBalance: () => ({
+      availableBalance: 100,
+      reservedBalance: 0,
+      initialGrantApplied: false,
+    }),
+  };
+  const bot = new WhatsAppPaymentBot({
+    paymentsEnabled: false,
+    demoCreditsService,
+    cleanConversationEnabled: false,
+    evolutionClient: {
+      isConfigured: () => true,
+      sendWhatsAppMessage: async (target, text) => {
+        sentMessages.push({ target, text });
+        return { ok: true, sent: true };
+      },
+    },
+  });
+
+  const walletResult = await bot.handleConnectivityWebhook(webhook('2'));
+  assert.equal(walletResult.type, 'demo_credits_balance_sent');
+  assert.match(sentMessages.at(-1).text, /Créditos de Teste/i);
+  assert.match(sentMessages.at(-1).text, /Disponível:\s*\*100\*/i);
+  assert.doesNotMatch(sentMessages.at(-1).text, /carteira est. indispon.vel/i);
+
+  const balanceResult = await bot.handleConnectivityWebhook(webhook('saldo'));
+  assert.equal(balanceResult.type, 'demo_credits_balance_sent');
+  assert.match(sentMessages.at(-1).text, /Disponível:\s*\*100\*/i);
+}
+
 console.log('WhatsApp professional bot: conteudo centralizado, submenus e navegacao segura validados.');

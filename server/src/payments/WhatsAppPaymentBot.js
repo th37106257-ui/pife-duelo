@@ -1649,6 +1649,12 @@ export class WhatsAppPaymentBot {
     }
     const openWallet = FINANCIAL_WALLET_COMMANDS.has(command) || (atRoot && command === '2');
     if (!wallet?.isEnabled?.()) {
+      // A carteira em dinheiro pode estar desligada durante o beta; nesse caso,
+      // "2 — Carteira" e "saldo" devem consultar os créditos fictícios ativos.
+      // Nunca tratar créditos de teste como reais ou habilitar Pix por fallback.
+      if (this.demoCreditsService?.isEnabled?.() && (openWallet || SALDO_COMMANDS.has(command))) {
+        return this.handleDemoCreditsRequest(incoming, { replyTo, originIp });
+      }
       if (/^depositar(?:\s|$)/.test(command)) return this.handleDepositCommand(incoming, { replyTo, command, originIp });
       if (openWallet || SALDO_COMMANDS.has(command) || ['extrato', 'sacar', 'recarregar'].includes(command)) {
         await this.send(replyTo, unavailableWalletMessage());
