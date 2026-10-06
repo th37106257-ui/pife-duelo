@@ -422,7 +422,26 @@ async function sendWhatsAppMessage(to, text, { throwOnFailure = false } = {}) {
   return result;
 }
 
-financialWalletService?.setPaymentConfirmationSender(({ phone, text }) => sendWhatsAppMessage(phone, text));
+financialWalletService?.setPaymentConfirmationSender(async ({ phone, text }) => {
+  const confirmationResult = await sendWhatsAppMessage(phone, text);
+  if (confirmationResult?.ok === false) return confirmationResult;
+
+  try {
+    const tablesResult = await whatsappPaymentBot.continueAfterFinancialDeposit(phone);
+    if (tablesResult?.ok === false) {
+      logWarn('FINANCIAL_DEPOSIT_TABLES_DELIVERY_FAILED', {
+        reason: tablesResult.reason || tablesResult.error || 'WHATSAPP_SEND_FAILED',
+      });
+    }
+  } catch (error) {
+    // The credit is already confirmed. A navigation-message failure must not
+    // roll back or duplicate the financial confirmation notification.
+    logWarn('FINANCIAL_DEPOSIT_TABLES_DELIVERY_FAILED', {
+      reason: error?.message || 'UNKNOWN_ERROR',
+    });
+  }
+  return confirmationResult;
+});
 
 async function confirmAndDeliverPayment(paymentId, { adminPhone, source }) {
   if (!evolutionClient.isConfigured()) throw new Error('WHATSAPP_PROVIDER_NOT_CONFIGURED');
