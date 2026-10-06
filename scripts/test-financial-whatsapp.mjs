@@ -120,6 +120,17 @@ assert.equal((await bot.handleConnectivityWebhook(webhook('1', 'insufficient-rec
 assert.equal((await bot.handleConnectivityWebhook(webhook('0', 'deposit-back'), { originIp: 'test' })).type, 'financial_menu');
 assert.equal((await bot.handleConnectivityWebhook(webhook('0', 'wallet-root-back'), { originIp: 'test' })).type, 'whatsapp_menu_sent');
 
+// Após a confirmação automática do Pix, o jogador deve voltar às mesas sem
+// precisar enviar outro comando. O crédito financeiro já foi confirmado antes
+// desta navegação, então este passo não altera saldo nem gera nova cobrança.
+const sentBeforeDepositContinuation = sent.length;
+const continuationResult = await bot.continueAfterFinancialDeposit(player);
+assert.notEqual(continuationResult?.ok, false);
+assert.equal(bot.getConversationState(player).state, 'choosing_table');
+assert.ok(sent.length > sentBeforeDepositContinuation);
+assert.match(sent.at(-1).text, /Escolha uma mesa/i);
+assert.match(sent.at(-1).text, /R\$2,00[^]*R\$5,00[^]*R\$10,00[^]*R\$20,00/i);
+
 const failedSent = [];
 const failedLogs = [];
 const failedBot = new WhatsAppPaymentBot({
