@@ -749,10 +749,19 @@ export class WhatsAppPaymentBot {
   }
 
   safeMenuText() {
-    return mainMenu({
-      paymentsEnabled: this.paymentsEnabled,
-      demoCreditsEnabled: Boolean(this.demoCreditsService?.isEnabled?.()),
-    });
+    let waitingPlayers = null;
+    if (this.matchQueue?.getQueueStatus) {
+      try {
+        waitingPlayers = [2, 5, 10, 20].reduce(
+          (total, table) => total + Number(this.matchQueue.getQueueStatus(table)?.waitingPlayers || 0),
+          0,
+        );
+      } catch {
+        waitingPlayers = null;
+      }
+    }
+
+    return mainMenu({ waitingPlayers });
   }
 
   buildTestModeLink() {
