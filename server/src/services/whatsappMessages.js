@@ -29,8 +29,25 @@ export const WHATSAPP_PLAYER_STATES = Object.freeze({
   REFUND_PENDING: 'REFUND_PENDING',
 });
 
-export function mainMenu() {
-  return ['🎮 *PIFE DUELO*', '', '1 — Jogar', '2 — Carteira', '3 — Regras', '4 — Suporte', '', 'Digite o número ou o nome da opção.'].join('\n');
+export function mainMenu({ waitingPlayers = null } = {}) {
+  const count = Number(waitingPlayers);
+  const activity = Number.isInteger(count) && count >= 0
+    ? `🟢 *${count} ${count === 1 ? 'jogador procurando' : 'jogadores procurando'} agora*`
+    : '🟢 *Arena ativa*';
+
+  return [
+    `🎴 *PIFE DUELO*  •  ${activity}`,
+    '',
+    '⚔️ *Um contra um. Nove cartas. Um vencedor.*',
+    'Monte suas combinações e bata antes do adversário.',
+    '',
+    '1️⃣ *Jogar agora*',
+    '2️⃣ Carteira',
+    '3️⃣ Regras',
+    '4️⃣ Suporte',
+    '',
+    'Digite *1* e encontre um adversário.',
+  ].join('\n');
 }
 export function howItWorksMenu() {
   return ['*Como funciona*', '', '1. Escolha uma mesa.', '2. Aguarde um adversário.',
