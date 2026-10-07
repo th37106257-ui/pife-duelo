@@ -44,11 +44,6 @@ export function reportClientError(error, source = 'frontend', extra = {}) {
   if (Date.now() - lastSent < 10000) return;
   recentReports.set(fingerprint, Date.now());
 
-  const socket = window.__PIFE_DUELO_SOCKET__;
-  if (socket?.connected) {
-    socket.emit('client_error_report', payload);
-    return;
-  }
   fetch(`${getServerUrl()}/api/client-errors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
