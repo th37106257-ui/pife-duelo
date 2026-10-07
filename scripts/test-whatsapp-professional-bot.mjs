@@ -127,6 +127,61 @@ function webhook(text) {
 
 {
   const sentMessages = [];
+  let firstBalanceRead = true;
+  const demoCreditsService = {
+    startingBalance: 100,
+    isEnabled: () => true,
+    getBalance: () => {
+      const initialGrantApplied = firstBalanceRead;
+      firstBalanceRead = false;
+      return {
+        availableBalance: 100,
+        reservedBalance: 0,
+        initialGrantApplied,
+      };
+    },
+  };
+  const bot = new WhatsAppPaymentBot({
+    paymentsEnabled: false,
+    demoCreditsService,
+    cleanConversationEnabled: false,
+    evolutionClient: {
+      isConfigured: () => true,
+      sendWhatsAppMessage: async (target, text) => {
+        sentMessages.push({ target, text });
+        return { ok: true, sent: true };
+      },
+    },
+  });
+
+  const welcome = await bot.handleConnectivityWebhook(webhook('oi'));
+  assert.equal(welcome.type, 'whatsapp_new_player_welcome');
+  assert.equal(welcome.state, 'new_player_onboarding');
+  assert.match(sentMessages.at(-1).text, /BEM-VINDO AO PIFE DUELO/i);
+  assert.match(sentMessages.at(-1).text, /100 Créditos de Teste/i);
+  assert.match(sentMessages.at(-1).text, /Jogar minha primeira partida/i);
+  assert.match(sentMessages.at(-1).text, /Ver como funciona/i);
+
+  const explanation = await bot.handleConnectivityWebhook(webhook('2'));
+  assert.equal(explanation.type, 'whatsapp_new_player_how_it_works');
+  assert.match(sentMessages.at(-1).text, /PIFE EM 20 SEGUNDOS/i);
+  assert.match(sentMessages.at(-1).text, /Escolher minha primeira mesa/i);
+
+  const firstTables = await bot.handleConnectivityWebhook(webhook('1'));
+  assert.equal(firstTables.type, 'whatsapp_first_match_tables_sent');
+  assert.equal(firstTables.state, 'choosing_table');
+  assert.match(sentMessages.at(-1).text, /ESCOLHA SUA PRIMEIRA MESA/i);
+  assert.match(sentMessages.at(-1).text, /Recomendada para começar/i);
+  assert.match(sentMessages.at(-1).text, /Mesa 1 — 2 Créditos de Teste/i);
+
+  const normalMenu = await bot.handleConnectivityWebhook(webhook('menu'));
+  assert.equal(normalMenu.type, 'whatsapp_menu_sent');
+  assert.match(sentMessages.at(-1).text, /Jogar agora/i);
+  assert.doesNotMatch(sentMessages.at(-1).text, /BEM-VINDO AO PIFE DUELO/i);
+}
+
+{
+  const sentMessages = [];
   const demoCreditsService = {
     isEnabled: () => true,
     getBalance: () => ({
