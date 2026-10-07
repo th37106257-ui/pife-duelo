@@ -3,6 +3,10 @@
 ## Objetivo operacional
 Trabalhe de forma autônoma no repositório. O usuário não deve precisar abrir PowerShell, copiar comandos, editar arquivos manualmente ou concluir etapas rotineiras fora do Codex quando as ferramentas conectadas permitirem fazer isso diretamente.
 
+
+## Fonte única de verdade
+Antes de sugerir próxima etapa, reabrir tarefa ou alterar código, leia `PROJECT_STATUS.md`. Ele é o status canônico do Pife Duelo e tem prioridade sobre README antigo, conversa antiga ou plano já superado. Nunca trate como pendente um item marcado lá como concluído, salvo evidência concreta de regressão, bug novo ou pedido explícito do usuário.
+
 ## Regras de execução
 1. Antes de alterar código, leia o estado atual do repositório, os arquivos relacionados e os logs relevantes do Railway.
 2. Prefira mudanças pequenas, reversíveis e acompanhadas por testes.
