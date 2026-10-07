@@ -71,8 +71,13 @@ const server = spawn(process.execPath, ['server/src/index.js'], {
     EVOLUTION_INSTANCE_NAME: 'pife-duelo-test',
     EVOLUTION_WEBHOOK_SECRET: 'integration-webhook-secret',
   },
-  stdio: 'ignore',
+  stdio: ['ignore', 'pipe', 'pipe'],
 });
+let serverError = '';
+server.stderr.on('data', (chunk) => {
+  serverError = `${serverError}${chunk.toString()}`.slice(-1500);
+});
+server.stdout.resume();
 
 function once(socket, eventName, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -98,7 +103,7 @@ async function waitForHealth() {
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('Servidor de teste nao iniciou.');
+  throw new Error(`Servidor de teste nao iniciou (exit=${server.exitCode}; ${serverError.replace(/postgres(?:ql)?:\/\/\S+/gi, '[database-url-redacted]')}).`);
 }
 
 async function connectClient(entryToken = '') {
