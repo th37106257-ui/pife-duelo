@@ -54,6 +54,11 @@ assert.equal(initial.availableBalance, 100);
 assert.equal(initial.initialGrantApplied, true);
 assert.equal(service.getBalance(phones[0]).initialGrantApplied, false);
 assert.equal(service.getHistory(phones[0]).filter((event) => event.type === 'DEMO_INITIAL_GRANT').length, 1);
+const resetOne = service.adminResetDemoAccount(phones[0], 'reset de teste', 'admin', 'MESSAGE-RESET-1');
+const resetRetry = service.adminResetDemoAccount(phones[0], 'reset de teste', 'admin', 'MESSAGE-RESET-1');
+assert.equal(resetRetry.duplicate, true);
+assert.equal(resetRetry.publicReference, resetOne.publicReference);
+assert.equal(service.getHistory(phones[0]).filter((event) => event.type === 'DEMO_ACCOUNT_RESET').length, 1);
 
 // Reserva, duplicidade, bloqueio simultâneo e liberação.
 const referenceOne = { publicReference: 'DEMO-ENTRY-E1', entryId: 'E1', tableId: 5 };
@@ -282,6 +287,70 @@ assert.equal(parallelService.getHistory(phones[0]).filter((event) => event.type 
 assert.equal(parallelService.getHistory(phones[0]).filter((event) => event.type === 'DEMO_PLATFORM_FEE').length, 1);
 
 // Integração real da fila: reserva ao entrar e devolução ao cancelar/expirar.
+const insufficientQueueCredits = createService({ startingBalance: 2 });
+const insufficientEntryService = new WhatsAppEntryService({
+  store: new WhatsAppEntryStore(),
+  adminNumbers: [phones[0]],
+  accessSecret: 'demo-insufficient-entry-secret',
+  publicGameUrl: 'https://pife.example',
+});
+const insufficientQueue = new MatchQueue({
+  entryService: insufficientEntryService,
+  demoCreditsService: insufficientQueueCredits,
+});
+const insufficientJoin = await insufficientQueue.joinQueue(phones[0], 5);
+assert.equal(insufficientJoin.blocked, true);
+assert.equal(insufficientJoin.reason, 'DEMO_INSUFFICIENT_CREDITS');
+assert.equal(insufficientJoin.availableBalance, 2);
+assert.equal(insufficientEntryService.getActiveEntryForPhone(phones[0]), null);
+assert.equal(insufficientQueue.getQueueStatus(5).waitingPlayers, 0);
+assert.equal(insufficientQueueCredits.getBalance(phones[0]).reservedBalance, 0);
+
+const failedQueueCredits = createService();
+const failedQueueEntryService = new WhatsAppEntryService({
+  store: new WhatsAppEntryStore(),
+  adminNumbers: [phones[0]],
+  accessSecret: 'demo-failed-queue-entry-secret',
+  publicGameUrl: 'https://pife.example',
+});
+failedQueueEntryService.markWhatsAppQueueWaiting = () => {
+  throw new Error('ENTRY_STORE_UNAVAILABLE');
+};
+const failedQueue = new MatchQueue({
+  entryService: failedQueueEntryService,
+  demoCreditsService: failedQueueCredits,
+});
+const failedJoin = await failedQueue.joinQueue(phones[0], 5);
+assert.equal(failedJoin.blocked, true);
+assert.equal(failedJoin.reason, 'ENTRY_STORE_UNAVAILABLE');
+assert.equal(failedQueue.getQueueStatus(5).waitingPlayers, 0);
+assert.equal(failedQueueCredits.getBalance(phones[0]).availableBalance, 100);
+assert.equal(failedQueueCredits.getBalance(phones[0]).reservedBalance, 0);
+assert.equal(failedQueueCredits.getHistory(phones[0]).filter((event) => event.type === 'DEMO_ENTRY_RELEASED').length, 1);
+
+let duplicateReleaseCalls = 0;
+const duplicateEntryService = new WhatsAppEntryService({
+  store: new WhatsAppEntryStore(),
+  adminNumbers: [phones[0]],
+  accessSecret: 'demo-duplicate-retry-entry-secret',
+  publicGameUrl: 'https://pife.example',
+});
+duplicateEntryService.markWhatsAppQueueWaiting = () => {
+  throw new Error('ENTRY_STORE_UNAVAILABLE');
+};
+const duplicateQueue = new MatchQueue({
+  entryService: duplicateEntryService,
+  demoCreditsService: {
+    isEnabled: () => true,
+    getBalance: () => ({ availableBalance: 100 }),
+    reserveCredits: () => ({ duplicate: true }),
+    releaseReservation: () => { duplicateReleaseCalls += 1; },
+  },
+});
+assert.equal((await duplicateQueue.joinQueue(phones[0], 5)).blocked, true);
+assert.equal(duplicateReleaseCalls, 0);
+assert.equal(duplicateEntryService.getActiveEntryForPhone(phones[0])?.status, 'approved_for_queue');
+
 const queueCredits = createService();
 const entryStore = new WhatsAppEntryStore();
 const entryService = new WhatsAppEntryService({

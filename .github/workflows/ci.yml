@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pife_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pife_test -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PIFE_SAFE_ENTRY_TEST_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_safe_entry_test
+      PIFE_E2E_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_financial_e2e_test
+      PIFE_DEMO_CREDITS_TEST_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_demo_credits_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix server
+      - name: Create isolated test databases
+        run: |
+          node --input-type=module -e '
+            import { createRequire } from "node:module";
+            const requireServer = createRequire(new URL("./server/package.json", import.meta.url));
+            const { Client } = requireServer("pg");
+            const client = new Client({ connectionString: "postgresql://pife_test@127.0.0.1:5432/postgres" });
+            await client.connect();
+            for (const name of ["pife_safe_entry_test", "pife_financial_e2e_test", "pife_demo_credits_test"]) {
+              await client.query(`CREATE DATABASE ${name}`);
+            }
+            await client.end();
+          '
+      - run: node scripts/test-safe-entry-postgres.mjs
+      - run: node scripts/test-demo-credits-postgres.mjs
+      - run: node scripts/test-safe-entry-async-propagation.mjs
+      - run: node scripts/test-financial-e2e.mjs
+      - run: npm run test:demo-credits
+      - run: npm run test:entries
+      - run: npm run test:financial-wallet
+      - run: npm run test:financial-whatsapp
+      - run: npm test
+      - run: npm run test:online-sync
+      - run: npm run build
+      - run: git diff --check

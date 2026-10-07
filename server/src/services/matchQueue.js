@@ -114,12 +114,12 @@ export class MatchQueue {
     return economy ? economy.tableValue : null;
   }
 
-  releaseDemoReservation(entry, reason) {
+  async releaseDemoReservation(entry, reason) {
     if (!this.demoCreditsService?.isEnabled?.() || !entry?.entryId) return null;
     const playerId = entry.playerPhone || entry.phone || entry.notifyTo;
     if (!playerId) return null;
     try {
-      return this.demoCreditsService.releaseReservation(playerId, {
+      return await this.demoCreditsService.releaseReservation(playerId, {
         publicReference: `DEMO-ENTRY-${entry.entryId}`,
         entryId: entry.entryId,
         matchId: entry.whatsappMatchId || entry.previousMatchId || null,
@@ -293,7 +293,7 @@ export class MatchQueue {
 
     if (!result.alreadyProcessed) {
       await Promise.all((result.participants ?? []).map(async (entry) => {
-        this.releaseDemoReservation(entry, reason);
+        await this.releaseDemoReservation(entry, reason);
         await this.releaseFinancialReservation(entry, reason);
       }));
     }
@@ -584,7 +584,7 @@ export class MatchQueue {
           tableValue: entry.tableValue,
           entryId: entry.entryId,
         });
-        this.releaseDemoReservation(entry, reason);
+        await this.releaseDemoReservation(entry, reason);
         await this.releaseFinancialReservation(entry, reason);
       }
     }
@@ -728,7 +728,7 @@ export class MatchQueue {
             throw error;
           }
         }
-        this.releaseDemoReservation(entry, reason);
+        await this.releaseDemoReservation(entry, reason);
         await this.releaseFinancialReservation(entry, reason);
         this.logInfo('WHATSAPP_QUEUE_LEFT', {
           tableId: queueId,
@@ -1023,6 +1023,33 @@ export class MatchQueue {
       return { blocked: true, reason: 'already_in_active_match', activeMatch };
     }
 
+    // Do not create a Safe Entry for a table the beta account cannot afford.
+    // reserveCredits remains the authoritative, atomic check for races/retries.
+    if (this.demoCreditsService?.isEnabled?.()) {
+      try {
+        const { availableBalance } = await this.demoCreditsService.getBalance(phone);
+        if (availableBalance < tableValue) {
+          this.logWarn('ENTRY_BALANCE_CHECK', {
+            playerId: maskPhone(phone),
+            tableValue,
+            sufficient: false,
+          });
+          return {
+            blocked: true,
+            reason: 'DEMO_INSUFFICIENT_CREDITS',
+            availableBalance,
+            requiredAmount: tableValue,
+          };
+        }
+      } catch (error) {
+        this.logError('ENTRY_BALANCE_CHECK_FAILED', {
+          playerId: maskPhone(phone),
+          reason: error.message,
+        });
+        return { blocked: true, reason: error.message };
+      }
+    }
+
     let approval;
     try {
       if (approvedAccess) {
@@ -1060,7 +1087,7 @@ export class MatchQueue {
     let demoReservation = null;
     if (this.demoCreditsService?.isEnabled?.()) {
       try {
-        demoReservation = this.demoCreditsService.reserveCredits(phone, tableValue, {
+        demoReservation = await this.demoCreditsService.reserveCredits(phone, tableValue, {
           publicReference: `DEMO-ENTRY-${approval.entry.entryId}`,
           entryId: approval.entry.entryId,
           tableId: tableValue,
@@ -1098,11 +1125,43 @@ export class MatchQueue {
       accessLink: approval.accessLink,
       clock: this.clock,
     });
-    this.entryService?.markWhatsAppQueueWaiting?.(queueEntry.entryId, {
-      actor: phone,
-      replyTo: queueEntry.replyTo,
-      source: 'whatsapp-queue',
-    });
+    try {
+      this.entryService?.markWhatsAppQueueWaiting?.(queueEntry.entryId, {
+        actor: phone,
+        replyTo: queueEntry.replyTo,
+        source: 'whatsapp-queue',
+      });
+    } catch (error) {
+      // A duplicate reservation belongs to an earlier attempt; a failed retry
+      // must not release that attempt's protected entry.
+      const release = demoReservation && !demoReservation.duplicate
+        ? await this.releaseDemoReservation(queueEntry, 'queue_persistence_failed')
+        : null;
+      // A failed release must keep its entry for recovery instead of hiding an
+      // outstanding reservation behind a cancelled entry.
+      if (!demoReservation || (!demoReservation.duplicate && (release?.released || release?.duplicate))) {
+        try {
+          await this.entryService?.cancelQueueEntry?.(queueEntry.entryId, {
+            actor: phone,
+            source: 'queue-persistence-failed',
+            force: true,
+          });
+        } catch (cleanupError) {
+          this.logError('SAFE_ENTRY_CANCELLATION_FAILED', {
+            entryId: queueEntry.entryId,
+            reason: cleanupError.message,
+            source: 'queue-persistence-failed',
+          });
+        }
+      }
+      this.logError('ENTRY_QUEUE_JOIN_FAILED', {
+        playerId: queueEntry.phoneMasked,
+        entryId: queueEntry.entryId,
+        reason: error.message,
+        reservationReleased: Boolean(release?.released || release?.duplicate),
+      });
+      return { blocked: true, reason: error.message };
+    }
     const queue = this.queues.get(queueId);
     queue.push(queueEntry);
     console.log('[5.3] quantidade na fila:', queue.length);

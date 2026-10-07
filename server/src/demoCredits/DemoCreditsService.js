@@ -640,19 +640,27 @@ export class DemoCreditsService {
     return result;
   }
 
-  adminResetDemoAccount(playerId, reason, actor = 'admin') {
+  adminResetDemoAccount(playerId, reason, actor = 'admin', requestId = null) {
     this.assertEnabled();
     const normalizedPlayerId = normalizeDemoPlayerId(playerId);
     const safeReason = String(reason || '').trim().slice(0, 180);
     if (!safeReason) throw new Error('DEMO_ADMIN_REASON_REQUIRED');
+    const normalizedRequestId = String(requestId || '').trim().replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 160);
+    const idempotencyKey = `demo:account-reset:${normalizedRequestId || randomUUID()}`;
     const result = this.repository.transaction((state) => {
       const ensured = this.ensureAccount(state, normalizedPlayerId);
+      const duplicateEvent = findEvent(state, idempotencyKey);
+      if (duplicateEvent) return {
+        duplicate: true,
+        account: ensured.account,
+        previousBalance: duplicateEvent.previousAvailableBalance,
+        publicReference: duplicateEvent.publicReference,
+      };
       if (ensured.account.reservedBalance > 0) throw new Error('DEMO_ACCOUNT_HAS_ACTIVE_RESERVATION');
       const previous = structuredClone(ensured.account);
       ensured.account.availableBalance = this.startingBalance;
       ensured.account.updatedAt = nowIso(this.clock);
       ensured.account.version += 1;
-      const idempotencyKey = `demo:account-reset:${randomUUID()}`;
       const publicReference = `DEMO-RESET-${randomUUID().slice(0, 8).toUpperCase()}`;
       state.ledger.push(createEvent({
         playerId: normalizedPlayerId,

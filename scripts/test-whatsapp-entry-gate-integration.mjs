@@ -6,26 +6,39 @@ import { join } from 'node:path';
 import { io } from 'socket.io-client';
 import { WhatsAppEntryStore } from '../server/src/entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from '../server/src/entries/WhatsAppEntryService.js';
+import { PostgresWhatsAppEntryAccessRepository } from '../server/src/entries/PostgresWhatsAppEntryAccessRepository.js';
 
 const port = 3201;
 const baseUrl = `http://127.0.0.1:${port}`;
+const databaseUrl = process.env.PIFE_SAFE_ENTRY_TEST_DATABASE_URL;
+if (!databaseUrl) throw new Error('PIFE_SAFE_ENTRY_TEST_DATABASE_URL_REQUIRED');
+const database = new URL(databaseUrl);
+if (!['127.0.0.1', 'localhost'].includes(database.hostname)
+  || database.pathname !== '/pife_safe_entry_test' || database.username !== 'pife_test') {
+  throw new Error('SAFE_ENTRY_INTEGRATION_TEST_REQUIRES_ISOLATED_LOCAL_POSTGRES');
+}
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'pife-whatsapp-entry-gate-'));
 const entryStorePath = join(temporaryDirectory, 'entries.json');
 const accessSecret = 'integration-whatsapp-entry-secret';
 const seedStore = new WhatsAppEntryStore({ filePath: entryStorePath });
+const seedRepository = new PostgresWhatsAppEntryAccessRepository({ connectionString: databaseUrl });
+await seedRepository.initialize();
+await seedRepository.pool.query('TRUNCATE TABLE whatsapp_safe_entries');
 const seedService = new WhatsAppEntryService({
   store: seedStore,
   accessSecret,
   publicGameUrl: baseUrl,
+  sharedAccessRepository: seedRepository,
+  requireSharedAccessRepository: true,
 });
 
-function createApprovedEntry(phone) {
+async function createApprovedEntry(phone) {
   const entry = seedService.createEntry({ phone, selectedTable: 5, source: 'integration-test' });
   return seedService.approveEntry({ entryId: entry.entryId, actor: 'integration-admin', source: 'integration-test' });
 }
 
-const firstApproval = createApprovedEntry('5511888880000');
-const secondApproval = createApprovedEntry('5511777770000');
+const firstApproval = await createApprovedEntry('5511888880000');
+const secondApproval = await createApprovedEntry('5511777770000');
 const firstToken = new URL(firstApproval.accessLink).searchParams.get('entry');
 const secondToken = new URL(secondApproval.accessLink).searchParams.get('entry');
 
@@ -33,8 +46,15 @@ const server = spawn(process.execPath, ['server/src/index.js'], {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    DATABASE_URL: databaseUrl,
+    FINANCIAL_MODE: 'sandbox',
+    FINANCIAL_WALLET_ENABLED: 'false',
+    PIX_DEPOSITS_ENABLED: 'false',
+    REAL_MONEY_GAMES_ENABLED: 'false',
+    WITHDRAWALS_ENABLED: 'false',
+    AUTO_WITHDRAWALS_ENABLED: 'false',
     PORT: String(port),
-    NODE_ENV: 'production',
+    NODE_ENV: 'test',
     ADMIN_PASSWORD: 'entry-gate-test',
     CLIENT_URL: baseUrl,
     FRONTEND_URL: baseUrl,
@@ -51,8 +71,13 @@ const server = spawn(process.execPath, ['server/src/index.js'], {
     EVOLUTION_INSTANCE_NAME: 'pife-duelo-test',
     EVOLUTION_WEBHOOK_SECRET: 'integration-webhook-secret',
   },
-  stdio: 'ignore',
+  stdio: ['ignore', 'pipe', 'pipe'],
 });
+let serverError = '';
+server.stderr.on('data', (chunk) => {
+  serverError = `${serverError}${chunk.toString()}`.slice(-1500);
+});
+server.stdout.resume();
 
 function once(socket, eventName, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -70,15 +95,22 @@ async function waitForHealth() {
       const response = await fetch(`${baseUrl}/health`);
       if (response.ok) {
         const health = await response.json();
-        assert.equal(health.payments.enabled, false);
-        assert.equal(health.payments.gateEnabled, false);
-        assert.equal(health.whatsapp.safeEntryEnabled, true);
+        assert.equal(health.ok, true);
+        const statusResponse = await fetch(`${baseUrl}/api/status`, {
+          headers: { 'x-admin-password': 'entry-gate-test' },
+        });
+        assert.equal(statusResponse.ok, true);
+        const status = await statusResponse.json();
+        assert.equal(status.financialWallet.enabled, false);
+        assert.equal(status.demoCreditsEnabled, false);
         return;
       }
-    } catch {}
+    } catch (error) {
+      if (error?.name === 'AssertionError') throw error;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('Servidor de teste nao iniciou.');
+  throw new Error(`Servidor de teste nao iniciou (exit=${server.exitCode}; ${serverError.replace(/postgres(?:ql)?:\/\/\S+/gi, '[database-url-redacted]')}).`);
 }
 
 async function connectClient(entryToken = '') {
@@ -89,9 +121,12 @@ async function connectClient(entryToken = '') {
     auth: entryToken ? { entryToken } : {},
   });
   const connected = once(socket, 'connect');
+  const rejected = once(socket, 'connect_error').then((error) => {
+    throw new Error(`Socket connection rejected: ${error?.data?.code || error?.message || 'unknown'}`);
+  });
   const identity = once(socket, 'connection:success');
   socket.connect();
-  await connected;
+  await Promise.race([connected, rejected]);
   return { socket, connection: await identity };
 }
 
@@ -138,12 +173,10 @@ try {
   const firstQueued = await joinQueue(first.socket, 5, 'Entrada A');
   assert.equal(firstQueued.ok, true);
 
-  const duplicate = await connectClient(firstToken);
-  const duplicateQueue = await joinQueue(duplicate.socket, 5, 'Duplicado');
-  assert.equal(duplicateQueue.ok, false);
-  assert.equal(duplicateQueue.reason, 'ENTRY_ACCESS_RESERVED');
-  assert.equal(duplicateQueue.message, 'Você já possui uma sessão ativa nesta partida/fila.');
-  duplicate.socket.close();
+  // The original one-time link is already claimed by the first socket.
+  // A second use must fail at the authorization boundary instead of opening
+  // another socket and waiting for joinQueue to reject it.
+  await expectConnectionDenied(firstToken);
 
   const second = await connectClient(secondToken);
   const firstStarted = once(first.socket, 'matchStarted');
@@ -199,5 +232,6 @@ try {
   console.log('Entrada WhatsApp: token seguro, duplicidade bloqueada, partida iniciada e jogadores liberados apos finalizacao.');
 } finally {
   server.kill();
+  await seedRepository.close();
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

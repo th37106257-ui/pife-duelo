@@ -25,6 +25,7 @@ import { WhatsAppEntryService } from './entries/WhatsAppEntryService.js';
 import { PostgresWhatsAppEntryAccessRepository } from './entries/PostgresWhatsAppEntryAccessRepository.js';
 import { DemoCreditsRepository } from './demoCredits/DemoCreditsRepository.js';
 import { DemoCreditsService } from './demoCredits/DemoCreditsService.js';
+import { PostgresDemoCreditsRepository, PostgresDemoCreditsService } from './demoCredits/PostgresDemoCreditsService.js';
 import { assertBetaFakeMoneySafety } from './demoCredits/betaFakeMoneySafety.js';
 import { assertFinancialConfig } from './financial/financialConfig.js';
 import { PostgresFinancialRepository, resolveFinancialDatabaseSsl } from './financial/PostgresFinancialRepository.js';
@@ -98,18 +99,35 @@ const whatsappProviderContext = createWhatsAppProvider({
   logWarn,
   logError,
 });
-const demoCreditsRepository = new DemoCreditsRepository({
-  filePath: config.DEMO_CREDITS_ENABLED ? (config.DEMO_CREDITS_STORE_PATH || null) : null,
-});
-const demoCreditsService = new DemoCreditsService({
-  repository: demoCreditsRepository,
+let demoCreditsService;
+const demoCreditsOptions = {
   enabled: config.DEMO_CREDITS_ENABLED,
   startingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
   historyLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
   logInfo,
   logWarn,
   logError,
-});
+};
+if (config.DEMO_CREDITS_ENABLED && config.FINANCIAL.databaseUrl) {
+  const repository = new PostgresDemoCreditsRepository({ connectionString: config.FINANCIAL.databaseUrl });
+  try {
+    await repository.initialize({ legacyFilePath: config.DEMO_CREDITS_STORE_PATH });
+  } catch (error) {
+    logError('DEMO_CREDITS_POSTGRES_INIT_FAILED', { code: error?.code || error?.message || 'DEMO_CREDITS_STORE_UNAVAILABLE' });
+    await repository.close().catch(() => {});
+    throw new Error('DEMO_CREDITS_STORE_UNAVAILABLE');
+  }
+  demoCreditsService = new PostgresDemoCreditsService({ repository, ...demoCreditsOptions });
+  logInfo('DEMO_CREDITS_POSTGRES_READY', { persistence: 'postgres' });
+} else {
+  if (config.DEMO_CREDITS_ENABLED && process.env.NODE_ENV === 'production') {
+    throw new Error('DEMO_CREDITS_DATABASE_REQUIRED');
+  }
+  const repository = new DemoCreditsRepository({
+    filePath: config.DEMO_CREDITS_ENABLED ? (config.DEMO_CREDITS_STORE_PATH || null) : null,
+  });
+  demoCreditsService = new DemoCreditsService({ repository, ...demoCreditsOptions });
+}
 const financialConfig = assertFinancialConfig(config.FINANCIAL);
 assertBetaFakeMoneySafety({
   enabled: config.BETA_FAKE_MONEY_GAMES_ENABLED,
@@ -716,11 +734,11 @@ app.get('/api/status', (request, response) => {
     betaFakeMoneyGamesEnabled: config.BETA_FAKE_MONEY_GAMES_ENABLED,
     demoCreditsStartingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
     demoCreditsHistoryLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
-    demoCreditsPersistenceConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
+    demoCreditsPersistenceConfigured: demoCreditsService.isPersistenceConfigured(),
     demoCredits: {
       startingBalance: config.DEMO_CREDITS_STARTING_BALANCE,
       historyLimit: config.DEMO_CREDITS_HISTORY_LIMIT,
-      storeConfigured: Boolean(config.DEMO_CREDITS_STORE_PATH),
+      storeConfigured: demoCreditsService.isPersistenceConfigured(),
     },
     rooms: roomManager.listRooms().length,
     matches: matchManager.listMatches().length,

@@ -89,7 +89,7 @@ function webhook(text) {
 
   const walletUnavailable = await bot.handleConnectivityWebhook(webhook('2'));
   assert.equal(walletUnavailable.type, 'financial_unavailable');
-  assert.match(sentMessages.at(-1).text, /carteira est. indispon.vel/i);
+  assert.match(sentMessages.at(-1).text, /carteira financeira não está ativada/i);
 
   const how = await bot.handleConnectivityWebhook(webhook('como funciona'));
   assert.equal(how.type, 'whatsapp_how_it_works_sent');

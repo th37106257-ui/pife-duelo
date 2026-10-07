@@ -382,7 +382,7 @@ export function setupSocketServer(httpServer, {
         };
       });
     if (demoCreditsService?.isEnabled?.()) {
-      demoCreditsService.validateMatchReservations(demoParticipants, first.tableValue);
+      await demoCreditsService.validateMatchReservations(demoParticipants, first.tableValue);
     }
     const roomPlayers = [
       {
@@ -460,7 +460,7 @@ export function setupSocketServer(httpServer, {
 
     if (demoCreditsService?.isEnabled?.()) {
       try {
-        demoCreditsService.consumeMatchReservations(demoParticipants, {
+        await demoCreditsService.consumeMatchReservations(demoParticipants, {
           matchId: onlineMatch.matchId,
           tableId: room.tableValue,
         });
