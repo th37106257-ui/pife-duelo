@@ -31,9 +31,11 @@ export const WHATSAPP_PLAYER_STATES = Object.freeze({
 
 export function mainMenu({ waitingPlayers = null } = {}) {
   const count = Number(waitingPlayers);
-  const activity = Number.isInteger(count) && count >= 0
-    ? `🟢 *${count} ${count === 1 ? 'jogador procurando' : 'jogadores procurando'} agora*`
-    : '🟢 *Arena ativa*';
+  const activity = Number.isInteger(count) && count > 1
+    ? `🟢 *${count} jogadores procurando agora*`
+    : Number.isInteger(count) && count === 1
+      ? '🟢 *1 jogador aguardando adversário*'
+      : '🟢 *Arena aberta*';
 
   return [
     `🎴 *PIFE DUELO*  •  ${activity}`,
