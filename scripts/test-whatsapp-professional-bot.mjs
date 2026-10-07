@@ -32,12 +32,13 @@ function webhook(text) {
 }
 
 {
-  const menu = mainMenu({ paymentsEnabled: false });
+  const menu = mainMenu({ waitingPlayers: 7 });
   assert.match(menu, /PIFE DUELO/);
-  assert.match(menu, /1 .*Jogar/);
-  assert.match(menu, /2 .*Carteira/);
-  assert.match(menu, /3 .*Regras/);
-  assert.match(menu, /4 .*Suporte/);
+  assert.match(menu, /7 jogadores procurando agora/i);
+  assert.match(menu, /Jogar agora/i);
+  assert.match(menu, /Carteira/);
+  assert.match(menu, /Regras/);
+  assert.match(menu, /Suporte/);
   assert.doesNotMatch(menu, /sandbox|homologa..o|demonstra..o|nenhum dinheiro real/i);
   assert.doesNotMatch(menu, /vencedor recebe/i);
 
