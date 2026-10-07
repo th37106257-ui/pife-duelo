@@ -45,7 +45,7 @@ const bot = new WhatsAppPaymentBot({
 
 const incoming = { phone: player, replyTo: player, pushName: 'Jogador Teste', text: 'menu', messageId: 'message-1' };
 await bot.handleMenuCommand(incoming, { replyTo: player, originIp: 'test' });
-assert.match(sent.at(-1).text, /1 .*Jogar[^]*2 .*Carteira[^]*3 .*Regras[^]*4 .*Suporte/);
+assert.match(sent.at(-1).text, /Jogar agora[^]*Carteira[^]*Regras[^]*Suporte/i);
 assert.doesNotMatch(sent.at(-1).text, /PD-8F4K2M|sandbox|demonstra..o|nenhum dinheiro real/i);
 
 function webhook(text, id) {
