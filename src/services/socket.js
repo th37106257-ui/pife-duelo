@@ -209,8 +209,6 @@ function createSocket() {
     socketTransport: null,
     lastStateUpdateAt: null,
   };
-  window.__PIFE_DUELO_SOCKET__ = nextSocket;
-
   nextSocket.on('connect', () => {
     console.info('[socket] conectado:', nextSocket.id);
     nextSocket.gameTelemetry.socketTransport = nextSocket.io.engine.transport.name;
@@ -378,7 +376,6 @@ export function disconnectSocket() {
   socket = null;
   if (gamePingInterval) window.clearInterval(gamePingInterval);
   gamePingInterval = null;
-  window.__PIFE_DUELO_SOCKET__ = null;
   socketConnectPromise = null;
   publishConnectionState({
     status: 'disconnected',
