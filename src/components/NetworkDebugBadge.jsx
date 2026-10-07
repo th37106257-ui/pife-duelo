@@ -2,7 +2,7 @@ import { memo, useEffect, useState } from 'react';
 import { getGameNetworkDebug } from '../services/socket.js';
 
 function isNetworkDebugEnabled() {
-  if (typeof window === 'undefined') return false;
+  if (typeof window === 'undefined' || !import.meta.env.DEV) return false;
   const params = new URLSearchParams(window.location.search);
   return params.get('debug') === 'network' || params.get('networkDebug') === '1';
 }
