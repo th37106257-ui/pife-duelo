@@ -14,8 +14,6 @@ import {
 } from '../services/adminApi.js';
 import { formatMoney } from '../shared/economy.js';
 
-const ADMIN_PASSWORD_KEY = 'pifeDuelo.adminPassword';
-
 function formatDate(value) {
   if (!value) return '-';
   return new Intl.DateTimeFormat('pt-BR', {
@@ -55,8 +53,8 @@ function getShortId(id = '') {
 }
 
 export default function AdminPanel() {
-  const [password, setPassword] = useState(() => sessionStorage.getItem(ADMIN_PASSWORD_KEY) || '');
-  const [isAuthorized, setIsAuthorized] = useState(Boolean(sessionStorage.getItem(ADMIN_PASSWORD_KEY)));
+  const [password, setPassword] = useState('');
+  const [isAuthorized, setIsAuthorized] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [selectedAudit, setSelectedAudit] = useState(null);
@@ -75,7 +73,6 @@ export default function AdminPanel() {
       setErrorMessage(error.message || 'Nao foi possivel carregar o admin.');
       if (String(error.message).includes('unauthorized')) {
         setIsAuthorized(false);
-        sessionStorage.removeItem(ADMIN_PASSWORD_KEY);
       }
     } finally {
       setIsLoading(false);
@@ -129,7 +126,6 @@ export default function AdminPanel() {
     setErrorMessage('');
     try {
       await loginAdmin(password);
-      sessionStorage.setItem(ADMIN_PASSWORD_KEY, password);
       setIsAuthorized(true);
     } catch (error) {
       setErrorMessage('Senha admin incorreta.');

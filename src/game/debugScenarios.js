@@ -321,7 +321,7 @@ export function buildDebugGame(scenarioKey) {
 }
 
 export function readDebugScenarioKey() {
-  if (typeof window === 'undefined') return null;
+  if (typeof window === 'undefined' || import.meta.env?.PROD) return null;
 
   const params = new URLSearchParams(window.location.search);
   const directKey = params.get('audit') || params.get('debug');

@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +42,7 @@ import {
   recordClientError,
 } from './observabilityStore.js';
 import { createRateLimiter } from './security/rateLimiter.js';
+import { applySecurityHeaders, buildHtmlContentSecurityPolicy, injectScriptNonce } from './security/httpHeaders.js';
 import { getHttpClientIp } from './socket/clientIp.js';
 
 const app = express();
@@ -380,7 +381,10 @@ app.use(express.json({
   },
 }));
 app.use((request, response, next) => {
-  response.set('Referrer-Policy', 'no-referrer');
+  applySecurityHeaders(response, {
+    production: config.NODE_ENV === 'production',
+    sensitive: request.path === '/admin' || request.path.startsWith('/api/admin/'),
+  });
   next();
 });
 
@@ -1488,19 +1492,19 @@ if (existsSync(distPath)) {
     maxAge: config.NODE_ENV === 'production' ? '1h' : 0,
   }));
 
-  const renderClientHtml = () => {
+  const renderClientHtml = (nonce) => {
     const html = readFileSync(indexPath, 'utf8');
     const scriptMatch = html.match(/\s*<script type="module"[^>]*src="([^"]+)"[^>]*><\/script>/);
-    if (!scriptMatch) return html;
-
-    const scriptSrc = scriptMatch[1];
-    return html
-      .replace(scriptMatch[0], '')
-      .replace(/\s+crossorigin/g, '')
-      .replace(
-        '</body>',
-        `    <script defer src="${scriptSrc}"></script>\n  </body>`,
-      );
+    const rendered = !scriptMatch
+      ? html
+      : html
+        .replace(scriptMatch[0], '')
+        .replace(/\s+crossorigin/g, '')
+        .replace(
+          '</body>',
+          `    <script defer src="${scriptMatch[1]}"></script>\n  </body>`,
+        );
+    return injectScriptNonce(rendered, nonce);
   };
 
   app.get('*', (request, response, next) => {
@@ -1513,10 +1517,12 @@ if (existsSync(distPath)) {
       return;
     }
 
+    const nonce = randomBytes(18).toString('base64url');
     response
       .type('html')
       .set('Cache-Control', 'no-store')
-      .send(renderClientHtml());
+      .set('Content-Security-Policy', buildHtmlContentSecurityPolicy(nonce))
+      .send(renderClientHtml(nonce));
   });
 }
 
