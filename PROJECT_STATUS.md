@@ -73,6 +73,15 @@ Este arquivo é a fonte única de verdade operacional do projeto. Antes de suger
 
 ### Segurança e continuidade
 - Safe Entry.
+- Hardening de frontend/navegador (rodada 1) concluído:
+  - CSP com nonce por resposta HTML;
+  - headers defensivos (nosniff, frame deny, permissions policy e HSTS em produção);
+  - source maps desativados explicitamente no build;
+  - superfícies de debug/auditoria desativadas em produção;
+  - Socket.IO cru não é mais exposto em `window`;
+  - tokens removidos de URLs registradas em falhas de startup;
+  - senha admin não é persistida em Web Storage;
+  - testes de regressão de browser hardening adicionados ao CI.
 - Proteção de links/tokens.
 - Multi-aba/acesso antigo tratado.
 - Logs e observabilidade.
@@ -116,11 +125,11 @@ Os itens abaixo já foram feitos e só devem ser reabertos se houver evidência 
 
 ## Pendências reais / próximas frentes
 Priorize somente itens que ainda não constam como concluídos acima. Hoje as frentes mais prováveis são:
-1. hardening do frontend/navegador e revisão de exposição pública;
-2. teste de carga/concorrência em escala maior, além dos testes funcionais já existentes;
-3. melhorias de auditoria/admin e relatórios operacionais;
-4. acompanhamento de estabilidade do beta com usuários reais;
-5. revisão controlada de dependências/vulnerabilidades sem `npm audit fix --force`;
+1. teste de carga/concorrência em escala maior, além dos testes funcionais já existentes;
+2. melhorias de auditoria/admin e relatórios operacionais;
+3. acompanhamento de estabilidade do beta com usuários reais;
+4. revisão controlada de dependências/vulnerabilidades sem `npm audit fix --force`;
+5. hardening adicional apenas se nova auditoria encontrar evidência concreta de risco;
 6. futuras decisões de produto: ranking, histórico do jogador, modo 4 jogadores, Arena/Bomberman;
 7. financeiro real apenas quando autorizado e operacionalmente viável.
 
