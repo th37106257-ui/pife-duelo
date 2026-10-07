@@ -95,12 +95,19 @@ async function waitForHealth() {
       const response = await fetch(`${baseUrl}/health`);
       if (response.ok) {
         const health = await response.json();
-        assert.equal(health.payments.enabled, false);
-        assert.equal(health.payments.gateEnabled, false);
-        assert.equal(health.whatsapp.safeEntryEnabled, true);
+        assert.equal(health.ok, true);
+        const statusResponse = await fetch(`${baseUrl}/api/status`, {
+          headers: { 'x-admin-password': 'entry-gate-test' },
+        });
+        assert.equal(statusResponse.ok, true);
+        const status = await statusResponse.json();
+        assert.equal(status.financialWallet.enabled, false);
+        assert.equal(status.demoCreditsEnabled, false);
         return;
       }
-    } catch {}
+    } catch (error) {
+      if (error?.name === 'AssertionError') throw error;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Servidor de teste nao iniciou (exit=${server.exitCode}; ${serverError.replace(/postgres(?:ql)?:\/\/\S+/gi, '[database-url-redacted]')}).`);
