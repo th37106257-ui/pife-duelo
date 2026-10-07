@@ -11,7 +11,7 @@ export default function App() {
   }, [])
 
   const params = new URLSearchParams(window.location.search)
-  if (params.get('socketTest') === '1') {
+  if (import.meta.env.DEV && params.get('socketTest') === '1') {
     return <ConnectionTest />
   }
   if (window.location.pathname === '/admin') {
