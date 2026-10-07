@@ -20,12 +20,15 @@ import {
   demoCreditsInitialGrant,
   demoCreditsInsufficient,
   friendlyActionError,
+  firstMatchTablesMenu,
   howItWorksMenu,
   invalidCommand,
   mainMenu,
   matchFinished as matchFinishedMessage,
   matchFound as matchFoundMessage,
   matchLinkReady as matchLinkReadyMessage,
+  newPlayerHowItWorks,
+  newPlayerWelcome,
   noActiveQueue as noActiveQueueMessage,
   otherQueue as otherQueueMessage,
   paidEntryActive as paidEntryActiveMessage,
@@ -1616,6 +1619,33 @@ export class WhatsAppPaymentBot {
   async handleMenuCommand(incoming, { replyTo, originIp }) {
     const context = this.getPlayerContext(incoming.phone);
     if ([WHATSAPP_PLAYER_STATES.IDLE, WHATSAPP_PLAYER_STATES.MATCH_FINISHED].includes(context.state)) {
+      if (this.demoCreditsService?.isEnabled?.()) {
+        try {
+          const balance = await this.demoCreditsService.getBalance(incoming.phone);
+          if (balance.initialGrantApplied) {
+            this.setConversationState(incoming.phone, 'new_player_onboarding');
+            await this.sendPanel(
+              replyTo,
+              incoming.phone,
+              'NEW_PLAYER_WELCOME',
+              newPlayerWelcome({ credits: this.demoCreditsService.startingBalance }),
+            );
+            return {
+              type: 'whatsapp_new_player_welcome',
+              decision: 'reply_sent',
+              reason: 'first_demo_account_created',
+              state: 'new_player_onboarding',
+              originIp,
+            };
+          }
+        } catch (error) {
+          this.logWarn('WHATSAPP_NEW_PLAYER_ONBOARDING_SKIPPED', {
+            playerId: maskPhone(incoming.phone),
+            reason: error?.message || 'demo_balance_unavailable',
+          });
+        }
+      }
+
       this.setConversationState(incoming.phone, 'idle');
       await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
       return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'menu_command', state: 'idle', originIp };
@@ -2064,6 +2094,89 @@ export class WhatsAppPaymentBot {
         idempotencyKey: incoming.messageId ? `whatsapp:${incoming.messageId}` : null,
       });
     }
+
+    if (currentState.state === 'new_player_onboarding') {
+      if (command === '1') {
+        this.setConversationState(incoming.phone, 'choosing_table');
+        const balance = await this.demoCreditsService.getBalance(incoming.phone);
+        await this.sendPanel(
+          replyTo,
+          incoming.phone,
+          'FIRST_MATCH_TABLES',
+          firstMatchTablesMenu({ demoBalance: balance.availableBalance }),
+        );
+        return {
+          type: 'whatsapp_first_match_tables_sent',
+          decision: 'reply_sent',
+          reason: 'new_player_started_first_match',
+          state: 'choosing_table',
+          originIp,
+        };
+      }
+      if (command === '2') {
+        this.setConversationState(incoming.phone, 'new_player_how_it_works');
+        await this.sendPanel(replyTo, incoming.phone, 'NEW_PLAYER_HOW_IT_WORKS', newPlayerHowItWorks());
+        return {
+          type: 'whatsapp_new_player_how_it_works',
+          decision: 'reply_sent',
+          reason: 'new_player_requested_explanation',
+          state: 'new_player_how_it_works',
+          originIp,
+        };
+      }
+      if (command === 'menu' || command === '0' || command === 'voltar') {
+        this.setConversationState(incoming.phone, 'idle');
+        await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
+        return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'onboarding_skipped', state: 'idle', originIp };
+      }
+      await this.sendPanel(
+        replyTo,
+        incoming.phone,
+        'NEW_PLAYER_WELCOME',
+        newPlayerWelcome({ credits: this.demoCreditsService.startingBalance }),
+      );
+      return {
+        type: 'whatsapp_new_player_welcome',
+        decision: 'reply_sent',
+        reason: 'onboarding_option_invalid',
+        state: 'new_player_onboarding',
+        originIp,
+      };
+    }
+
+    if (currentState.state === 'new_player_how_it_works') {
+      if (command === '1') {
+        this.setConversationState(incoming.phone, 'choosing_table');
+        const balance = await this.demoCreditsService.getBalance(incoming.phone);
+        await this.sendPanel(
+          replyTo,
+          incoming.phone,
+          'FIRST_MATCH_TABLES',
+          firstMatchTablesMenu({ demoBalance: balance.availableBalance }),
+        );
+        return {
+          type: 'whatsapp_first_match_tables_sent',
+          decision: 'reply_sent',
+          reason: 'new_player_explanation_completed',
+          state: 'choosing_table',
+          originIp,
+        };
+      }
+      if (command === '0' || command === 'voltar' || command === 'menu') {
+        this.setConversationState(incoming.phone, 'idle');
+        await this.sendPanel(replyTo, incoming.phone, 'MAIN_MENU', this.safeMenuText());
+        return { type: 'whatsapp_menu_sent', decision: 'reply_sent', reason: 'onboarding_completed_to_menu', state: 'idle', originIp };
+      }
+      await this.sendPanel(replyTo, incoming.phone, 'NEW_PLAYER_HOW_IT_WORKS', newPlayerHowItWorks());
+      return {
+        type: 'whatsapp_new_player_how_it_works',
+        decision: 'reply_sent',
+        reason: 'onboarding_explanation_option_invalid',
+        state: 'new_player_how_it_works',
+        originIp,
+      };
+    }
+
     try {
       const financialResult = await this.handleFinancialCommand(incoming, { replyTo, command, originIp });
       if (financialResult) return financialResult;
