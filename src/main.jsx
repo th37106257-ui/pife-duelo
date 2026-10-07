@@ -6,11 +6,19 @@ import './styles/index.css';
 import './styles/gameFeel.css';
 import { installClientErrorReporting, reportClientError } from './services/errorReporter.js';
 
+function getSanitizedStartupRoute() {
+  const url = new URL(window.location.href);
+  ['entry', 'access', 'entryToken', 'entrySessionKey', 'sessionKey', 'paymentToken'].forEach((key) => {
+    url.searchParams.delete(key);
+  });
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 function getStartupFailurePayload(error, extra = {}) {
   return {
     message: error?.message || String(error || 'Erro inesperado ao carregar o jogo.'),
     stack: error?.stack || null,
-    route: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    route: getSanitizedStartupRoute(),
     buildVersion: import.meta.env.VITE_APP_VERSION || import.meta.env.VITE_COMMIT_SHA || 'unknown',
     ...extra,
   };
