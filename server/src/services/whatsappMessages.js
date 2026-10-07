@@ -56,6 +56,56 @@ export function howItWorksMenu() {
     '3. Abra seu acesso. A partida começa com os dois jogadores.', '',
     'Digite *jogar* para começar ou *teste* para treinar.', '0 — Voltar'].join('\n');
 }
+export function newPlayerWelcome({ credits = 100 } = {}) {
+  return [
+    '🎴 *BEM-VINDO AO PIFE DUELO*',
+    '',
+    '⚔️ *Um contra um. Nove cartas. Um vencedor.*',
+    'Monte *3 combinações* e bata antes do adversário.',
+    '',
+    `🎁 Para começar, você recebeu *${Number(credits)} Créditos de Teste*.`,
+    '',
+    '1️⃣ *Jogar minha primeira partida*',
+    '2️⃣ Ver como funciona',
+    '',
+    '_Créditos de Teste são fictícios e não possuem valor em dinheiro._',
+  ].join('\n');
+}
+
+export function newPlayerHowItWorks() {
+  return [
+    '📖 *PIFE EM 20 SEGUNDOS*',
+    '',
+    '1. Você começa com *9 cartas*.',
+    '2. Forme *3 combinações válidas*.',
+    '3. No seu turno, compre uma carta.',
+    '4. Se sua mão estiver pronta, use *BATER* antes de descartar.',
+    '5. Quem bater primeiro vence.',
+    '',
+    '1️⃣ *Escolher minha primeira mesa*',
+    '0️⃣ Voltar ao menu',
+  ].join('\n');
+}
+
+export function firstMatchTablesMenu({ demoBalance = 0 } = {}) {
+  return [
+    '🔥 *ESCOLHA SUA PRIMEIRA MESA*',
+    '',
+    `🧪 Seu saldo: *${Number(demoBalance)} Créditos de Teste*`,
+    '',
+    '⭐ *Recomendada para começar*',
+    '1️⃣ *Mesa 1 — 2 Créditos de Teste*',
+    '',
+    '2️⃣ Mesa 2 — 5 Créditos de Teste',
+    '3️⃣ Mesa 3 — 10 Créditos de Teste',
+    '4️⃣ Mesa 4 — 20 Créditos de Teste',
+    '',
+    'Escolha *1, 2, 3 ou 4*.',
+    '',
+    '_Os Créditos de Teste são fictícios e não possuem valor em dinheiro._',
+  ].join('\n');
+}
+
 export function tablesMenu({ paymentsEnabled = false, demoCreditsEnabled = false, demoBalance = null } = {}) {
   if (demoCreditsEnabled) {
     return [
