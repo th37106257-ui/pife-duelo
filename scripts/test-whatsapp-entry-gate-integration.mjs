@@ -173,12 +173,10 @@ try {
   const firstQueued = await joinQueue(first.socket, 5, 'Entrada A');
   assert.equal(firstQueued.ok, true);
 
-  const duplicate = await connectClient(firstToken);
-  const duplicateQueue = await joinQueue(duplicate.socket, 5, 'Duplicado');
-  assert.equal(duplicateQueue.ok, false);
-  assert.equal(duplicateQueue.reason, 'ENTRY_ACCESS_RESERVED');
-  assert.equal(duplicateQueue.message, 'Você já possui uma sessão ativa nesta partida/fila.');
-  duplicate.socket.close();
+  // The original one-time link is already claimed by the first socket.
+  // A second use must fail at the authorization boundary instead of opening
+  // another socket and waiting for joinQueue to reject it.
+  await expectConnectionDenied(firstToken);
 
   const second = await connectClient(secondToken);
   const firstStarted = once(first.socket, 'matchStarted');
