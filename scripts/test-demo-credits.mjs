@@ -590,8 +590,11 @@ const bot = new WhatsAppPaymentBot({
     },
   },
 });
+assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], 'menu'))).type, 'whatsapp_new_player_welcome');
+assert.match(sentMessages.at(-1).text, /BEM-VINDO AO PIFE DUELO/i);
+assert.match(sentMessages.at(-1).text, /Créditos de Teste/i);
 assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], 'menu'))).type, 'whatsapp_menu_sent');
-assert.doesNotMatch(sentMessages.at(-1).text, /Créditos de Teste/i);
+assert.doesNotMatch(sentMessages.at(-1).text, /BEM-VINDO AO PIFE DUELO/i);
 assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], '6'))).type, 'demo_credits_balance_sent');
 assert.match(sentMessages.at(-1).text, /MEUS CRÉDITOS DE TESTE/i);
 assert.equal((await bot.handleConnectivityWebhook(demoWebhook(phones[1], '1'))).type, 'demo_credits_history_sent');
