@@ -6,26 +6,39 @@ import { join } from 'node:path';
 import { io } from 'socket.io-client';
 import { WhatsAppEntryStore } from '../server/src/entries/WhatsAppEntryStore.js';
 import { WhatsAppEntryService } from '../server/src/entries/WhatsAppEntryService.js';
+import { PostgresWhatsAppEntryAccessRepository } from '../server/src/entries/PostgresWhatsAppEntryAccessRepository.js';
 
 const port = 3201;
 const baseUrl = `http://127.0.0.1:${port}`;
+const databaseUrl = process.env.PIFE_SAFE_ENTRY_TEST_DATABASE_URL;
+if (!databaseUrl) throw new Error('PIFE_SAFE_ENTRY_TEST_DATABASE_URL_REQUIRED');
+const database = new URL(databaseUrl);
+if (!['127.0.0.1', 'localhost'].includes(database.hostname)
+  || database.pathname !== '/pife_safe_entry_test' || database.username !== 'pife_test') {
+  throw new Error('SAFE_ENTRY_INTEGRATION_TEST_REQUIRES_ISOLATED_LOCAL_POSTGRES');
+}
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'pife-whatsapp-entry-gate-'));
 const entryStorePath = join(temporaryDirectory, 'entries.json');
 const accessSecret = 'integration-whatsapp-entry-secret';
 const seedStore = new WhatsAppEntryStore({ filePath: entryStorePath });
+const seedRepository = new PostgresWhatsAppEntryAccessRepository({ connectionString: databaseUrl });
+await seedRepository.initialize();
+await seedRepository.pool.query('TRUNCATE TABLE whatsapp_safe_entries');
 const seedService = new WhatsAppEntryService({
   store: seedStore,
   accessSecret,
   publicGameUrl: baseUrl,
+  sharedAccessRepository: seedRepository,
+  requireSharedAccessRepository: true,
 });
 
-function createApprovedEntry(phone) {
+async function createApprovedEntry(phone) {
   const entry = seedService.createEntry({ phone, selectedTable: 5, source: 'integration-test' });
   return seedService.approveEntry({ entryId: entry.entryId, actor: 'integration-admin', source: 'integration-test' });
 }
 
-const firstApproval = createApprovedEntry('5511888880000');
-const secondApproval = createApprovedEntry('5511777770000');
+const firstApproval = await createApprovedEntry('5511888880000');
+const secondApproval = await createApprovedEntry('5511777770000');
 const firstToken = new URL(firstApproval.accessLink).searchParams.get('entry');
 const secondToken = new URL(secondApproval.accessLink).searchParams.get('entry');
 
@@ -33,8 +46,15 @@ const server = spawn(process.execPath, ['server/src/index.js'], {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    DATABASE_URL: databaseUrl,
+    FINANCIAL_MODE: 'sandbox',
+    FINANCIAL_WALLET_ENABLED: 'false',
+    PIX_DEPOSITS_ENABLED: 'false',
+    REAL_MONEY_GAMES_ENABLED: 'false',
+    WITHDRAWALS_ENABLED: 'false',
+    AUTO_WITHDRAWALS_ENABLED: 'false',
     PORT: String(port),
-    NODE_ENV: 'production',
+    NODE_ENV: 'test',
     ADMIN_PASSWORD: 'entry-gate-test',
     CLIENT_URL: baseUrl,
     FRONTEND_URL: baseUrl,
@@ -199,5 +219,6 @@ try {
   console.log('Entrada WhatsApp: token seguro, duplicidade bloqueada, partida iniciada e jogadores liberados apos finalizacao.');
 } finally {
   server.kill();
+  await seedRepository.close();
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

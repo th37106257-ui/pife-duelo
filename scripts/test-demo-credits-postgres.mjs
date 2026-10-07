@@ -86,6 +86,68 @@ try {
     await restartRepository.close();
   }
 
+  const rollbackParticipants = [
+    { playerId: '5511990001004', entryId: 'ATOMIC-D1', matchPlayerId: 'P-D' },
+    { playerId: '5511990001005', entryId: 'ATOMIC-E1', matchPlayerId: 'P-E' },
+  ];
+  for (const participant of rollbackParticipants) {
+    await serviceA.reserveCredits(participant.playerId, 5, {
+      publicReference: `DEMO-${participant.entryId}`, entryId: participant.entryId, tableId: 5,
+    });
+  }
+  const originalPersistState = repositoryA.persistState.bind(repositoryA);
+  repositoryA.persistState = async (...args) => {
+    await originalPersistState(...args);
+    throw new Error('injected-before-commit');
+  };
+  try {
+    await assert.rejects(serviceA.consumeMatchReservations(rollbackParticipants, {
+      matchId: 'MATCH-ROLLBACK', tableId: 5,
+    }), /injected-before-commit/);
+  } finally {
+    repositoryA.persistState = originalPersistState;
+  }
+  for (const participant of rollbackParticipants) {
+    assert.equal((await serviceB.getBalance(participant.playerId)).reservedBalance, 5);
+  }
+  assert.equal((await serviceB.consumeMatchReservations(rollbackParticipants, {
+    matchId: 'MATCH-ROLLBACK', tableId: 5,
+  })).operations.length, 2);
+
+  const racingParticipants = [
+    { playerId: '5511990001006', entryId: 'ATOMIC-F1', matchPlayerId: 'P-F' },
+    { playerId: '5511990001007', entryId: 'ATOMIC-G1', matchPlayerId: 'P-G' },
+  ];
+  for (const participant of racingParticipants) {
+    await serviceA.reserveCredits(participant.playerId, 5, {
+      publicReference: `DEMO-${participant.entryId}`, entryId: participant.entryId, tableId: 5,
+    });
+  }
+  const cancellation = serviceA.releaseReservation(racingParticipants[0].playerId, {
+    publicReference: 'DEMO-ATOMIC-F1', entryId: 'ATOMIC-F1', tableId: 5,
+  }, 'pre_start_cancelled');
+  const matchStart = serviceB.consumeMatchReservations(racingParticipants, {
+    matchId: 'MATCH-RACE', tableId: 5,
+  });
+  const [releaseResult, startResult] = await Promise.allSettled([cancellation, matchStart]);
+  if (releaseResult.status === 'fulfilled' && releaseResult.value.released) {
+    assert.equal(startResult.status, 'rejected');
+    await serviceA.releaseReservation(racingParticipants[1].playerId, {
+      publicReference: 'DEMO-ATOMIC-G1', entryId: 'ATOMIC-G1', tableId: 5,
+    }, 'pre_start_cancelled');
+  } else {
+    assert.equal(startResult.status, 'fulfilled');
+    assert.equal(startResult.value.operations.length, 2);
+    await serviceA.settleMatchResult({
+      matchId: 'MATCH-RACE', tableId: 5, reason: 'SYSTEM_ABORT', participants: racingParticipants,
+    });
+  }
+  for (const participant of racingParticipants) {
+    const balance = await serviceB.getBalance(participant.playerId);
+    assert.equal(balance.availableBalance, 5);
+    assert.equal(balance.reservedBalance, 0);
+  }
+
   const unavailableRepository = new PostgresDemoCreditsRepository({
     pool: { connect: async () => { throw new Error('database unavailable'); } },
   });
