@@ -317,7 +317,7 @@ export function createPostMatchFlow({
             entryId: entry.entryId,
             matchPlayerId: entry.playerId,
           }));
-        const settlement = demoCreditsService.settleMatchResult({
+        const settlement = await demoCreditsService.settleMatchResult({
           matchId,
           tableId: report.table,
           winnerMatchPlayerId: report.winnerId,
@@ -329,10 +329,10 @@ export function createPostMatchFlow({
           platformFeeAmount: settlement.platformFeeAmount ?? 0,
           winnerPlayerId: settlement.winnerPlayerId ?? null,
           compensatedPlayers: settlement.compensated?.length ?? 0,
-          balances: participants.map((participant) => ({
+          balances: await Promise.all(participants.map(async (participant) => ({
             matchPlayerId: participant.matchPlayerId,
-            balance: demoCreditsService.getBalance(participant.playerId).availableBalance,
-          })),
+            balance: (await demoCreditsService.getBalance(participant.playerId)).availableBalance,
+          }))),
         };
       } catch (error) {
         logError('POST_MATCH_CLEANUP_ERROR', {

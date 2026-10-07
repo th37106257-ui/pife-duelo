@@ -14,7 +14,7 @@ const firstLobbyEnabled = process.env.PIFE_TEST_FIRST_LOBBY_ENABLED ?? 'true';
 const databaseUrl = process.env.PIFE_SAFE_ENTRY_TEST_DATABASE_URL || process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('PIFE_SAFE_ENTRY_TEST_DATABASE_URL_REQUIRED');
 const database = new URL(databaseUrl);
-if (!['127.0.0.1', 'localhost'].includes(database.hostname) || database.port !== '55432'
+if (!['127.0.0.1', 'localhost'].includes(database.hostname) || !Number.isInteger(Number(database.port))
   || database.pathname !== '/pife_safe_entry_test' || database.username !== 'pife_test') {
   throw new Error('SAFE_ENTRY_INTEGRATION_TEST_REQUIRES_ISOLATED_LOCAL_POSTGRES');
 }

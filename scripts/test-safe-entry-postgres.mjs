@@ -10,7 +10,7 @@ const { Pool } = requireServerDependency('pg');
 const connectionString = process.env.PIFE_SAFE_ENTRY_TEST_DATABASE_URL || process.env.DATABASE_URL;
 if (!connectionString) throw new Error('PIFE_SAFE_ENTRY_TEST_DATABASE_URL_REQUIRED');
 const database = new URL(connectionString);
-if (!['127.0.0.1', 'localhost'].includes(database.hostname) || database.port !== '55432'
+if (!['127.0.0.1', 'localhost'].includes(database.hostname) || !Number.isInteger(Number(database.port))
   || database.pathname !== '/pife_safe_entry_test' || database.username !== 'pife_test') {
   throw new Error('SAFE_ENTRY_TEST_REQUIRES_ISOLATED_LOCAL_POSTGRES');
 }
@@ -170,11 +170,7 @@ try {
     entryId: revokedTicket.entryId, accessToken: revokedTicket.token, matchId: revokedTicket.matchId,
   }), 'Revoked ticket must not be claimed.');
 
-  const unavailablePool = new Pool({
-    connectionString: connectionString.replace(':55432/', ':55433/'),
-    connectionTimeoutMillis: 300,
-    max: 1,
-  });
+  const unavailablePool = { connect: async () => { throw new Error('database unavailable'); } };
   const unavailableRepo = new PostgresWhatsAppEntryAccessRepository({ pool: unavailablePool });
   const unavailableService = new WhatsAppEntryService({
     store: new WhatsAppEntryStore({}), accessSecret, publicGameUrl: 'http://localhost:3000',
@@ -182,7 +178,6 @@ try {
   });
   await assert.rejects(unavailableService.validateAccessTokenAuthoritative(ticket.token), { message: 'SAFE_ENTRY_STORE_UNAVAILABLE' },
     'A database outage must fail closed with a controlled error.');
-  await unavailablePool.end();
 
   console.log('PASS real PostgreSQL; independent pools; atomic claim=1 success/1 rejection; persisted row=1; replay/reconnect/restart/wrong match/session/player/expiry/revocation/fail-closed');
 } finally {

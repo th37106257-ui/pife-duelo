@@ -764,17 +764,17 @@ export class WhatsAppPaymentBot {
     return testModeMessage(testModeLink);
   }
 
-  safeTablesText(playerPhone = null) {
+  async safeTablesText(playerPhone = null) {
     const demoCreditsEnabled = Boolean(this.demoCreditsService?.isEnabled?.());
     const demoBalance = demoCreditsEnabled && playerPhone
-      ? this.demoCreditsService.getBalance(playerPhone).availableBalance
+      ? (await this.demoCreditsService.getBalance(playerPhone)).availableBalance
       : null;
     return tablesMenu({ paymentsEnabled: this.paymentsEnabled, demoCreditsEnabled, demoBalance });
   }
 
   async prepareDemoCreditsAccount(replyTo, playerPhone) {
     if (!this.demoCreditsService?.isEnabled?.()) return null;
-    const balance = this.demoCreditsService.getBalance(playerPhone);
+    const balance = await this.demoCreditsService.getBalance(playerPhone);
     if (balance.initialGrantApplied) {
       await this.sendPermanent(
         replyTo,
@@ -800,7 +800,7 @@ export class WhatsAppPaymentBot {
   async handleDemoCreditsSection(incoming, { replyTo, command, originIp }) {
     if (!this.demoCreditsService?.isEnabled?.()) return this.handleDemoCreditsRequest(incoming, { replyTo, originIp });
     if (command === '1') {
-      const events = this.demoCreditsService.getHistory(incoming.phone);
+      const events = await this.demoCreditsService.getHistory(incoming.phone);
       await this.sendPanel(replyTo, incoming.phone, 'DEMO_CREDITS_HISTORY', demoCreditsHistory(events));
       return { type: 'demo_credits_history_sent', decision: 'reply_sent', reason: 'history_requested', state: 'demo_credits_menu', originIp };
     }
@@ -1076,7 +1076,7 @@ export class WhatsAppPaymentBot {
     }
 
     if (normalizedText === 'admin demo status' || normalizedText === '/admin demo status') {
-      const status = this.demoCreditsService?.getStatus?.() ?? {
+      const status = await this.demoCreditsService?.getStatus?.() ?? {
         enabled: false,
         persistenceConfigured: false,
         accountCount: 0,
@@ -1106,7 +1106,7 @@ export class WhatsAppPaymentBot {
           : '❌ Número inválido.');
         return { type: 'demo_admin_balance_failed', decision: 'reply_sent', reason: targetPhone ? 'feature_disabled' : 'invalid_phone' };
       }
-      const balance = this.demoCreditsService.getBalance(targetPhone);
+      const balance = await this.demoCreditsService.getBalance(targetPhone);
       await this.send(replyTo, [
         '*🧪 SALDO DE TESTE*',
         `Jogador: ${maskPhone(targetPhone)}`,
@@ -1124,7 +1124,7 @@ export class WhatsAppPaymentBot {
         await this.send(replyTo, !this.demoCreditsService?.isEnabled?.() ? '⚠️ Créditos de Teste estão desligados.' : '❌ Número inválido.');
         return { type: 'demo_admin_history_failed', decision: 'reply_sent', reason: targetPhone ? 'feature_disabled' : 'invalid_phone' };
       }
-      await this.send(replyTo, demoCreditsHistory(this.demoCreditsService.getHistory(targetPhone)));
+      await this.send(replyTo, demoCreditsHistory(await this.demoCreditsService.getHistory(targetPhone)));
       return { type: 'demo_admin_history', decision: 'reply_sent', reason: 'demo_history_ok' };
     }
 
@@ -1132,7 +1132,7 @@ export class WhatsAppPaymentBot {
     if (demoGrantMatch) {
       const targetPhone = normalizePhone(demoGrantMatch[1]);
       try {
-        const result = this.demoCreditsService?.adminGrantCredits?.(
+        const result = await this.demoCreditsService?.adminGrantCredits?.(
           targetPhone,
           Number(demoGrantMatch[2]),
           sanitizeText(demoGrantMatch[3]),
@@ -1158,10 +1158,11 @@ export class WhatsAppPaymentBot {
     if (demoResetMatch) {
       const targetPhone = normalizePhone(demoResetMatch[1]);
       try {
-        const result = this.demoCreditsService?.adminResetDemoAccount?.(
+        const result = await this.demoCreditsService?.adminResetDemoAccount?.(
           targetPhone,
           sanitizeText(demoResetMatch[2]),
           senderPhone,
+          idempotencyKey,
         );
         if (!result) throw new Error('DEMO_CREDITS_DISABLED');
         await this.send(replyTo, [
@@ -1639,7 +1640,7 @@ export class WhatsAppPaymentBot {
       normalizedPhone,
       normalizedPhone,
       'FINANCIAL_DEPOSIT_CONFIRMED_TABLES',
-      this.safeTablesText(normalizedPhone),
+      await this.safeTablesText(normalizedPhone),
     );
     this.logInfo('FINANCIAL_DEPOSIT_RETURNED_TO_TABLES', {
       playerPhone: maskPhone(normalizedPhone),
@@ -2438,7 +2439,7 @@ export class WhatsAppPaymentBot {
       }
       this.setConversationState(incoming.phone, 'choosing_table');
       await this.prepareDemoCreditsAccount(replyTo, incoming.phone);
-      await this.sendPanel(replyTo, incoming.phone, 'TABLE_SELECTION', this.safeTablesText(incoming.phone));
+      await this.sendPanel(replyTo, incoming.phone, 'TABLE_SELECTION', await this.safeTablesText(incoming.phone));
       return { type: 'whatsapp_tables_sent', decision: 'reply_sent', reason: 'tables_requested', state: 'choosing_table', originIp };
     }
 

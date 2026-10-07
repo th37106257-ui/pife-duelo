@@ -114,12 +114,12 @@ export class MatchQueue {
     return economy ? economy.tableValue : null;
   }
 
-  releaseDemoReservation(entry, reason) {
+  async releaseDemoReservation(entry, reason) {
     if (!this.demoCreditsService?.isEnabled?.() || !entry?.entryId) return null;
     const playerId = entry.playerPhone || entry.phone || entry.notifyTo;
     if (!playerId) return null;
     try {
-      return this.demoCreditsService.releaseReservation(playerId, {
+      return await this.demoCreditsService.releaseReservation(playerId, {
         publicReference: `DEMO-ENTRY-${entry.entryId}`,
         entryId: entry.entryId,
         matchId: entry.whatsappMatchId || entry.previousMatchId || null,
@@ -293,7 +293,7 @@ export class MatchQueue {
 
     if (!result.alreadyProcessed) {
       await Promise.all((result.participants ?? []).map(async (entry) => {
-        this.releaseDemoReservation(entry, reason);
+        await this.releaseDemoReservation(entry, reason);
         await this.releaseFinancialReservation(entry, reason);
       }));
     }
@@ -584,7 +584,7 @@ export class MatchQueue {
           tableValue: entry.tableValue,
           entryId: entry.entryId,
         });
-        this.releaseDemoReservation(entry, reason);
+        await this.releaseDemoReservation(entry, reason);
         await this.releaseFinancialReservation(entry, reason);
       }
     }
@@ -728,7 +728,7 @@ export class MatchQueue {
             throw error;
           }
         }
-        this.releaseDemoReservation(entry, reason);
+        await this.releaseDemoReservation(entry, reason);
         await this.releaseFinancialReservation(entry, reason);
         this.logInfo('WHATSAPP_QUEUE_LEFT', {
           tableId: queueId,
@@ -1027,7 +1027,7 @@ export class MatchQueue {
     // reserveCredits remains the authoritative, atomic check for races/retries.
     if (this.demoCreditsService?.isEnabled?.()) {
       try {
-        const { availableBalance } = this.demoCreditsService.getBalance(phone);
+        const { availableBalance } = await this.demoCreditsService.getBalance(phone);
         if (availableBalance < tableValue) {
           this.logWarn('ENTRY_BALANCE_CHECK', {
             playerId: maskPhone(phone),
@@ -1087,7 +1087,7 @@ export class MatchQueue {
     let demoReservation = null;
     if (this.demoCreditsService?.isEnabled?.()) {
       try {
-        demoReservation = this.demoCreditsService.reserveCredits(phone, tableValue, {
+        demoReservation = await this.demoCreditsService.reserveCredits(phone, tableValue, {
           publicReference: `DEMO-ENTRY-${approval.entry.entryId}`,
           entryId: approval.entry.entryId,
           tableId: tableValue,
@@ -1135,7 +1135,7 @@ export class MatchQueue {
       // A duplicate reservation belongs to an earlier attempt; a failed retry
       // must not release that attempt's protected entry.
       const release = demoReservation && !demoReservation.duplicate
-        ? this.releaseDemoReservation(queueEntry, 'queue_persistence_failed')
+        ? await this.releaseDemoReservation(queueEntry, 'queue_persistence_failed')
         : null;
       // A failed release must keep its entry for recovery instead of hiding an
       // outstanding reservation behind a cancelled entry.

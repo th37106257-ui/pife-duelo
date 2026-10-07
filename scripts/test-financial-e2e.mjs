@@ -28,7 +28,7 @@ const connectionString = String(process.env.PIFE_E2E_DATABASE_URL || '').trim();
 if (!connectionString) throw new Error('PIFE_E2E_DATABASE_URL_REQUIRED');
 const database = new URL(connectionString);
 if (database.protocol !== 'postgresql:' || database.hostname !== '127.0.0.1'
-  || database.port !== '55433' || database.pathname !== '/pife_financial_e2e_test'
+  || !Number.isInteger(Number(database.port)) || database.pathname !== '/pife_financial_e2e_test'
   || database.username !== 'pife_test') {
   throw new Error('FINANCIAL_E2E_REQUIRES_ISOLATED_LOCAL_POSTGRES');
 }

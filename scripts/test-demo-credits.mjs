@@ -54,6 +54,11 @@ assert.equal(initial.availableBalance, 100);
 assert.equal(initial.initialGrantApplied, true);
 assert.equal(service.getBalance(phones[0]).initialGrantApplied, false);
 assert.equal(service.getHistory(phones[0]).filter((event) => event.type === 'DEMO_INITIAL_GRANT').length, 1);
+const resetOne = service.adminResetDemoAccount(phones[0], 'reset de teste', 'admin', 'MESSAGE-RESET-1');
+const resetRetry = service.adminResetDemoAccount(phones[0], 'reset de teste', 'admin', 'MESSAGE-RESET-1');
+assert.equal(resetRetry.duplicate, true);
+assert.equal(resetRetry.publicReference, resetOne.publicReference);
+assert.equal(service.getHistory(phones[0]).filter((event) => event.type === 'DEMO_ACCOUNT_RESET').length, 1);
 
 // Reserva, duplicidade, bloqueio simultâneo e liberação.
 const referenceOne = { publicReference: 'DEMO-ENTRY-E1', entryId: 'E1', tableId: 5 };
