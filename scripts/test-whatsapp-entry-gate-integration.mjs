@@ -121,9 +121,12 @@ async function connectClient(entryToken = '') {
     auth: entryToken ? { entryToken } : {},
   });
   const connected = once(socket, 'connect');
+  const rejected = once(socket, 'connect_error').then((error) => {
+    throw new Error(`Socket connection rejected: ${error?.data?.code || error?.message || 'unknown'}`);
+  });
   const identity = once(socket, 'connection:success');
   socket.connect();
-  await connected;
+  await Promise.race([connected, rejected]);
   return { socket, connection: await identity };
 }
 
