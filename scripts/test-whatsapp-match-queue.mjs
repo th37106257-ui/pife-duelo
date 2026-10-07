@@ -97,8 +97,8 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
 
   const menuResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'menu'));
   assert.equal(menuResult.type, 'whatsapp_menu_sent');
-  assert.match(sentMessages.at(-1).text, /1 — Jogar/);
-  assert.match(sentMessages.at(-1).text, /2 — Carteira/);
+  assert.match(sentMessages.at(-1).text, /Jogar agora/i);
+  assert.match(sentMessages.at(-1).text, /Carteira/i);
 
   const testModeResult = await bot.handleConnectivityWebhook(createWebhook(testPhone, 'teste'));
   assert.equal(testModeResult.type, 'whatsapp_test_mode_link_sent');

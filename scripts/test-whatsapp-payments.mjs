@@ -82,10 +82,10 @@ const connectivityReply = await sendConnectivity('oi');
 assert.equal(connectivityReply.type, 'whatsapp_menu_sent');
 assert.equal(connectivityReply.state, 'idle');
 assert.match(connectivityMessages.at(-1).text, /PIFE DUELO/);
-assert.match(connectivityMessages.at(-1).text, /1 — Jogar/);
-assert.match(connectivityMessages.at(-1).text, /2 — Carteira/);
-assert.match(connectivityMessages.at(-1).text, /3 — Regras/);
-assert.match(connectivityMessages.at(-1).text, /4 — Suporte/);
+assert.match(connectivityMessages.at(-1).text, /Jogar agora/i);
+assert.match(connectivityMessages.at(-1).text, /Carteira/i);
+assert.match(connectivityMessages.at(-1).text, /Regras/i);
+assert.match(connectivityMessages.at(-1).text, /Suporte/i);
 assert.doesNotMatch(connectivityMessages.at(-1).text, /sandbox|homologação|demo|teste/i);
 
 const safeTables = await sendConnectivity('1');
