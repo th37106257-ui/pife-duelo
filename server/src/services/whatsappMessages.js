@@ -44,9 +44,10 @@ export function mainMenu({ waitingPlayers = null } = {}) {
     'Monte suas combinações e bata antes do adversário.',
     '',
     '1️⃣ *Jogar agora*',
-    '2️⃣ Carteira',
-    '3️⃣ Regras',
-    '4️⃣ Suporte',
+    '2️⃣ *🎮 Jogar grátis*',
+    '3️⃣ Carteira',
+    '4️⃣ Regras',
+    '5️⃣ Suporte',
     '',
     'Digite *1* e encontre um adversário.',
   ].join('\n');
@@ -225,11 +226,11 @@ export function demoCreditsInsufficient({ availableBalance, requiredAmount }) {
 
 export function testModeMessage(testModeLink) {
   return [
-    '🎮 *Treino*',
+    '🎮 *JOGAR GRÁTIS — TREINO*',
     '',
     'Pratique contra o bot sem entrar na fila.',
     '',
-    'O treino não usa sua carteira nem altera seu saldo.',
+    'Jogue sem usar seu saldo e sem prêmio em dinheiro.',
     '',
     'Acesse:',
     testModeLink,

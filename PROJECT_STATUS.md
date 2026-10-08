@@ -1,6 +1,6 @@
 # Pife Duelo — Status Canônico do Projeto
 
-Atualizado em: 2026-10-07
+Atualizado em: 2026-10-08
 
 Este arquivo é a fonte única de verdade operacional do projeto. Antes de sugerir, implementar ou reabrir qualquer etapa, compare a tarefa com este status. Em caso de conflito com README antigo, conversa antiga, comentário ou plano anterior, este arquivo e o código atual em `main` têm prioridade.
 
@@ -28,15 +28,21 @@ Este arquivo é a fonte única de verdade operacional do projeto. Antes de suger
 ### WhatsApp
 - Menu principal atual:
   - Jogar agora
-  - Carteira
-  - Regras
-  - Suporte
+  - Jogar grátis (treino contra o bot, opção 2, disponível com ou sem saldo)
+  - Carteira (opção 3)
+  - Regras (opção 4)
+  - Suporte (opção 5)
 - Indicador de atividade real:
   - fila vazia: Arena aberta
   - 1 jogador: 1 jogador aguardando adversário
   - 2+: contagem real
 - Navegação por estado.
 - Regras, suporte, atualizações, status, link e treino.
+- Jogar grátis acessível diretamente pelo menu principal ou pelo comando `jogar grátis`:
+  - reutiliza o treino existente em `?mode=test`, contra o bot;
+  - não consulta nem altera saldo, não reserva créditos/dinheiro e não entra no matchmaking;
+  - as opções numéricas das mesas, submenus e onboarding mantêm seus significados;
+  - atualizações continuam pelo comando `atualizações`.
 - Retorno pós-partida ao WhatsApp disponível.
 - Onboarding de primeira entrada disponível em produção:
   - aparece apenas na criação inicial da conta de Créditos de Teste;
@@ -143,3 +149,9 @@ Antes de responder “o próximo passo é...”:
 
 ## Observação sobre documentação antiga
 `README.md` contém trechos históricos que não representam integralmente o produto atual, como referências antigas a coringas e protótipo offline. Não usar o README antigo como fonte de verdade de regras/estado sem confrontar este arquivo e o código atual.
+
+## Etapa de 2026-10-08 — Acesso direto ao jogo grátis
+- Implementado acesso independente do saldo no menu principal.
+- Testes de regressão adicionados para saldo zero, saldo positivo, carteira financeira e navegação numérica em regras/suporte.
+- Validação local: testes de WhatsApp até o ponto que exige PostgreSQL, `test:financial-whatsapp`, `test:demo-credits`, build e diff check passaram. A suíte completa com PostgreSQL é validada pelo CI do PR.
+- Próximo passo operacional: confirmar CI e deploy desta alteração; depois acompanhar o uso no beta.

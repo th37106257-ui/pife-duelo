@@ -104,7 +104,7 @@ async function chooseTableWithSender(bot, phone, menuOption, tableOption, replyJ
   assert.equal(testModeResult.type, 'whatsapp_test_mode_link_sent');
   assert.equal(testModeResult.testModeLink, 'https://pife-duelo.example/?mode=test');
   assert.match(sentMessages.at(-1).text, /Treino/i);
-  assert.match(sentMessages.at(-1).text, /não usa sua carteira/i);
+  assert.match(sentMessages.at(-1).text, /sem usar seu saldo e sem prêmio em dinheiro/i);
   assert.match(sentMessages.at(-1).text, /https:\/\/pife-duelo\.example\/\?mode=test/);
   assert.equal(store.listEntries().length, 0);
   assert.equal(matchQueue.getQueueStatus(5).waitingPlayers, 0);
