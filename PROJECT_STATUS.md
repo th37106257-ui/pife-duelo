@@ -6,7 +6,7 @@ Este arquivo é a fonte única de verdade operacional do projeto. Antes de suger
 
 ## Estado atual em produção
 - Serviço principal Railway: online e saudável.
-- Deploy de produção atual inclui o onboarding de primeira entrada no WhatsApp.
+- Deploy de produção atual inclui onboarding e acesso direto a Jogar grátis no menu principal.
 - WhatsApp/Evolution: ativo em produção.
 - Créditos de Teste: persistência PostgreSQL ativa.
 - Dinheiro real, Pix real e saques: não habilitar sem autorização explícita.
@@ -112,6 +112,7 @@ Este arquivo é a fonte única de verdade operacional do projeto. Antes de suger
 - PR #3 — Créditos de Teste atômicos em PostgreSQL e testes de concorrência.
 - PR #4 — menu inicial novo e atividade real da fila.
 - PR #5 — onboarding de primeira entrada no WhatsApp.
+- PR #9 — Jogar grátis no menu principal, disponível com ou sem saldo; CI completo aprovado e deploy Railway SUCCESS.
 
 ## Não tratar como pendência novamente
 Os itens abaixo já foram feitos e só devem ser reabertos se houver evidência de regressão, bug novo ou pedido explícito:
@@ -154,4 +155,7 @@ Antes de responder “o próximo passo é...”:
 - Implementado acesso independente do saldo no menu principal.
 - Testes de regressão adicionados para saldo zero, saldo positivo, carteira financeira e navegação numérica em regras/suporte.
 - Validação local: testes de WhatsApp até o ponto que exige PostgreSQL, `test:financial-whatsapp`, `test:demo-credits`, build e diff check passaram. A suíte completa com PostgreSQL é validada pelo CI do PR.
-- Próximo passo operacional: confirmar CI e deploy desta alteração; depois acompanhar o uso no beta.
+- CI completo aprovado (execução 37826915893), incluindo PostgreSQL, suíte completa, online sync e build.
+- PR #9 integrado em main; commit bfda15d874755646f43e99e5addcce098adf3948.
+- Deploy de código Railway 81aeae84-8a65-4b45-9f36-6dc414f14dad: SUCCESS em 2026-10-08; serviço saudável.
+- Etapa concluída. Próximo passo: acompanhar o uso no beta, sem reabrir esta implementação.
