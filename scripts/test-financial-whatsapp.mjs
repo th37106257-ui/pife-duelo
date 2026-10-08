@@ -55,7 +55,16 @@ function webhook(text, id) {
   };
 }
 
-const walletMenuResult = await bot.handleConnectivityWebhook(webhook('2', 'wallet-menu'), { originIp: 'test' });
+// Free practice must remain available with money in the wallet and no deposit.
+const accountBeforePractice = structuredClone(account);
+const practice = await bot.handleConnectivityWebhook(webhook('2', 'free-with-wallet'), { originIp: 'test' });
+assert.equal(practice.type, 'whatsapp_test_mode_link_sent');
+assert.match(practice.testModeLink, /mode=test/);
+assert.match(sent.at(-1).text, /sem usar seu saldo e sem prêmio em dinheiro/i);
+assert.deepEqual(account, accountBeforePractice);
+assert.equal(deposits.length, 0);
+
+const walletMenuResult = await bot.handleConnectivityWebhook(webhook('3', 'wallet-menu'), { originIp: 'test' });
 assert.equal(walletMenuResult.type, 'financial_menu');
 assert.match(sent.at(-1).text, /Carteira/);
 assert.match(sent.at(-1).text, /Saldo: R\$\s*75,00/);

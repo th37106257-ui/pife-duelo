@@ -36,7 +36,10 @@ function webhook(text) {
   assert.match(menu, /PIFE DUELO/);
   assert.match(menu, /7 jogadores procurando agora/i);
   assert.match(menu, /Jogar agora/i);
-  assert.match(menu, /Carteira/);
+  assert.match(menu, /2️⃣.*Jogar grátis/);
+  assert.match(menu, /3️⃣ Carteira/);
+  assert.match(menu, /4️⃣ Regras/);
+  assert.match(menu, /5️⃣ Suporte/);
   assert.match(menu, /Regras/);
   assert.match(menu, /Suporte/);
   assert.doesNotMatch(menu, /sandbox|homologa..o|demonstra..o|nenhum dinheiro real/i);
@@ -88,7 +91,7 @@ function webhook(text) {
   assert.equal(hello.type, 'whatsapp_menu_sent');
   assert.match(sentMessages.at(-1).text, /PIFE DUELO/);
 
-  const walletUnavailable = await bot.handleConnectivityWebhook(webhook('2'));
+  const walletUnavailable = await bot.handleConnectivityWebhook(webhook('3'));
   assert.equal(walletUnavailable.type, 'financial_unavailable');
   assert.match(sentMessages.at(-1).text, /carteira financeira não está ativada/i);
 
@@ -203,7 +206,7 @@ function webhook(text) {
     },
   });
 
-  const walletResult = await bot.handleConnectivityWebhook(webhook('2'));
+  const walletResult = await bot.handleConnectivityWebhook(webhook('3'));
   assert.equal(walletResult.type, 'demo_credits_balance_sent');
   assert.match(sentMessages.at(-1).text, /Créditos de Teste/i);
   assert.match(sentMessages.at(-1).text, /Disponível:\s*\*100\*/i);
@@ -212,6 +215,41 @@ function webhook(text) {
   const balanceResult = await bot.handleConnectivityWebhook(webhook('saldo'));
   assert.equal(balanceResult.type, 'demo_credits_balance_sent');
   assert.match(sentMessages.at(-1).text, /Disponível:\s*\*100\*/i);
+}
+
+// Main menu practice is independent of demo balance and never enters a queue.
+for (const balance of [0, 100]) {
+  const sent = [];
+  let balanceReads = 0;
+  const bot = new WhatsAppPaymentBot({
+    paymentsEnabled: false,
+    cleanConversationEnabled: false,
+    publicGameUrl: 'https://pife-duelo.example',
+    demoCreditsService: {
+      isEnabled: () => true,
+      getBalance: () => { balanceReads += 1; return { availableBalance: balance, initialGrantApplied: false }; },
+    },
+    matchQueue: {
+      joinQueue: () => { throw new Error('Practice must not enter matchmaking'); },
+      joinFinancialQueue: () => { throw new Error('Practice must not reserve money'); },
+    },
+    evolutionClient: {
+      isConfigured: () => true,
+      sendWhatsAppMessage: async (target, text) => { sent.push(text); return { ok: true }; },
+    },
+  });
+  for (const command of ['2', 'jogar grátis', 'teste']) {
+    const result = await bot.handleConnectivityWebhook(webhook(command));
+    assert.equal(result.type, 'whatsapp_test_mode_link_sent');
+    assert.equal(result.testModeLink, 'https://pife-duelo.example/?mode=test');
+    assert.match(sent.at(-1), /contra o bot sem entrar na fila/i);
+  }
+  assert.equal(balanceReads, 0);
+  assert.equal((await bot.handleConnectivityWebhook(webhook('4'))).type, 'whatsapp_rules_sent');
+  assert.equal((await bot.handleConnectivityWebhook(webhook('2'))).type, 'whatsapp_rules_topic_sent');
+  await bot.handleConnectivityWebhook(webhook('menu'));
+  assert.equal((await bot.handleConnectivityWebhook(webhook('5'))).type, 'whatsapp_support_menu_sent');
+  assert.equal((await bot.handleConnectivityWebhook(webhook('2'))).type, 'whatsapp_support_topic_sent');
 }
 
 console.log('WhatsApp professional bot: conteudo centralizado, submenus e navegacao segura validados.');

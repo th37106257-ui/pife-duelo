@@ -119,7 +119,7 @@ const flagsOff = {
   const phone = '5511888877777';
   const runtime = createRuntime({ cleanConversationEnabled: false });
   assert.equal((await runtime.bot.handleConnectivityWebhook(webhook(phone, 'oi'))).type, 'whatsapp_menu_sent');
-  assert.equal((await runtime.bot.handleConnectivityWebhook(webhook(phone, '5'))).type, 'whatsapp_public_updates_sent');
+  assert.equal((await runtime.bot.handleConnectivityWebhook(webhook(phone, 'atualizações'))).type, 'whatsapp_public_updates_sent');
   assert.match(runtime.sent.at(-1).text, /ATUALIZA..ES DO PIFE DUELO/i);
 
   const available = await runtime.bot.handleConnectivityWebhook(webhook(phone, '1'));
@@ -157,7 +157,7 @@ const flagsOff = {
       clearPlayerState: () => { clearCalls += 1; },
     },
   });
-  const result = await runtime.bot.handleConnectivityWebhook(webhook(phone, '5'));
+  const result = await runtime.bot.handleConnectivityWebhook(webhook(phone, 'atualizações'));
   assert.equal(result.type, 'whatsapp_public_updates_sent');
   assert.equal(runtime.bot.getPlayerContext(phone).state, 'WAITING_FOR_OPPONENT');
   assert.equal(joinCalls, 0);
@@ -187,7 +187,7 @@ const flagsOff = {
   const phone = '5511555544444';
   const runtime = createRuntime({ cleanConversationEnabled: true });
   await runtime.bot.handleConnectivityWebhook(webhook(phone, 'oi'));
-  await runtime.bot.handleConnectivityWebhook(webhook(phone, '5'));
+  await runtime.bot.handleConnectivityWebhook(webhook(phone, 'atualizações'));
   await runtime.bot.handleConnectivityWebhook(webhook(phone, '2'));
   assert.equal(runtime.sent.length, 3);
   assert.equal(runtime.edited.length, 0);

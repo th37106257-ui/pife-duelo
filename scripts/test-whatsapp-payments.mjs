@@ -119,11 +119,11 @@ const testModeByOptionTwo = await sendConnectivity('teste');
 assert.equal(testModeByOptionTwo.type, 'whatsapp_test_mode_link_sent');
 assert.equal(testModeByOptionTwo.testModeLink, 'https://pife-duelo.example/?mode=test');
 assert.match(connectivityMessages.at(-1).text, /Treino/i);
-assert.match(connectivityMessages.at(-1).text, /não usa sua carteira/i);
+assert.match(connectivityMessages.at(-1).text, /sem usar seu saldo e sem prêmio em dinheiro/i);
 assert.match(connectivityMessages.at(-1).text, /https:\/\/pife-duelo\.example\/\?mode=test/);
 
 await sendConnectivity('come\u00e7ar');
-const safeRules = await sendConnectivity('3');
+const safeRules = await sendConnectivity('4');
 assert.equal(safeRules.type, 'whatsapp_rules_sent');
 assert.match(connectivityMessages.at(-1).text, /1 — Objetivo/);
 const validCombinations = await sendConnectivity('3');
@@ -132,7 +132,7 @@ assert.match(connectivityMessages.at(-1).text, /Sequência/);
 assert.match(connectivityMessages.at(-1).text, /Trinca/);
 
 await sendConnectivity('iniciar');
-const safeSupport = await sendConnectivity('4');
+const safeSupport = await sendConnectivity('5');
 assert.equal(safeSupport.type, 'whatsapp_support_menu_sent');
 assert.match(connectivityMessages.at(-1).text, /SUPORTE PIFE DUELO/);
 const supportContact = await sendConnectivity('6');

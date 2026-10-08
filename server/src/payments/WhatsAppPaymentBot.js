@@ -152,15 +152,15 @@ function isNamedTableOption(command) {
 
 const MENU_COMMANDS = new Set(['oi', 'ola', 'menu', 'iniciar', 'comecar']);
 const CANCEL_QUEUE_COMMANDS = new Set(['sair', 'cancelar']);
-const SUPPORT_COMMANDS = new Set(['4', 'suporte', 'atendimento', 'ajuda']);
+const SUPPORT_COMMANDS = new Set(['5', 'suporte', 'atendimento', 'ajuda']);
 const PLAY_COMMANDS = new Set(['1', 'jogar', 'jogar valendo', 'valendo', 'ver mesas', 'mesas', 'mesa']);
 const HOW_IT_WORKS_COMMANDS = new Set(['como funciona', 'funcionamento']);
-const TEST_MODE_COMMANDS = new Set(['modo teste', 'modo teste gratis', 'teste', 'treino', 'testar', 'gratis', 'gratuito']);
-const RULES_COMMANDS = new Set(['3', 'regras', 'regra', 'como jogar']);
+const TEST_MODE_COMMANDS = new Set(['modo teste', 'modo teste gratis', 'teste', 'treino', 'testar', 'gratis', 'gratuito', 'jogar gratis', 'jogar gratuito']);
+const RULES_COMMANDS = new Set(['4', 'regras', 'regra', 'como jogar']);
 const STATUS_COMMANDS = new Set(['status', 'situacao']);
 const LINK_COMMANDS = new Set(['link', 'acesso', 'meu link']);
 const IDENTIFY_COMMANDS = new Set(['meu numero', 'meu número']);
-const UPDATES_COMMANDS = new Set(['5', 'atualizacoes', 'atualizacao', 'novidades', 'roadmap']);
+const UPDATES_COMMANDS = new Set(['atualizacoes', 'atualizacao', 'novidades', 'roadmap']);
 const DEMO_CREDITS_COMMANDS = new Set(['6', 'creditos', 'credito', 'meus creditos', 'creditos de teste']);
 const FINANCIAL_WALLET_COMMANDS = new Set(['carteira', 'saldo financeiro', 'meu perfil e saldo', 'perfil financeiro']);
 const SALDO_COMMANDS = new Set(['saldo']);
@@ -207,7 +207,7 @@ function selectBotHandler(command, incoming = {}, currentState = null) {
   if (UPDATES_COMMANDS.has(command) || (currentState?.state === 'updates_menu' && command === 'voltar')) return 'updates';
   if (DEMO_CREDITS_COMMANDS.has(command)) return 'demo_credits';
   if (SALDO_COMMANDS.has(command)) return 'financial_wallet';
-  if (currentState?.state === 'idle' && command === '2') return 'financial_wallet';
+  if (currentState?.state === 'idle' && command === '3') return 'financial_wallet';
   const isTableSelectionInProgress = currentState?.state === 'choosing_table' && tableOptionFromCommand(command) !== null;
   if (SUPPORT_COMMANDS.has(command) && !isTableSelectionInProgress) return 'support';
   if (MENU_COMMANDS.has(command)) return 'menu';
@@ -1705,10 +1705,10 @@ export class WhatsAppPaymentBot {
       }
       return this.handleMenuCommand(incoming, { replyTo, originIp });
     }
-    const openWallet = FINANCIAL_WALLET_COMMANDS.has(command) || (atRoot && command === '2');
+    const openWallet = FINANCIAL_WALLET_COMMANDS.has(command) || (atRoot && command === '3');
     if (!wallet?.isEnabled?.()) {
       // A carteira em dinheiro pode estar desligada durante o beta; nesse caso,
-      // "2 — Carteira" e "saldo" devem consultar os créditos fictícios ativos.
+      // "3 — Carteira" e "saldo" devem consultar os créditos fictícios ativos.
       // Nunca tratar créditos de teste como reais ou habilitar Pix por fallback.
       if (this.demoCreditsService?.isEnabled?.() && (openWallet || SALDO_COMMANDS.has(command))) {
         return this.handleDemoCreditsRequest(incoming, { replyTo, originIp });
@@ -2000,9 +2000,15 @@ export class WhatsAppPaymentBot {
     }
     if (!isDeposit && this.safeEntryEnabled && incoming.messageId) this.entryService?.store?.markMessageProcessed(incoming.messageId);
 
-    const command = normalizeCommand(incoming.text);
-    const replyTo = incoming.replyTo || incoming.phone;
     const currentState = this.getConversationState(incoming.phone);
+    const rawCommand = normalizeCommand(incoming.text);
+    // Numeric options belong to the main menu only; table and submenu numbers
+    // retain their own meaning (including onboarding's option 2).
+    const mainMenuCommands = { '2': 'jogar gratis', '3': 'carteira', '4': 'regras', '5': 'suporte' };
+    const command = ['idle', 'how_it_works'].includes(currentState.state)
+      ? (mainMenuCommands[rawCommand] || rawCommand)
+      : rawCommand;
+    const replyTo = incoming.replyTo || incoming.phone;
     this.logInfo('MESSAGE_TEXT_PARSED', {
       originIp,
       playerPhone: maskPhone(incoming.phone),
