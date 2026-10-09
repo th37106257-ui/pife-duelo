@@ -50,12 +50,19 @@ const config = resolveFinancialConfig({
   WITHDRAWAL_MODE: 'manual',
   AUTO_WITHDRAWALS_ENABLED: 'false',
   MIN_WITHDRAWAL_AMOUNT_CENTS: '2000',
+  MAX_WITHDRAWAL_AMOUNT_CENTS: '2500',
+  DAILY_WITHDRAWAL_LIMIT_CENTS: '4000',
   DATABASE_URL: 'postgres://test',
   FINANCIAL_DATA_ENCRYPTION_KEY: 'test-only-key-with-at-least-32-characters',
   ASAAS_WEBHOOK_TOKEN: 'test-webhook-token',
   WHATSAPP_FINANCIAL_ADMIN_NUMBERS: '5511999990001',
 });
 assert.equal(config.ready, true);
+assert.ok(resolveFinancialConfig({
+  FINANCIAL_WALLET_ENABLED: 'true', WITHDRAWALS_ENABLED: 'true', DATABASE_URL: 'postgres://test',
+  FINANCIAL_DATA_ENCRYPTION_KEY: 'test-only-key-with-at-least-32-characters',
+  WHATSAPP_FINANCIAL_ADMIN_NUMBERS: '5511999990001',
+}).errors.includes('WITHDRAWAL_LIMITS_REQUIRED'));
 const provider = new MockPaymentProvider({ webhookToken: 'test-webhook-token' });
 const service = new FinancialWalletService({ repository, provider, config });
 
@@ -131,6 +138,12 @@ const withdrawalPaid = await service.requestWithdrawal(playerOne, {
 const paid = await service.markWithdrawalPaid('5511999990001', withdrawalPaid.public_reference, 'TRANSFER-TEST-1');
 assert.equal(paid.status, 'PAID');
 assert.equal((await service.markWithdrawalPaid('5511999990001', withdrawalPaid.public_reference, 'TRANSFER-TEST-1')).duplicate, true);
+await assert.rejects(() => service.requestWithdrawal(playerOne, {
+  amountCents: 2_501, pixKeyType: 'EVP', pixKey: 'test', holderName: 'Jogador Um', idempotencyKey: 'withdrawal-above-max',
+}), /WITHDRAWAL_ABOVE_MAXIMUM/);
+await assert.rejects(() => service.requestWithdrawal(playerOne, {
+  amountCents: 2_000, pixKeyType: 'EVP', pixKey: 'test', holderName: 'Jogador Um', idempotencyKey: 'withdrawal-above-daily',
+}), /WITHDRAWAL_DAILY_LIMIT_EXCEEDED/);
 await assert.rejects(() => service.listPendingWithdrawals(playerOne), /FINANCIAL_ADMIN_UNAUTHORIZED/);
 
 await service.reserveStake(playerOne, { amountCents: 2_000, entryId: 'ENTRY-1', tableId: 20 });

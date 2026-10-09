@@ -23,6 +23,8 @@ const config = resolveFinancialConfig({
   PIX_DEPOSITS_ENABLED: 'true',
   REAL_MONEY_GAMES_ENABLED: 'true',
   WITHDRAWALS_ENABLED: 'true',
+  MAX_WITHDRAWAL_AMOUNT_CENTS: '10000',
+  DAILY_WITHDRAWAL_LIMIT_CENTS: '100000',
   WITHDRAWAL_MODE: 'manual',
   AUTO_WITHDRAWALS_ENABLED: 'false',
   MIN_WITHDRAWAL_AMOUNT_CENTS: '100',
@@ -341,6 +343,22 @@ try {
   ]);
   assert.equal(await count(repositoryA, "SELECT count(*)::int AS total FROM financial_withdrawals WHERE idempotency_key='pg-withdrawal-concurrent'"), 1);
   assert.equal(withdrawalResults.filter((item) => item.duplicate).length, 1);
+  const limitedPhone = '5511999903011';
+  await deposit(limitedPhone, 2_000, 'withdrawal-daily-limit');
+  const limitedConfig = { ...config, maxWithdrawalAmountCents: 700, dailyWithdrawalLimitCents: 1_000 };
+  const limitedA = new FinancialWalletService({ repository: repositoryA, provider, config: limitedConfig });
+  const limitedB = new FinancialWalletService({ repository: repositoryB, provider, config: limitedConfig });
+  const limitRequest = (service, idempotencyKey) => service.requestWithdrawal(limitedPhone, {
+    amountCents: 600, pixKeyType: 'EVP', pixKey: 'test-only-pix-key', holderName: 'Test Holder', idempotencyKey,
+  });
+  const limitedResults = await Promise.allSettled([
+    limitRequest(limitedA, 'pg-daily-limit-a'), limitRequest(limitedB, 'pg-daily-limit-b'),
+  ]);
+  assert.equal(limitedResults.filter((item) => item.status === 'fulfilled').length, 1);
+  assert.equal(limitedResults.filter((item) => item.status === 'rejected' && item.reason.message === 'WITHDRAWAL_DAILY_LIMIT_EXCEEDED').length, 1);
+  assert.equal(await count(repositoryA, "SELECT count(*)::int AS total FROM financial_withdrawals WHERE idempotency_key IN ('pg-daily-limit-a','pg-daily-limit-b')"), 1);
+  const successfulKey = limitedResults[0].status === 'fulfilled' ? 'pg-daily-limit-a' : 'pg-daily-limit-b';
+  assert.equal((await limitRequest(limitedB, successfulKey)).duplicate, true);
   const rawWithdrawal = (await repositoryA.query("SELECT * FROM financial_withdrawals WHERE idempotency_key='pg-withdrawal-concurrent'")).rows[0];
   assert.ok(!rawWithdrawal.pix_key_ciphertext.includes('pg-secret@example.test'));
   assert.ok(!JSON.stringify(rawWithdrawal).includes('pg-secret@example.test'));
