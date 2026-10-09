@@ -27,6 +27,7 @@ jobs:
       PIFE_SAFE_ENTRY_TEST_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_safe_entry_test
       PIFE_E2E_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_financial_e2e_test
       PIFE_DEMO_CREDITS_TEST_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_demo_credits_test
+      FINANCIAL_TEST_DATABASE_URL: postgresql://pife_test@127.0.0.1:5432/pife_financial_limits_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,7 +44,7 @@ jobs:
             const { Client } = requireServer("pg");
             const client = new Client({ connectionString: "postgresql://pife_test@127.0.0.1:5432/postgres" });
             await client.connect();
-            for (const name of ["pife_safe_entry_test", "pife_financial_e2e_test", "pife_demo_credits_test"]) {
+            for (const name of ["pife_safe_entry_test", "pife_financial_e2e_test", "pife_demo_credits_test", "pife_financial_limits_test"]) {
               await client.query(`CREATE DATABASE ${name}`);
             }
             await client.end();
@@ -52,6 +53,7 @@ jobs:
       - run: node scripts/test-demo-credits-postgres.mjs
       - run: node scripts/test-safe-entry-async-propagation.mjs
       - run: node scripts/test-financial-e2e.mjs
+      - run: node scripts/test-financial-postgres.mjs
       - run: npm run test:demo-credits
       - run: npm run test:entries
       - run: npm run test:financial-wallet
