@@ -10,6 +10,12 @@ function positiveInteger(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function configuredPositiveInteger(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function list(value) {
   return [...new Set(String(value || '').split(',').map((item) => item.replace(/\D/g, '')).filter(Boolean))];
 }
@@ -27,6 +33,8 @@ export function resolveFinancialConfig(env = process.env) {
     withdrawalMode: String(env.WITHDRAWAL_MODE || 'manual').trim().toLowerCase(),
     autoWithdrawalsEnabled: bool(env.AUTO_WITHDRAWALS_ENABLED),
     minWithdrawalAmountCents: positiveInteger(env.MIN_WITHDRAWAL_AMOUNT_CENTS, 2000),
+    maxWithdrawalAmountCents: configuredPositiveInteger(env.MAX_WITHDRAWAL_AMOUNT_CENTS),
+    dailyWithdrawalLimitCents: configuredPositiveInteger(env.DAILY_WITHDRAWAL_LIMIT_CENTS),
     databaseUrl: String(env.DATABASE_URL || '').trim(),
     encryptionKey: String(env.FINANCIAL_DATA_ENCRYPTION_KEY || '').trim(),
     asaasApiKey: String(env.ASAAS_API_KEY || '').trim(),
@@ -44,6 +52,12 @@ export function resolveFinancialConfig(env = process.env) {
   if (config.enabled && !config.databaseUrl) errors.push('FINANCIAL_DATABASE_REQUIRED');
   if (config.enabled && config.withdrawalsEnabled && config.encryptionKey.length < 32) errors.push('FINANCIAL_ENCRYPTION_KEY_REQUIRED');
   if (config.enabled && config.withdrawalsEnabled && config.financialAdminNumbers.length === 0) errors.push('FINANCIAL_ADMIN_REQUIRED');
+  if (config.enabled && config.withdrawalsEnabled && (!config.maxWithdrawalAmountCents || !config.dailyWithdrawalLimitCents)) {
+    errors.push('WITHDRAWAL_LIMITS_REQUIRED');
+  }
+  if (config.enabled && config.withdrawalsEnabled && config.maxWithdrawalAmountCents < config.minWithdrawalAmountCents) {
+    errors.push('WITHDRAWAL_MAX_BELOW_MINIMUM');
+  }
   if (config.enabled && config.pixDepositsEnabled && provider === 'asaas' && !config.asaasApiKey) errors.push('ASAAS_API_KEY_REQUIRED');
   if (config.enabled && config.pixDepositsEnabled && !config.asaasWebhookToken) errors.push('ASAAS_WEBHOOK_TOKEN_REQUIRED');
   if (mode === 'production') {

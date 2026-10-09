@@ -978,6 +978,8 @@ export class FinancialWalletService {
     if (!this.config.withdrawalsEnabled) throw new Error('WITHDRAWALS_DISABLED');
     const amount = cents(amountCents);
     if (amount < this.config.minWithdrawalAmountCents) throw new Error('WITHDRAWAL_BELOW_MINIMUM');
+    if (!this.config.maxWithdrawalAmountCents || !this.config.dailyWithdrawalLimitCents) throw new Error('WITHDRAWAL_LIMITS_REQUIRED');
+    if (amount > this.config.maxWithdrawalAmountCents) throw new Error('WITHDRAWAL_ABOVE_MAXIMUM');
     const account = await this.getAccount(phone);
     if (!account) throw new Error('FINANCIAL_ACCOUNT_NOT_FOUND');
     assertAccountActive(account);
@@ -999,6 +1001,20 @@ export class FinancialWalletService {
         return { ...existing.rows[0], duplicate: true };
       }
       const locked = assertAccountActive((await client.query('SELECT * FROM financial_accounts WHERE account_id=$1 FOR UPDATE', [account.account_id])).rows[0]);
+      // The account lock serializes requests for the same player across instances.
+      // Count every request, including rejected ones, to prevent daily-limit churn.
+      const dayStart = new Date(this.clock());
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+      const daily = await client.query(
+        `SELECT COALESCE(SUM(amount_cents),0)::bigint AS total
+         FROM financial_withdrawals
+         WHERE account_id=$1 AND created_at >= $2 AND created_at < $3`,
+        [account.account_id, dayStart.toISOString(), dayEnd.toISOString()],
+      );
+      if (BigInt(daily.rows[0]?.total ?? 0) + BigInt(amount) > BigInt(this.config.dailyWithdrawalLimitCents)) {
+        throw new Error('WITHDRAWAL_DAILY_LIMIT_EXCEEDED');
+      }
       if (databaseInteger(locked.available_balance_cents) < amount) throw new Error('FINANCIAL_INSUFFICIENT_BALANCE');
       const withdrawalId = randomUUID();
       const publicRef = publicReference('WD');

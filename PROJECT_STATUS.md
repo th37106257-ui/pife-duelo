@@ -159,3 +159,10 @@ Antes de responder “o próximo passo é...”:
 - PR #9 integrado em main; commit bfda15d874755646f43e99e5addcce098adf3948.
 - Deploy de código Railway 81aeae84-8a65-4b45-9f36-6dc414f14dad: SUCCESS em 2026-10-08; serviço saudável.
 - Etapa concluída. Próximo passo: acompanhar o uso no beta, sem reabrir esta implementação.
+
+## Etapa de 2026-10-09 — Preparação para análise de dinheiro real
+- O beta está concluído. O usuário autorizou implementar e publicar código financeiro, mas isso **não** equivale à aprovação do Asaas nem à autorização para ativar transações antes da validação.
+- A política pública atual do Asaas lista “jogos de azar” como atividade não aceita. Foi enviada consulta formal ao atendimento em 09/10/2026, descrevendo entrada paga via Pix, prêmio das entradas menos taxa e saque Pix. Protocolo e resposta específica ainda pendentes.
+- Uma preparação de segurança adiciona limites configuráveis por saque e por dia. Ambos são obrigatórios para habilitar saques; não há valores presumidos. A apuração diária usa UTC e soma todas as solicitações do dia, inclusive rejeitadas, sob bloqueio transacional da conta. A transferência continua manual; saques automáticos seguem proibidos.
+- A integração de produção permanece bloqueada no código (`PRODUCTION_FINANCIAL_ACTIVATION_REQUIRES_RELEASE`) e **não** deve ser removida antes da resposta expressa do provedor, confirmação cadastral/operacional, credenciais de produção, testes financeiros e decisão de liberação controlada.
+- Nenhuma variável Railway foi alterada nesta etapa; dinheiro real, Pix real e saques não foram habilitados. A sessão do painel Asaas ainda requer autenticação/verificação direta do titular para comprovar aprovação e permissões.
